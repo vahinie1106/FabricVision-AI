@@ -1,21 +1,14 @@
-print("FabricVision AI Started Successfully!")
+"""Entry point for launching the FabricVision-AI Gradio UI."""
 
-import cv2
-import numpy as np
+from src.ui.main_ui import create_ui
 
-print("OpenCV Version:", cv2.__version__)
-print("NumPy Version:", np.__version__)
 
-import gradio as gr
+def main() -> None:
+    """Create and launch the FabricVision-AI interface."""
+    demo = create_ui()
+    demo.launch()
 
-def hello(name):
-    return f"Hello {name}!"
 
-demo = gr.Interface(
-    fn=hello,
-    inputs="text",
-    outputs="text"
-)
-
-demo.launch()
+if __name__ == "__main__":
+    main()
 
