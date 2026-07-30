@@ -1,0 +1,12 @@
+dataset_root: datasets
+output_root: datasets/garments
+reports_dir: reports
+supported_formats:
+  - .jpg
+  - .jpeg
+  - .png
+  - .webp
+min_width: 16
+min_height: 16
+materials_root: datasets/fabrics_materials
+patterns_root: datasets/fabrics_patterns

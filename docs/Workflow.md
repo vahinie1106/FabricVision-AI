@@ -32,6 +32,18 @@ This document focuses on logical workflow behavior rather than implementation sp
 
 ## 2. End-to-End Application Workflow
 
+### 2.0 Dataset Management Integration
+
+The application workflow now includes an explicit Dataset Management stage between the raw dataset and preprocessing. This stage is responsible for discovering products, indexing the dataset, validating assets, classifying garments, generating metadata, reorganizing products, and creating reports. The output is an AI-ready dataset that can be passed to preprocessing and future model stages without mixing dataset engineering with model execution.
+
+```mermaid
+flowchart TD
+    A[Raw Dataset] --> B[Dataset Management Layer]
+    B --> C[Image Preprocessing]
+    C --> D[AI Model Layer]
+    D --> E[Final Output]
+```
+
 The end-to-end application workflow begins when the user launches the application and ends when the final output is previewed and prepared for download. This workflow is organized as a sequence of stages, each responsible for a distinct part of the application lifecycle. The purpose of this structure is to preserve clarity and make each stage understandable in isolation while also showing how the stages connect into a unified process.
 
 ### 2.1 High-Level Workflow Stages

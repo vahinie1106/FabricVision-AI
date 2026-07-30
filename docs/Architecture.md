@@ -21,7 +21,8 @@ The application is organized around the following major layers:
 | Layer | Responsibility | Notes |
 | --- | --- | --- |
 | User Interface | Collects user input, displays results, and manages the interaction flow | Currently implemented with Gradio Blocks |
-| Orchestration Layer | Coordinates the end-to-end try-on workflow | Responsible for sequencing model execution and output handling |
+| Workflow Orchestration Layer | Coordinates the end-to-end try-on workflow | Responsible for sequencing workflow execution and output handling |
+| Dataset Management Layer | Discovers, indexes, validates, classifies, and organizes datasets before preprocessing | Implemented as a modular package under src/dataset_management |
 | Preprocessing Module | Validates and prepares images for model inference | Ensures input quality and consistency |
 | AI Services Layer | Hosts the garment generation and virtual try-on operations | Separates model-specific logic from the application workflow |
 | Configuration and Utilities | Stores reusable settings, constants, and helper logic | Supports cleaner and less hardcoded implementation |
@@ -33,12 +34,13 @@ The application workflow follows a clear progression from user input to final ou
 
 1. The user uploads a person image and a fabric design image.
 2. The system collects garment-related preferences such as gender, type, size, and material.
-3. The input is validated and prepared for AI processing.
-4. The garment generation step transforms the fabric design into a garment image that reflects the requested category and material characteristics.
-5. The virtual try-on step places the generated garment onto the person image in a visually coherent way.
-6. The resulting image is presented to the user and can be downloaded for use.
+3. The dataset management layer scans, indexes, validates, and organizes the relevant data before preprocessing.
+4. The input is validated and prepared for AI processing.
+5. The garment generation step transforms the fabric design into a garment image that reflects the requested category and material characteristics.
+6. The virtual try-on step places the generated garment onto the person image in a visually coherent way.
+7. The resulting image is presented to the user and can be downloaded for use.
 
-At the current stage of development, the Gradio interface is present and the AI inference path remains a placeholder. The architecture is nevertheless designed to support the later integration of the FLUX Kontext and CatVTON stages without changing the core modular structure.
+At the current stage of development, the Gradio interface is present, preprocessing and dataset-management foundations are implemented, and the AI inference path remains a planned integration milestone. The architecture is designed to support the later integration of the FLUX Kontext and CatVTON stages without changing the core modular structure.
 
 ### 1.4 Model Responsibility Boundaries
 
@@ -55,12 +57,13 @@ This separation is important because it keeps the garment generation and final r
 flowchart LR
     A[User] --> B[Gradio UI]
     B --> C[Workflow Orchestrator]
-    C --> D[Input Validation and Preprocessing]
-    D --> E[FLUX Kontext]
-    E --> F[Generated Garment]
-    F --> G[CatVTON]
-    G --> H[Final Try-On Output]
-    H --> I[User Preview and Download]
+    C --> D[Dataset Management Layer]
+    D --> E[Input Validation and Preprocessing]
+    E --> F[FLUX Kontext]
+    F --> G[Generated Garment]
+    G --> H[CatVTON]
+    H --> I[Final Try-On Output]
+    I --> J[User Preview and Download]
 ```
 
 ### 1.6 Design Summary
@@ -148,27 +151,113 @@ Documentation-first development emphasizes treating documentation as a core part
 
 These principles provide a strong foundation for building FabricVision-AI as a scalable, maintainable, and production-quality AI application. By aligning the system with clear architectural values, the project can evolve with confidence, reduce risk, and remain understandable as it grows in capability and complexity.
 
-## 3. Software Module Architecture
+## 3. Image Preprocessing Architecture
+
+### 3.1 Purpose
+
+The image preprocessing layer exists to prepare raw image data for future AI services without tying those services directly to the data-loading, validation, or transformation logic. In FabricVision-AI, preprocessing is the bridge between raw datasets and the future FLUX Kontext and CatVTON stages. It ensures that the system can handle different image sources, preserve dataset structure, and standardize inputs before any downstream AI workflow begins.
+
+### 3.2 Responsibilities
+
+The preprocessing architecture is intentionally modular and is organized into the following responsibilities:
+
+- Dataset loading: recursively discovers images, records metadata, and preserves dataset organization.
+- Image loading: reads supported file formats and converts images into a consistent representation.
+- Image validation: verifies file presence, readability, dimensions, channels, and quality.
+- Image cleaning: removes noise and prepares images for future segmentation-based workflows.
+- Background processing: offers a replaceable strategy for background cleanup that can later be upgraded to segmentation models such as SAM, U²-Net, or MODNet.
+- Transformation: resizes images to a consistent target size while preserving aspect ratio through padding.
+- Augmentation: applies configurable augmentation for robustness while preserving garment structure and texture details.
+
+### 3.3 Data Flow
+
+```mermaid
+flowchart TD
+    A[Raw Dataset] --> B[Dataset Loader]
+    B --> C[Image Validation Layer]
+    C --> D[Preprocessing Engine]
+    D --> E[Processed Dataset]
+    E --> F[AI Model Pipeline]
+```
+
+### 3.4 Architectural Benefits
+
+The new preprocessing architecture improves the project in several ways:
+
+- Modularity: each preprocessing concern is isolated in its own focused component.
+- Maintainability: logic is easier to test and extend because stages are clearly separated.
+- AI model independence: the pipeline can evolve without forcing changes into model-specific code.
+- Dataset scalability: the loader can scan small sample datasets as well as larger clothing collections.
+- Future extensibility: new segmentation strategies, augmentation options, or preprocessing stages can be introduced without rewriting the full workflow.
+
+### 3.5 Future Expansion
+
+The preprocessing foundation is designed to support future work such as advanced segmentation models, additional transformation stages, multiple garment categories, higher-resolution processing, and more complex AI pipelines. It provides a stable base for the project while keeping the architecture open for the next phases of development.
+
+## 4. Dataset Management Architecture
+
+### 4.1 Purpose
+
+The Dataset Management Layer is an independent architectural layer that owns dataset discovery, indexing, validation, classification, metadata generation, reorganization, quality assurance, and reporting. Its purpose is to ensure that raw datasets are transformed into an AI-ready, well-structured, and well-documented resource without coupling future AI models to the dataset organization logic.
+
+### 4.2 Responsibilities
+
+The dataset management layer is responsible for:
+
+- Discovering product folders and image assets recursively from the datasets tree.
+- Building a reusable dataset index that represents each discovered product and its media files.
+- Validating folder integrity, image readability, supported formats, and basic image quality.
+- Classifying garments through a modular rule-based classifier that can later be replaced by CLIP, Florence-2, or Qwen2.5-VL models.
+- Extracting metadata such as gender, material, pattern, and garment type.
+- Generating metadata files in CSV, JSON, and YAML formats.
+- Reorganizing the dataset into a production-ready layout under the garments directory while preserving product integrity.
+- Producing quality and validation reports for downstream preprocessing and model use.
+
+### 4.3 Architecture Diagram
+
+```mermaid
+flowchart TD
+    A[Raw Dataset] --> B[Dataset Scanner]
+    B --> C[Dataset Index]
+    C --> D[Dataset Validator]
+    D --> E[Garment Classifier]
+    E --> F[Attribute Extractor]
+    F --> G[Metadata Generator]
+    G --> H[Dataset Reorganizer]
+    H --> I[Quality Checker]
+    I --> J[Report Generator]
+    J --> K[AI Ready Dataset]
+```
+
+### 4.4 Integration Benefits
+
+The dataset management layer keeps preprocessing and AI model concerns independent from data organization. Preprocessing consumes a prepared dataset, but it no longer needs to manage folder structure. Future AI models consume the reorganized dataset and generated metadata without needing to understand dataset engineering details.
+
+### 4.5 Future Expansion
+
+The classifier and attribute extraction modules are intentionally modular so they can be upgraded with vision-language models or specialized fashion models without changing the rest of the workflow.
+
+## 5. Software Module Architecture
 
 FabricVision-AI is divided into software modules to ensure that each major responsibility is handled by a clearly defined architectural unit. This modular structure is important because the application combines multiple concerns, including user interaction, data validation, image preparation, AI execution, and result management. By organizing the system in this way, the architecture remains understandable, easier to evolve, and better suited for future growth. Modularization also improves testing, reduces coupling between concerns, and allows different parts of the system to be developed or refined independently.
 
-### 3.1 User Interface Module
+### 5.1 User Interface Module
 
 The User Interface Module is the presentation and interaction layer of the application. Its purpose is to provide an intuitive experience for users who upload images, select garment preferences, and review generated results. This module is responsible for collecting user input such as person images, fabric design images, gender, garment type, size, material, pattern, and color preferences. It also presents the output to the user in a clear and accessible form. In the current architecture, this module is represented by the Gradio-based interface, which acts as the primary boundary between the end user and the underlying workflow. The User Interface Module communicates with the workflow pipeline by passing collected input into the orchestration flow and later receiving results for display. Its role is not to perform AI reasoning directly, but to ensure that the user experience remains consistent, structured, and easy to understand.
 
-### 3.2 Workflow Orchestration Module
+### 5.2 Workflow Orchestration Module
 
 The Workflow Orchestration Module exists to coordinate the end-to-end sequence of operations that transform user inputs into final output. Its purpose is to manage the flow of execution across the application rather than to perform domain-specific tasks itself. This separation is important because the UI should remain focused on interaction, while orchestration should remain focused on sequencing and control. The orchestrator is responsible for deciding the order in which tasks occur, ensuring that each processing stage begins only when the required data is available, and passing information between modules in a controlled manner. It plays a central role in coordinating the complete AI pipeline, from initial input to final result generation. As the system grows, this module becomes the natural place to introduce additional workflow steps, conditional logic, and future multi-stage processing without burdening the interface or the AI services themselves.
 
-### 3.3 Image Validation Module
+### 5.3 Image Validation Module
 
 The Image Validation Module is responsible for ensuring that incoming images satisfy the expectations required for reliable AI processing. Image validation is necessary because AI systems are highly sensitive to input quality, format consistency, and missing or malformed data. This module performs checks such as confirming that images are present, readable, and of an acceptable type and size, and it helps ensure that the input data is meaningful before any model processing begins. Validation is important before AI inference because poor-quality inputs can cause unstable behavior, misleading results, or unnecessary processing failures. By separating validation from downstream processing, the system improves reliability and prevents invalid data from propagating into more expensive or more fragile stages of the pipeline.
 
-### 3.4 Image Preprocessing Module
+### 5.4 Image Preprocessing Module
 
 The Image Preprocessing Module is responsible for preparing validated images for the AI pipeline. Its purpose is to transform raw input into a standardized form that is appropriate for downstream model consumption. This may include formatting, normalization, resizing, alignment, or other preparation steps that make the image consistent with the expectations of the processing workflow. Preprocessing is separated from validation because validation focuses on correctness and readiness, whereas preprocessing focuses on transformation and standardization. This separation is valuable because it allows the system to distinguish between whether input data is acceptable and how it should be prepared for effective inference. The result is a cleaner pipeline where each stage has a defined responsibility and where future model changes can be accommodated more easily.
 
-### 3.5 AI Services Module
+### 5.5 AI Services Module
 
 The AI Services Module manages all interactions with the AI models used by the application. Its purpose is to isolate model-specific logic from the rest of the system so that the application can treat AI operations as services rather than embedding model behavior throughout the architecture. This module contains the conceptual responsibilities for the FLUX Kontext Service and the CatVTON Service.
 
@@ -176,31 +265,31 @@ The FLUX Kontext Service is responsible for generating the garment image from th
 
 Keeping model-specific logic isolated is essential because AI models are often specialized, evolving, and subject to different requirements. When model behavior is confined to a dedicated service layer, the rest of the application remains stable even if one model is upgraded, replaced, or expanded. This separation also improves maintainability, supports testing, and makes it easier to introduce future model alternatives without disrupting the broader architecture.
 
-### 3.6 Pipeline Management Module
+### 5.6 Pipeline Management Module
 
 The Pipeline Management Module is responsible for the end-to-end coordination of the full AI workflow. It governs the movement of data from input acquisition to intermediate processing and final output generation. Its responsibilities include managing the flow of information between stages, maintaining the execution order of the pipeline, and ensuring that each stage receives the expected inputs and produces the proper outputs. This module also plays a key role in propagating errors and status information throughout the workflow so that failures can be handled systematically rather than causing ambiguous behavior. In a more advanced system, this module would support multiple stages, branching logic, and future multi-model support where different AI services may be selected or combined according to the task. By treating the pipeline as a managed architectural unit, the system can evolve into a more flexible and scalable processing environment.
 
-### 3.7 Configuration Module
+### 5.7 Configuration Module
 
 The Configuration Module provides centralized management for the settings and parameters that influence the system’s behavior. Its purpose is to prevent important values from being scattered across the codebase and to ensure that configuration remains consistent and maintainable. This includes environment settings, model-related paths, constants, workflow parameters, and other values that define how the application behaves. Configuration should never be hardcoded because hardcoded values reduce flexibility, complicate testing, and make it difficult to adapt the system to different environments or future changes. A centralized configuration approach improves clarity, supports safer updates, and enables the application to evolve without introducing unnecessary brittleness.
 
-### 3.8 Utility Module
+### 5.8 Utility Module
 
 The Utility Module provides shared, reusable functionality that supports multiple parts of the application without being tied to any single business concern. Its purpose is to centralize generic capabilities such as helper functions, file operations, image utilities, and common logic that may be required by several modules. Utilities should remain generic so that they can support broad use cases rather than becoming specialized to one workflow step. This helps maintain consistency while reducing duplication and the risk of inconsistencies between modules. By keeping generic functionality in a dedicated utility layer, the architecture becomes easier to extend and less prone to unnecessary complexity.
 
-### 3.9 Logging Module
+### 5.9 Logging Module
 
 The Logging Module is responsible for recording and exposing system activity in a way that supports monitoring, debugging, and operational awareness. Its purpose is to capture meaningful events throughout the workflow so that developers can understand what happened during processing, where a failure occurred, and what state the system was in at the time. In an AI application, logging is especially important because failures or anomalies may arise across multiple stages, from input handling to model execution and output management. The Logging Module supports this by providing a consistent way to record important events, errors, and status changes. Over time, this becomes the foundation for more advanced production monitoring, diagnostics, and operational oversight.
 
-### 3.10 Output Management Module
+### 5.10 Output Management Module
 
 The Output Management Module is responsible for organizing and presenting the results produced by the pipeline. Its responsibilities include generated image storage, file organization, preview preparation, and download readiness. This module ensures that generated outputs are handled in a structured and reusable way rather than being treated as temporary side effects of the AI process. Keeping output handling independent from AI inference is important because the two concerns are conceptually different: inference creates the result, while output management ensures that the result is preserved, delivered, and presented appropriately. This separation improves clarity, makes result handling easier to manage, and supports future enhancements such as richer output browsing or additional artifact generation.
 
-### 3.11 Testing Module
+### 5.11 Testing Module
 
 The Testing Module exists to ensure that the system behaves correctly and remains reliable as it evolves. Its purpose is to support both unit testing, which validates isolated logic, and integration testing, which checks that modules interact correctly as a system. In the context of FabricVision-AI, testing is especially important because the application involves multiple stages and AI-dependent behavior that can be difficult to validate manually. By treating testing as a separate architectural concern, the project can validate individual modules independently while also verifying the end-to-end workflow. This supports quality assurance, reduces regression risk, and provides a structured foundation for future AI pipeline validation as the system becomes more advanced.
 
-### 3.12 Module Relationship Diagram
+### 5.12 Module Relationship Diagram
 
 ```mermaid
 flowchart TD
@@ -220,7 +309,7 @@ flowchart TD
     TEST --> OM
 ```
 
-### 3.13 Module Dependency Table
+### 5.13 Module Dependency Table
 
 | Module | Primary Responsibility | Depends On | Used By |
 | --- | --- | --- | --- |

@@ -1,0 +1,3 @@
+product_id,garment_type,confidence,classification_source
+prod_sample_001,T-Shirt,0.72,rule_based_hints
+prod_sample_002,Dress,0.72,rule_based_hints
