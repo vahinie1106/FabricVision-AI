@@ -38,11 +38,11 @@ This separation preserves both design intent and project history without allowin
 
 ## 2. Current Project Snapshot
 
-FabricVision-AI is currently in a foundation-and-implementation phase. The project has a clearly documented architectural direction, a structured workflow specification, a Gradio-based UI foundation, preprocessing modules, and a dataset management layer, while the end-to-end AI inference pipeline remains a planned integration milestone rather than a fully completed runtime system.
+FabricVision-AI is currently in a foundation-and-integration phase. The project has a documented architectural direction, a structured workflow specification, a Gradio-based UI foundation, a preprocessing module, and a newly implemented Dataset Management Layer. The AI inference pipeline remains a planned integration area rather than a fully completed runtime system, but the dataset engineering and preprocessing foundations are now materially present in the repository.
 
 ### 2.1 Current Development Phase
 
-The project is presently in a foundation, planning, and documentation-driven implementation phase.
+The project is presently in a foundation-and-integration phase with active implementation in the dataset and preprocessing layers.
 
 ### 2.2 Current Implementation Status
 
@@ -50,16 +50,17 @@ Confirmed implementation currently includes:
 
 - A Python entry point for launching the application.
 - A Gradio Blocks-based interface scaffold with user input controls.
-- A preprocessing package with validation, loading, cleaning, transformation, and augmentation stages.
-- A dataset management package for scanning, indexing, validation, classification, metadata generation, reorganization, quality checks, and reporting.
-- Regression tests covering preprocessing and dataset-management workflows.
+- A preprocessing pipeline with dataset discovery, image validation, cleaning, transformation, and output generation.
+- A dedicated Dataset Management Layer with scanning, indexing, validation, classification, metadata generation, reorganization, quality checks, and reporting.
+- Regression tests covering preprocessing and dataset management behavior.
 
 Pending or planned work includes:
 
 - End-to-end AI pipeline integration.
 - Real garment generation execution.
 - Real virtual try-on execution.
-- Broader runtime testing and quality verification for the full user workflow.
+- Broader runtime testing and quality verification.
+- Expansion of the current rule-based garment classifier into a stronger model-based implementation.
 
 ### 2.3 Documentation Status
 
@@ -120,15 +121,15 @@ The project has reached several important milestones that define its current mat
 - The project has a documented future vision specification.
 - The project has a living development record for ongoing continuity.
 - The project has a chronological engineering log that preserves session-by-session history.
-- The project now includes implemented preprocessing and dataset-management modules with supporting tests.
+- The project has an implemented Dataset Management Layer and related tests.
 
 ### 4.2 Milestones Still Pending
 
 - Full AI inference integration.
 - Real garment generation execution.
 - Real virtual try-on execution.
-- Validation and preprocessing workflow implementation.
 - End-to-end runtime testing and quality verification.
+- Replacement of the current rule-based classifier with a more advanced vision-based classifier.
 
 ---
 
@@ -183,9 +184,9 @@ The project currently reflects the following AI-related design decisions:
 - The system is intended to preserve a separation between design generation and final rendering.
 - The architecture is expected to support modular AI replacement and future model evolution.
 
-### 6.3 Validation and Preprocessing Planning
+### 6.3 Validation and Preprocessing Foundation
 
-Validation and preprocessing were treated as important workflow concerns during planning and documentation work. These responsibilities remain important pending implementation areas.
+Validation and preprocessing were treated as important workflow concerns during planning and documentation work, and they are now represented as concrete repository modules. These responsibilities remain central to the project as the AI pipeline continues to mature.
 
 ### 6.4 Current AI Status
 
@@ -245,15 +246,16 @@ Purpose: to preserve the complete chronological engineering history of the proje
 
 ### In Progress
 
-- The project remains in an early implementation phase with UI, preprocessing, and dataset-management foundations in place.
+- The project now includes a functional preprocessing module and a Dataset Management Layer in addition to the UI foundation.
 - Documentation remains under active stewardship as a shared engineering asset.
 - The engineering history is being maintained as a living record.
 
 ### Planned
 
 - Integration of the AI generation and try-on pipeline.
-- Expansion of the workflow from placeholder logic to complete end-to-end processing.
-- Strengthening of tests and engineering verification for future model integration.
+- Expansion of the workflow from placeholder logic to real processing.
+- Strengthening of tests and engineering verification.
+- Further maturation of the current rule-based classification approach.
 
 ### Pending
 

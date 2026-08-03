@@ -1,0 +1,17 @@
+{
+  "allowed_values": {
+    "garment_identity.gender": ["men", "women", "unisex"],
+    "classification.category": ["upper_wear", "lower_wear", "dresses", "traditional"],
+    "classification.subcategory": ["shirt", "hoodie", "jacket", "sweater", "blazer", "jeans", "trousers", "shorts", "dress", "jumpsuit", "kurta", "lehenga", "saree"],
+    "physical_attributes.material": ["cotton", "polyester", "wool", "silk", "linen", "denim", "leather", "fleece"],
+    "shape_and_fit.sleeves": ["short", "long", "sleeveless", "three_quarter"],
+    "shape_and_fit.neckline": ["crew", "v_neck", "round", "hooded", "collared"],
+    "style.occasion": ["casual", "formal", "sports", "traditional", "wedding"],
+    "style.season": ["summer", "winter", "all_season", "spring", "autumn"],
+    "fabric_behaviour.drape": ["light", "moderate", "heavy"],
+    "fabric_behaviour.flexibility": ["low", "medium", "high"],
+    "fabric_behaviour.thickness": ["thin", "medium", "thick"],
+    "visual_attributes.colors": ["black", "white", "red", "blue", "green", "yellow", "gray", "beige", "pink", "purple", "orange", "brown"],
+    "visual_attributes.patterns": ["solid", "striped", "checked", "floral", "printed", "plain"]
+  }
+}

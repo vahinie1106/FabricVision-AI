@@ -1,6 +1,6 @@
 # FabricVision-AI
 
-FabricVision-AI is an AI-based virtual try-on system structured around a modular foundation for dataset preparation, preprocessing, and future model integration. The repository currently includes a Gradio-based UI scaffold, preprocessing modules, and a dedicated dataset management layer; end-to-end FLUX and CatVTON inference remains a future integration milestone.
+FabricVision-AI is an AI-based virtual try-on system that is being structured around a modular preprocessing foundation for future model integration.
 
 ## Dataset Management Architecture
 
@@ -66,4 +66,4 @@ python src/preprocessing/run_preprocessing.py
 
 ### Dependencies
 
-The preprocessing stack relies on Pillow, OpenCV, NumPy, Albumentations, PyYAML, tqdm, and scikit-image.
+The preprocessing stack relies on Pillow, OpenCV, NumPy, Albumentations, PyYAML, and tqdm.
