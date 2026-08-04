@@ -1,0 +1,47 @@
+{
+  "garment_identity": {
+    "name": "shirt",
+    "gender": "men"
+  },
+  "classification": {
+    "category": "upper_wear",
+    "subcategory": "shirt",
+    "garment_type": "button-up"
+  },
+  "physical_attributes": {
+    "material": "cotton",
+    "construction": "sewn"
+  },
+  "visual_attributes": {
+    "colors": [
+      "blue",
+      "gray"
+    ],
+    "patterns": "solid",
+    "texture": "unknown"
+  },
+  "shape_and_fit": {
+    "silhouette": "slim",
+    "fit": "regular",
+    "sleeves": "long",
+    "neckline": "collared"
+  },
+  "style": {
+    "occasion": "casual",
+    "season": "summer"
+  },
+  "fabric_behaviour": {
+    "drape": "light",
+    "flexibility": "medium",
+    "thickness": "thin"
+  },
+  "virtual_try_on_attributes": {
+    "ease": "unknown",
+    "stretch": "unknown"
+  },
+  "ai_analysis": {
+    "confidence": 0.95,
+    "model_info": "qwen2.5-vl"
+  },
+  "source_image": "C:\\Users\\E VAHINI\\FabricVision-AI\\data\\processed_scale_test\\men\\02_4_full.jpg"
+}

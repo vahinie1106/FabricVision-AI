@@ -45,15 +45,15 @@ class QwenInferenceEngine:
             ]
             text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = processor(images=image, text=text, return_tensors="pt")
+            inputs = inputs.to(model.device)
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=256,
                 do_sample=False,
-                temperature=0.0,
-                top_p=1.0,
                 pad_token_id=processor.tokenizer.eos_token_id,
             )
             response = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+            self.logger.info("RAW MODEL RESPONSE:\n%s\n", response)
             if not response or not response.strip():
                 return "{}"
             return response

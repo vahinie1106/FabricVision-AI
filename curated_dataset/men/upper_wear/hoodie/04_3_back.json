@@ -1,0 +1,44 @@
+{
+  "garment_identity": {
+    "name": "hoodie",
+    "gender": "men"
+  },
+  "classification": {
+    "category": "upper_wear",
+    "subcategory": "hoodie",
+    "garment_type": "hooded"
+  },
+  "physical_attributes": {
+    "material": "cotton",
+    "construction": "knit"
+  },
+  "visual_attributes": {
+    "colors": "white",
+    "patterns": "plain",
+    "texture": "unknown"
+  },
+  "shape_and_fit": {
+    "silhouette": "loose",
+    "fit": "relaxed",
+    "sleeves": "long",
+    "neckline": "hooded"
+  },
+  "style": {
+    "occasion": "casual",
+    "season": "all_season"
+  },
+  "fabric_behaviour": {
+    "drape": "light",
+    "flexibility": "medium",
+    "thickness": "thin"
+  },
+  "virtual_try_on_attributes": {
+    "ease": "unknown",
+    "stretch": "unknown"
+  },
+  "ai_analysis": {
+    "confidence": 0.95,
+    "model_info": "qwen2.5-vl"
+  },
+  "source_image": "C:\\Users\\E VAHINI\\FabricVision-AI\\data\\processed_scale_test\\men\\04_3_back.jpg"
+}

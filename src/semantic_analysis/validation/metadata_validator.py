@@ -13,11 +13,20 @@ class MetadataValidator:
         self.config_dir = Path(config_dir)
         self.logger = logging.getLogger("fabricvision.semantic_analysis.validation")
 
+    def _resolve_config_path(self, filename: str) -> Path:
+        primary = self.config_dir / filename
+        if primary.exists():
+            return primary
+        subdir = self.config_dir / "semantic_analysis" / filename
+        if subdir.exists():
+            return subdir
+        return primary
+
     def validate(self, metadata: dict[str, Any]) -> dict[str, Any]:
         """Return a validation result with issues and a pass/fail flag."""
         issues: list[dict[str, Any]] = []
-        schema = self._load_json(self.config_dir / "metadata_schema.json")
-        vocab = self._load_json(self.config_dir / "controlled_vocabularies.json")
+        schema = self._load_json(self._resolve_config_path("metadata_schema.json"))
+        vocab = self._load_json(self._resolve_config_path("controlled_vocabularies.json"))
 
         for field, expected in schema.get("required_fields", {}).items():
             value = self._get_value(metadata, field)
@@ -51,7 +60,7 @@ class MetadataValidator:
             metadata["fabric_behaviour"]["thickness"] = "medium"
 
         return {
-            "is_valid": True,
+            "is_valid": len(issues) == 0,
             "issues": issues,
             "schema": schema,
             "controlled_vocabularies": vocab,

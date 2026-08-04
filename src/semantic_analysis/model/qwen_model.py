@@ -27,7 +27,7 @@ class QwenModelLoader:
             return None, None
 
         try:
-            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+            from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration, BitsAndBytesConfig
         except Exception as exc:  # pragma: no cover - dependency availability guard
             self.logger.warning("Transformers could not be imported: %s", exc)
             return None, None
@@ -37,8 +37,23 @@ class QwenModelLoader:
         try:
             processor = AutoProcessor.from_pretrained(str(self.model_path), use_fast=True)
             dtype = self._resolve_dtype()
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(str(self.model_path), torch_dtype=dtype)
-            model.to(selected_device)
+            
+            if self.device == "auto" and selected_device == "cuda":
+                quantization_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=dtype,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4"
+                )
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                    str(self.model_path), 
+                    quantization_config=quantization_config,
+                    device_map="auto"
+                )
+            else:
+                model = Qwen2_5_VLForConditionalGeneration.from_pretrained(str(self.model_path), torch_dtype=dtype)
+                model.to(selected_device)
+                
             model.eval()
             self._model = model
             self._processor = processor

@@ -1,0 +1,23 @@
+{
+  "required_fields": {
+    "garment_identity.name": true,
+    "garment_identity.gender": true,
+    "classification.category": true,
+    "classification.subcategory": true,
+    "classification.garment_type": true,
+    "physical_attributes.material": true,
+    "physical_attributes.construction": true,
+    "visual_attributes.colors": true,
+    "visual_attributes.patterns": true,
+    "shape_and_fit.silhouette": true,
+    "shape_and_fit.fit": true,
+    "shape_and_fit.sleeves": true,
+    "shape_and_fit.neckline": true,
+    "style.occasion": true,
+    "style.season": true,
+    "fabric_behaviour.drape": true,
+    "fabric_behaviour.flexibility": true,
+    "fabric_behaviour.thickness": true,
+    "ai_analysis.confidence": true
+  }
+}

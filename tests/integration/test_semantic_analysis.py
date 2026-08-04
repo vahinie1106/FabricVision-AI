@@ -71,7 +71,7 @@ def test_pipeline_generates_metadata_and_organizes_image(tmp_path: Path) -> None
 
 def test_pipeline_loads_model_path_from_default_config_file() -> None:
     config = SemanticAnalysisConfig(config_dir="configs", output_root="curated_dataset", device="cpu")
-    pipeline = SemanticAnalysisPipeline(config=config, inference_engine=FakeInferenceEngine({}), model_loader=None)
+    pipeline = SemanticAnalysisPipeline(config=config, inference_engine=FakeInferenceEngine({}), model_loader=LoadAwareModelLoader())
 
     assert Path(pipeline.config.model_path).exists()
     assert Path(pipeline.config.model_path).name == "Qwen2.5-VL-3B-Instruct"

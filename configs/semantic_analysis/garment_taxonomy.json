@@ -1,0 +1,14 @@
+{
+  "categories": [
+    "upper_wear",
+    "lower_wear",
+    "dresses",
+    "traditional"
+  ],
+  "subcategories": {
+    "upper_wear": ["shirt", "hoodie", "jacket", "sweater", "blazer"],
+    "lower_wear": ["jeans", "trousers", "shorts"],
+    "dresses": ["dress", "jumpsuit"],
+    "traditional": ["kurta", "lehenga", "saree"]
+  }
+}

@@ -8,7 +8,13 @@ from src.preprocessing.preprocessing_pipeline import PreprocessingConfig, Prepro
 
 
 def load_config(config_path: str | Path | None = None) -> PreprocessingConfig:
-    config_path = Path(config_path or "configs/preprocessing_config.yaml")
+    if config_path is None:
+        p = Path("configs/preprocessing/preprocessing_config.yaml")
+        if not p.exists():
+            p = Path("configs/preprocessing_config.yaml")
+        config_path = p
+    else:
+        config_path = Path(config_path)
     with config_path.open("r", encoding="utf-8") as handle:
         raw_config = yaml.safe_load(handle)
 

@@ -12,6 +12,7 @@ from src.semantic_analysis.model.qwen_model import QwenModelLoader
 from src.semantic_analysis.organization.dataset_organizer import DatasetOrganizer
 from src.semantic_analysis.parsing.response_parser import ResponseParser
 from src.semantic_analysis.prompting.prompt_builder import PromptBuilder
+from src.semantic_analysis.validation.metadata_normalizer import MetadataNormalizer
 from src.semantic_analysis.validation.metadata_validator import MetadataValidator
 
 
@@ -37,6 +38,7 @@ class SemanticAnalysisPipeline:
         self.prompt_builder = PromptBuilder(self.config.config_dir)
         self.response_parser = ResponseParser()
         self.metadata_builder = MetadataBuilder()
+        self.normalizer = MetadataNormalizer(self.config.config_dir)
         self.validator = MetadataValidator(self.config.config_dir)
         self.organizer = DatasetOrganizer(self.config.output_root)
         self.model_loader = model_loader or QwenModelLoader(self.config.model_path, self.config.device)
@@ -54,6 +56,7 @@ class SemanticAnalysisPipeline:
         raw_response = self.inference_engine.run(image_path, prompt)
         parsed_response = self.response_parser.parse(raw_response)
         metadata = self.metadata_builder.build(parsed_response, image_path)
+        metadata = self.normalizer.normalize(metadata)
         validation_result = self.validator.validate(metadata)
         if not validation_result["is_valid"]:
             return {

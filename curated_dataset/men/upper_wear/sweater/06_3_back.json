@@ -1,0 +1,44 @@
+{
+  "garment_identity": {
+    "name": "sweater",
+    "gender": "men"
+  },
+  "classification": {
+    "category": "upper_wear",
+    "subcategory": "sweater",
+    "garment_type": "knitwear"
+  },
+  "physical_attributes": {
+    "material": "cotton",
+    "construction": "knitted"
+  },
+  "visual_attributes": {
+    "colors": "yellow",
+    "patterns": "solid",
+    "texture": "unknown"
+  },
+  "shape_and_fit": {
+    "silhouette": "round",
+    "fit": "loose",
+    "sleeves": "long",
+    "neckline": "v_neck"
+  },
+  "style": {
+    "occasion": "casual",
+    "season": "all_season"
+  },
+  "fabric_behaviour": {
+    "drape": "moderate",
+    "flexibility": "medium",
+    "thickness": "medium"
+  },
+  "virtual_try_on_attributes": {
+    "ease": "unknown",
+    "stretch": "unknown"
+  },
+  "ai_analysis": {
+    "confidence": 0.95,
+    "model_info": "qwen2.5-vl"
+  },
+  "source_image": "C:\\Users\\E VAHINI\\FabricVision-AI\\data\\processed_scale_test\\men\\06_3_back.jpg"
+}

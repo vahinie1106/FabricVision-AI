@@ -1,0 +1,44 @@
+{
+  "garment_identity": {
+    "name": "T-shirt",
+    "gender": "women"
+  },
+  "classification": {
+    "category": "upper_wear",
+    "subcategory": "shirt",
+    "garment_type": "T-shirt"
+  },
+  "physical_attributes": {
+    "material": "cotton",
+    "construction": "knit"
+  },
+  "visual_attributes": {
+    "colors": "green",
+    "patterns": "solid",
+    "texture": "unknown"
+  },
+  "shape_and_fit": {
+    "silhouette": "slim",
+    "fit": "loose",
+    "sleeves": "short",
+    "neckline": "v_neck"
+  },
+  "style": {
+    "occasion": "casual",
+    "season": "all_season"
+  },
+  "fabric_behaviour": {
+    "drape": "moderate",
+    "flexibility": "medium",
+    "thickness": "thin"
+  },
+  "virtual_try_on_attributes": {
+    "ease": "unknown",
+    "stretch": "unknown"
+  },
+  "ai_analysis": {
+    "confidence": 0.95,
+    "model_info": "qwen2.5-vl"
+  },
+  "source_image": "C:\\Users\\E VAHINI\\FabricVision-AI\\data\\processed_scale_test\\women\\64_1_front.jpg"
+}
