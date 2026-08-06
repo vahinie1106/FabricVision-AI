@@ -1,0 +1,13 @@
+{
+  "allowed_sleeves": [
+    "sleeveless",
+    "cap_sleeve",
+    "short_sleeve",
+    "half_sleeve",
+    "three_quarter_sleeve",
+    "full_sleeve",
+    "puff_sleeve",
+    "bell_sleeve",
+    "bishop_sleeve"
+  ]
+}

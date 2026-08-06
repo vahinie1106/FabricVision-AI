@@ -1,0 +1,48 @@
+{
+  "garment_identity": {
+    "name": "unknown",
+    "gender": "unisex"
+  },
+  "classification": {
+    "category": "upper_wear",
+    "subcategory": "shirt",
+    "garment_type": "unknown"
+  },
+  "physical_attributes": {
+    "material": "cotton",
+    "construction": "unknown"
+  },
+  "visual_attributes": {
+    "colors": [
+      "unknown"
+    ],
+    "patterns": [
+      "unknown"
+    ],
+    "texture": "unknown"
+  },
+  "shape_and_fit": {
+    "silhouette": "unknown",
+    "fit": "unknown",
+    "sleeves": "short",
+    "neckline": "crew"
+  },
+  "style": {
+    "occasion": "casual",
+    "season": "all_season"
+  },
+  "fabric_behaviour": {
+    "drape": "moderate",
+    "flexibility": "medium",
+    "thickness": "medium"
+  },
+  "virtual_try_on_attributes": {
+    "ease": "unknown",
+    "stretch": "unknown"
+  },
+  "ai_analysis": {
+    "confidence": 0.0,
+    "model_info": "qwen2.5-vl"
+  },
+  "source_image": "C:\\Users\\E VAHINI\\FabricVision-AI\\data\\uploads\\f528e8f437b74d2a9280eff0440f723e.png"
+}

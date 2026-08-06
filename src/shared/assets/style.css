@@ -1,0 +1,132 @@
+
+/* Premium Fabriplay CSS overrides for Gradio */
+
+:root {
+    --radius-xl: 16px;
+    --radius-lg: 12px;
+    --radius-md: 8px;
+    
+    --shadow-soft: 0 4px 24px rgba(0, 0, 0, 0.04);
+    --shadow-hover: 0 8px 32px rgba(0, 0, 0, 0.08);
+}
+
+/* Hide default Gradio footers and branding */
+footer { display: none !important; }
+.gradio-container { border: none !important; }
+
+/* Main app container */
+#app-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 24px;
+}
+
+/* Professional Typography */
+h1, h2, h3, h4, h5, h6 {
+    font-family: 'Inter', 'Outfit', sans-serif !important;
+    font-weight: 600 !important;
+    color: var(--body-text-color) !important;
+    letter-spacing: -0.02em;
+}
+
+h1 {
+    font-size: 2.5rem !important;
+    margin-bottom: 0.5rem !important;
+}
+
+h2 {
+    font-size: 1.75rem !important;
+    margin-top: 1.5rem !important;
+    margin-bottom: 1rem !important;
+}
+
+/* Tab Navigation styled as a Header Navbar */
+.tabs {
+    border: none !important;
+    background: transparent !important;
+}
+
+.tab-nav {
+    border-bottom: 1px solid var(--border-color-primary) !important;
+    margin-bottom: 32px !important;
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+}
+
+.tab-nav button {
+    border: none !important;
+    background: transparent !important;
+    font-size: 1rem !important;
+    font-weight: 500 !important;
+    padding: 16px 8px !important;
+    color: var(--body-text-color-subdued) !important;
+    transition: all 0.2s ease !important;
+}
+
+.tab-nav button.selected {
+    color: var(--color-accent) !important;
+    border-bottom: 2px solid var(--color-accent) !important;
+}
+
+.tab-nav button:hover:not(.selected) {
+    color: var(--body-text-color) !important;
+}
+
+/* Soft Cards */
+.gradio-box, .gradio-group {
+    background: white !important;
+    border: 1px solid var(--border-color-primary) !important;
+    border-radius: var(--radius-xl) !important;
+    box-shadow: var(--shadow-soft) !important;
+    padding: 24px !important;
+    transition: box-shadow 0.3s ease !important;
+}
+
+.gradio-box:hover {
+    box-shadow: var(--shadow-hover) !important;
+}
+
+/* Rounded inputs and buttons */
+input, textarea, select, .gr-dropdown {
+    border-radius: var(--radius-md) !important;
+    border: 1px solid var(--border-color-primary) !important;
+    background-color: var(--background-fill-secondary) !important;
+    transition: all 0.2s ease !important;
+}
+
+input:focus, textarea:focus, select:focus {
+    border-color: var(--color-accent) !important;
+    box-shadow: 0 0 0 3px rgba(var(--color-accent-rgb), 0.1) !important;
+}
+
+button.primary {
+    border-radius: var(--radius-lg) !important;
+    background: var(--color-accent) !important;
+    color: white !important;
+    font-weight: 600 !important;
+    border: none !important;
+    box-shadow: 0 4px 12px rgba(var(--color-accent-rgb), 0.2) !important;
+    transition: all 0.2s ease !important;
+}
+
+button.primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(var(--color-accent-rgb), 0.3) !important;
+}
+
+/* Image Previews */
+.image-preview {
+    border-radius: var(--radius-lg) !important;
+    overflow: hidden !important;
+    border: 1px solid var(--border-color-primary) !important;
+}
+
+/* Hero Section */
+.hero-section {
+    text-align: center;
+    padding: 64px 24px;
+    background: linear-gradient(135deg, var(--background-fill-primary) 0%, var(--background-fill-secondary) 100%);
+    border-radius: var(--radius-xl);
+    margin-bottom: 48px;
+}

@@ -1,14 +1,91 @@
 {
-  "categories": [
+  "version": "2.0.0",
+  "gender_categories": {
+    "men": {
+      "items": [
+        "shirt",
+        "t_shirt",
+        "polo_shirt",
+        "hoodie",
+        "jacket",
+        "blazer",
+        "kurta",
+        "sherwani",
+        "jeans",
+        "trousers",
+        "shorts",
+        "sweatshirt",
+        "sweater",
+        "suit"
+      ]
+    },
+    "women": {
+      "traditional": [
+        "saree",
+        "lehenga",
+        "kurti",
+        "anarkali",
+        "salwar_suit",
+        "blouse"
+      ],
+      "western": [
+        "dress",
+        "gown",
+        "top",
+        "skirt",
+        "jumpsuit",
+        "jacket",
+        "blazer",
+        "crop_top",
+        "cardigan"
+      ]
+    },
+    "unisex": {
+      "items": [
+        "t_shirt",
+        "hoodie",
+        "sweatshirt",
+        "jacket",
+        "joggers",
+        "tracksuit",
+        "scarf"
+      ]
+    }
+  },
+  "master_categories": [
     "upper_wear",
     "lower_wear",
     "dresses",
-    "traditional"
+    "traditional",
+    "outerwear",
+    "activewear",
+    "swimwear",
+    "innerwear",
+    "footwear",
+    "accessories",
+    "suits_and_blazers",
+    "jumpsuits_and_rompers"
   ],
-  "subcategories": {
-    "upper_wear": ["shirt", "hoodie", "jacket", "sweater", "blazer"],
-    "lower_wear": ["jeans", "trousers", "shorts"],
-    "dresses": ["dress", "jumpsuit"],
-    "traditional": ["kurta", "lehenga", "saree"]
+  "garment_identity": {
+    "gender": ["men", "women", "unisex", "unknown"],
+    "season": ["summer", "winter", "spring", "autumn", "fall", "all_season", "unknown"],
+    "occasion": ["casual", "formal", "sports", "traditional", "wedding", "party", "business_casual", "lounge", "unknown"]
+  },
+  "physical_attributes": {
+    "fabric": ["cotton", "polyester", "wool", "silk", "linen", "denim", "leather", "fleece", "nylon", "spandex", "velvet", "corduroy", "satin", "chiffon", "lace", "rayon", "viscose", "cashmere", "unknown"],
+    "texture": ["smooth", "rough", "ribbed", "quilted", "fuzzy", "metallic", "soft", "woven", "knitted", "unknown"],
+    "color": ["black", "white", "red", "blue", "green", "yellow", "gray", "beige", "pink", "purple", "orange", "brown", "navy_blue", "maroon", "sky_blue", "teal", "olive_green", "burgundy", "mustard", "peach", "lavender", "cyan", "magenta", "multi", "unknown"],
+    "pattern": ["solid", "striped", "checked", "floral", "printed", "plain", "embroidered", "geometric", "abstract", "color_block", "polka_dot", "spotted", "plaid", "houndstooth", "camouflage", "checkered", "dots", "animal print", "vertical stripes", "unknown"]
+  },
+  "construction": {
+    "neckline": ["crew", "v_neck", "round", "hooded", "collared", "off_the_shoulder", "sweetheart", "scoop", "square", "mock_neck", "boat_neck", "halter", "turtleneck", "cowl_neck", "v-neck", "unknown", "none"],
+    "sleeve": ["short", "long", "sleeveless", "three_quarter", "cap", "puff", "bell", "unknown", "none"],
+    "silhouette": ["fitted", "straight", "a_line", "oversized", "asymmetric", "hourglass", "trapeze", "relaxed", "unknown"],
+    "fit": ["slim", "regular", "loose", "oversized", "skinny", "relaxed", "tailored", "unknown"]
+  },
+  "style": {
+    "aesthetic": ["minimalist", "modern", "streetwear", "vintage", "bohemian", "classic", "romantic", "athleisure", "preppy", "gothic", "chic", "unknown"],
+    "trend": ["timeless", "trending", "seasonal", "retro", "futuristic", "classic", "unknown"],
+    "fashion_style": ["casual_wear", "formal_wear", "street_style", "haute_couture", "resort_wear", "workwear", "loungewear", "ethnic", "unknown"]
   }
 }

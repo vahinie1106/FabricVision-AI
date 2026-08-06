@@ -69,6 +69,57 @@ flowchart LR
 
 The architecture for FabricVision-AI is designed to be simple at the current stage of the project while remaining scalable for future development. It balances clarity and flexibility by separating user-facing concerns from AI execution logic and by keeping the workflow explicit and easy to extend. This foundation is suitable for continued development as the system transitions from a UI prototype toward a fully integrated inference pipeline.
 
+### 1.7 Production Data Flow (Phase 8 Data Foundation)
+
+To support enterprise-scale dataset ingestion and metadata-driven AI workflows, FabricVision-AI implements a dedicated production data pipeline layer:
+
+```mermaid
+flowchart TD
+    A["Raw Dataset Ingestion (DeepFashion / DeepFashion2 / Fashionpedia / Local)"] --> B["Image Preprocessing & Normalization"]
+    B --> C["Qwen2.5-VL Multimodal Semantic Extraction"]
+    C --> D["Metadata Validation (Pydantic & Controlled Vocabularies)"]
+    D --> E["Persistent Metadata Store (data/metadata/garment_000001.json)"]
+    E --> F["Future Fashion Knowledge Index (FAISS / ChromaDB)"]
+    F --> G["FLUX Garment Generation / CatVTON Virtual Try-On"]
+```
+
+#### Data Flow Sequence:
+1. **Dataset Ingestion**: Polymorphic loader adapters (`BaseDatasetLoader`) ingest external benchmark datasets into uniform raw/processed image paths.
+2. **Preprocessing**: Images are standardized, normalized, and stored under `data/processed/`.
+3. **Qwen2.5-VL Semantic Extraction**: Multimodal vision LLM extracts visual attributes, physical characteristics, and construction details.
+4. **Metadata Validation**: `MetadataValidator` enforces Pydantic schema contracts (`GarmentMetadata`) and controlled vocabulary checks (`configs/controlled_vocabularies.json`).
+
+### 1.8 Dataset Architecture Specifications
+
+FabricVision-AI decouples dataset lifecycle management across three dedicated root storage layers:
+
+#### 1. `data/`
+Production dataset directory structure managing the lifecycle of images, metadata, and generated artifacts:
+- **`raw/`**: Original, untouched ingestion datasets (`garments/`, `men/`, `women/`). Immutable source of truth.
+- **`processed/`**: AI-ready standardized images (`resized/`, `normalized/`, `augmented/`).
+- **`samples/`**: Lightweight micro-test images (`test_images/`, `validation/`) used for fast unit tests and pipeline debugging.
+- **`metadata/`**: Canonical Pydantic schema JSON records (`garment_000001.json`).
+- **`annotations/`**: Segmentation masks, bounding box coordinates, and landmark keypoints.
+- **`outputs/`**: Model generation outputs partitioned into `generated_garments/` and `virtual_tryon/`.
+- **`archive/`**: Consolidated historical validation runs (`processed_validation/`) and legacy scale tests (`legacy_scale_testing/`).
+
+#### 2. `datasets/`
+Knowledge resources and swatch reference assets:
+- **`colors/`**: Reference color swatches and palette definitions.
+- **`fabrics_materials/`**: High-resolution material texture swatches (cotton, denim, silk, wool).
+- **`fabrics_patterns/`**: Pattern swatches (solid, striped, plaid, floral).
+- **`fashion_garments/`**: Reference garment benchmark categories.
+- **`archive/`**: Historical scale testing data and early sample management inputs.
+
+#### 3. `curated_dataset/`
+Active production output destination for the **Qwen2.5-VL Multimodal Semantic Analysis Engine**:
+- Contains categorized garment subdirectories (`men/`, `women/`, `unisex/`).
+- Stores visual intelligence outputs, extracted JSON metadata, and validated semantic attributes.
+
+5. **Metadata Store**: `MetadataStore` assigns sequential IDs (`garment_000001`) and writes validated JSON records to `data/metadata/`.
+6. **Future Fashion Knowledge Index**: Dense vector embeddings (OpenCLIP/Qwen2.5-VL) indexed in FAISS and ChromaDB for retrieval-augmented fashion search.
+7. **Generation & Virtual Try-On**: Downstream AI pipelines (FLUX generation, CatVTON try-on) execute with high-confidence metadata and retrieved style context.
+
 ## 2. Architectural Design Principles
 
 Architectural principles are essential for FabricVision-AI because the system combines user interaction, image processing, AI inference, and future expansion into a single product experience. A well-defined architectural foundation ensures that the application remains understandable, resilient, and adaptable as the project grows from an early prototype into a more complete and production-oriented solution. These principles provide a shared engineering standard for how the system should be structured, evolved, and reviewed over time.
@@ -941,3 +992,19 @@ The AI pipeline is structured so that the garment-generation stage and the virtu
 The software modules and repository structure reinforce the architectural philosophy by preserving separation of concerns at both the logical and physical levels. Configuration is treated as a managed concern rather than a hardcoded assumption, and the system is designed to support testing, diagnostics, and future growth. Security and validation considerations strengthen the architecture by ensuring that input handling is responsible, failures are managed gracefully, and outputs are treated with appropriate care.
 
 Taken together, these architectural choices establish a foundation for a maintainable, scalable, and production-quality AI application. FabricVision-AI is therefore not only designed for its current workflow, but also prepared for future model evolution, additional features, and continued development as a strong and coherent software system.
+
+## 6. Production Data Flow
+
+The Production Data Pipeline introduces a scalable, strictly typed architecture for managing vast external dataset inputs.
+
+`mermaid
+flowchart TD
+    A[Image Dataset] --> B[Preprocessing]
+    B --> C[Qwen2.5-VL Semantic Extraction]
+    C --> D[Metadata Validation]
+    D --> E[Fashion Knowledge Store]
+    E --> F[Generation / Try-On]
+`
+
+### Purpose
+To transition from a flat-file folder structure to a unique-ID-driven metadata store. This flow guarantees that all processed garments, regardless of their source (DeepFashion, Fashionpedia, custom datasets), are normalized against strict Pydantic schemas before being indexed for generation workflows.

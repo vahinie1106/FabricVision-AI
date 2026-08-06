@@ -1,0 +1,36 @@
+{
+  "gender": "women",
+  "garment_type": "dress",
+  "material": "chiffon",
+  "color": "pastel_pink",
+  "pattern": "solid",
+  "sleeve": "short_sleeve",
+  "neckline": "square_neck",
+  "size": "M",
+  "model": "FLUX.1-schnell",
+  "prompt_version": "v1.0",
+  "seed": 42,
+  "positive_prompt": "A high-resolution studio product photograph of a women dress crafted from chiffon fabric featuring a solid pattern and smooth texture. Design specifications: square neckline, short-sleeves, size M, classic style. Color palette: pastel pink. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+  "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+  "generation_parameters": {
+    "height": 1024,
+    "width": 1024,
+    "num_inference_steps": 30,
+    "guidance_scale": 7.5
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "dress",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      1024,
+      1024
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "saved_image_path": "outputs\\generated_garments\\images\\benchmark_04_women_dress.png"
+}

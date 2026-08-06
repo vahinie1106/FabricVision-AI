@@ -1,0 +1,16 @@
+{
+  "allowed_necklines": [
+    "round_neck",
+    "v_neck",
+    "u_neck",
+    "collar_neck",
+    "boat_neck",
+    "square_neck",
+    "sweetheart_neck",
+    "halter_neck",
+    "high_neck",
+    "mandarin_collar",
+    "off_shoulder",
+    "keyhole_neck"
+  ]
+}

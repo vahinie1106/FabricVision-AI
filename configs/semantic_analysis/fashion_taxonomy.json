@@ -1,0 +1,114 @@
+{
+  "genders": [
+    "Female",
+    "Male",
+    "Unisex"
+  ],
+  "garment_types": [
+    "T-Shirt",
+    "Shirt",
+    "Kurta",
+    "Hoodie",
+    "Blazer",
+    "Dress",
+    "Saree",
+    "Lehenga",
+    "Skirt",
+    "Jeans",
+    "Trousers",
+    "Top"
+  ],
+  "color_palettes": [
+    "Black",
+    "White",
+    "Red",
+    "Blue",
+    "Green",
+    "Yellow",
+    "Pink",
+    "Purple",
+    "Orange",
+    "Brown",
+    "Beige",
+    "Grey",
+    "Navy Blue",
+    "Pastel",
+    "Monochrome",
+    "Multicolor",
+    "Metallic"
+  ],
+  "patterns": [
+    "Solid",
+    "Floral",
+    "Striped",
+    "Checked",
+    "Printed",
+    "Embroidery",
+    "Geometric",
+    "Abstract",
+    "Polka Dot",
+    "Traditional"
+  ],
+  "necklines": [
+    "Round Neck",
+    "V Neck",
+    "U Neck",
+    "Boat Neck",
+    "Square Neck",
+    "Sweetheart Neck",
+    "Halter Neck",
+    "High Neck",
+    "Collar Neck",
+    "Off Shoulder",
+    "One Shoulder"
+  ],
+  "sleeve_lengths": [
+    "Sleeveless",
+    "Cap Sleeve",
+    "Short Sleeve",
+    "Half Sleeve",
+    "Three Quarter Sleeve",
+    "Full Sleeve",
+    "Bell Sleeve",
+    "Puff Sleeve",
+    "Balloon Sleeve"
+  ],
+  "fabrics": [
+    "Cotton",
+    "Silk",
+    "Linen",
+    "Denim",
+    "Wool",
+    "Velvet",
+    "Chiffon",
+    "Polyester",
+    "Leather",
+    "Satin",
+    "Rayon"
+  ],
+  "styles": [
+    "Casual",
+    "Formal",
+    "Traditional",
+    "Party Wear",
+    "Streetwear",
+    "Office Wear",
+    "Wedding Wear",
+    "Luxury Fashion"
+  ],
+  "fits": [
+    "Slim Fit",
+    "Regular Fit",
+    "Oversized",
+    "Loose Fit",
+    "Body Fit"
+  ],
+  "occasions": [
+    "Casual",
+    "Party",
+    "Work",
+    "Festival",
+    "Wedding",
+    "Sport"
+  ]
+}

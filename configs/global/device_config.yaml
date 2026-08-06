@@ -1,0 +1,5 @@
+# Global Device Configuration
+device: auto
+precision: bfloat16
+cuda_alloc_conf: expandable_segments:True
+fallback_enabled: true

@@ -1,6 +1,6 @@
 """Entry point for launching the FabricVision-AI Gradio UI."""
 
-from src.ui.main_ui import create_ui
+from src.app.main_ui import create_ui
 
 
 def main() -> None:

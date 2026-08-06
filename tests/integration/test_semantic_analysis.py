@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.semantic_analysis.pipeline import SemanticAnalysisPipeline, SemanticAnalysisConfig
+from src.features.semantic_analysis.pipeline import SemanticAnalysisPipeline, SemanticAnalysisConfig
 
 
 class FakeInferenceEngine:
@@ -94,7 +94,7 @@ def test_pipeline_initializes_model_loader_before_inference() -> None:
 
 
 def test_metadata_validator_rejects_unknown_vocab_value() -> None:
-    from src.semantic_analysis.validation import MetadataValidator
+    from src.features.semantic_analysis.validation import MetadataValidator
 
     validator = MetadataValidator(config_dir="configs")
     metadata = {

@@ -1,0 +1,6 @@
+default_num_inference_steps: 4
+default_guidance_scale: 3.5
+default_height: 1024
+default_width: 1024
+seed: 42
+output_root: outputs/generated_garments

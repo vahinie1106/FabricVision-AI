@@ -1,0 +1,19 @@
+{
+  "required_fields": [
+    "gender",
+    "garment_type",
+    "fabric_material",
+    "color",
+    "pattern",
+    "sleeve",
+    "neckline",
+    "size"
+  ],
+  "allowed_sizes": [
+    "XS",
+    "S",
+    "M",
+    "L",
+    "XL"
+  ]
+}

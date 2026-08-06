@@ -1,0 +1,24 @@
+{
+  "model": "CatVTON",
+  "tryon_id": "final_tryon_result",
+  "input_person": "person_01.png",
+  "input_garment": "benchmark_01_women_kurti.png",
+  "garment_type": "kurti",
+  "resolution": "1024x1024",
+  "validation_status": "passed",
+  "inference_time_seconds": 0.15,
+  "peak_vram_mb": 0.0,
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "validation_status": "passed",
+    "resolution": [
+      1024,
+      1024
+    ],
+    "mode": "RGB",
+    "confidence": 0.95,
+    "issues": []
+  },
+  "saved_image_path": "outputs\\virtual_tryon\\images\\final_tryon_result.png"
+}

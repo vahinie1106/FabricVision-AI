@@ -1,0 +1,6 @@
+# CatVTON Virtual Try-On Configuration
+model_name: CatVTON
+weights_path: models/CatVTON
+device: auto
+mixed_precision: fp16
+mask_generation: auto

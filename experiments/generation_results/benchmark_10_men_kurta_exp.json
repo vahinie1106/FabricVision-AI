@@ -1,0 +1,36 @@
+{
+  "gender": "men",
+  "garment_type": "kurta",
+  "material": "cotton",
+  "color": "mustard_yellow",
+  "pattern": "printed",
+  "sleeve": "short_sleeve",
+  "neckline": "mandarin_collar",
+  "size": "L",
+  "model": "FLUX.1-schnell",
+  "prompt_version": "v1.0",
+  "seed": 42,
+  "positive_prompt": "A high-resolution studio product photograph of a men kurta crafted from cotton fabric featuring a printed pattern and smooth texture. Design specifications: mandarin collar, short-sleeves, size L, classic style. Color palette: mustard yellow. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+  "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+  "generation_parameters": {
+    "height": 1024,
+    "width": 1024,
+    "num_inference_steps": 30,
+    "guidance_scale": 7.5
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "kurta",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      1024,
+      1024
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "saved_image_path": "outputs\\generated_garments\\images\\benchmark_10_men_kurta.png"
+}

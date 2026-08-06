@@ -1,0 +1,6 @@
+model_path: models/flux
+device: auto
+precision: bfloat16
+enable_sequential_cpu_offload: true
+enable_attention_slicing: true
+max_sequence_length: 512

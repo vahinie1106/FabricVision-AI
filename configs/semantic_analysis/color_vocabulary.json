@@ -1,0 +1,20 @@
+{
+  "basic_colors": [
+    "black",
+    "white",
+    "red",
+    "blue",
+    "green",
+    "yellow"
+  ],
+  "fashion_colors": [
+    "navy_blue",
+    "royal_blue",
+    "maroon",
+    "beige",
+    "olive_green",
+    "pastel_pink",
+    "lavender",
+    "cream"
+  ]
+}

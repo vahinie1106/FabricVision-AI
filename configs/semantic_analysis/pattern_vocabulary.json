@@ -1,0 +1,15 @@
+{
+  "allowed_patterns": [
+    "solid",
+    "floral",
+    "striped",
+    "checked",
+    "geometric",
+    "printed",
+    "embroidered",
+    "paisley",
+    "polka_dot",
+    "abstract",
+    "traditional_motifs"
+  ]
+}

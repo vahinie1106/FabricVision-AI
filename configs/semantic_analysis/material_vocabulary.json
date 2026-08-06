@@ -1,0 +1,23 @@
+{
+  "natural": [
+    "cotton",
+    "silk",
+    "linen",
+    "wool",
+    "jute",
+    "hemp"
+  ],
+  "synthetic": [
+    "polyester",
+    "nylon",
+    "rayon",
+    "acrylic",
+    "spandex"
+  ],
+  "blended": [
+    "cotton_blend",
+    "silk_blend",
+    "polyester_blend",
+    "linen_blend"
+  ]
+}

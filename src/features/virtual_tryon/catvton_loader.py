@@ -1,0 +1,122 @@
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+from typing import Optional, Any
+
+from src.common.models.device_manager import DeviceManager
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+
+class CatVTONModelLoader:
+    """Load and manage CatVTON virtual try-on model weights with production 6GB VRAM safety."""
+
+    def __init__(
+        self,
+        model_path: str | Path = "models/CatVTON",
+        device: str = "auto",
+        precision: str = "bfloat16",
+        allow_fallback: bool = True,
+        base_ckpt: str = "runwayml/stable-diffusion-inpainting",
+    ) -> None:
+        self.model_path = Path(model_path)
+        self.device_setting = device
+        self.precision = precision
+        self.allow_fallback = allow_fallback
+        self.base_ckpt = base_ckpt
+        self.logger = logging.getLogger("fabricvision.virtual_tryon.model_loader")
+        self.device_manager = DeviceManager()
+        self._pipeline = None
+
+    def _is_complete_local_dir(self) -> bool:
+        if not self.model_path.exists():
+            return False
+        weight_files = list(self.model_path.rglob("*.safetensors")) + list(self.model_path.rglob("*.bin")) + list(self.model_path.rglob("*.pth")) + list(self.model_path.rglob("*.pkl"))
+        return len(weight_files) >= 1
+
+    def load(self) -> Any | None:
+        """Load CatVTON diffusion pipeline with bfloat16, CPU offload, and attention slicing."""
+        if self._pipeline is not None:
+            return self._pipeline
+
+        target_device = self.device_manager.resolve_device(self.device_setting)
+        self.logger.info("Initializing CatVTON")
+
+        if not self._is_complete_local_dir():
+            msg = f"CatVTON model weights not found at {self.model_path}."
+            self.logger.warning(msg)
+            if not self.allow_fallback:
+                raise RuntimeError(msg)
+            return None
+
+        dtype = None
+        if torch is not None:
+            dtype = torch.bfloat16 if (self.precision == "bfloat16" and torch.cuda.is_available()) else torch.float32
+
+        try:
+            pipeline = None
+            self.logger.info("Loading model weights")
+            self.logger.info("Loading VAE")
+
+            # Check if custom CatVTON repo pipeline is present
+            catvton_pipeline_script = self.model_path / "model" / "pipeline.py"
+            if catvton_pipeline_script.exists():
+                catvton_dir_str = str(self.model_path.resolve())
+                if catvton_dir_str not in sys.path:
+                    sys.path.insert(0, catvton_dir_str)
+                try:
+                    from model.pipeline import CatVTONPipeline  # type: ignore
+                    pipeline = CatVTONPipeline(
+                        base_ckpt=self.base_ckpt,
+                        attn_ckpt=str(self.model_path),
+                        attn_ckpt_version="mix",
+                        weight_dtype=dtype,
+                        device=target_device,
+                    )
+                except Exception as cat_exc:
+                    self.logger.warning("Could not instantiate native CatVTONPipeline: %s; trying AutoPipeline", cat_exc)
+
+            if pipeline is None:
+                from diffusers import AutoPipelineForInpainting
+                pipeline = AutoPipelineForInpainting.from_pretrained(
+                    str(self.model_path),
+                    torch_dtype=dtype,
+                )
+
+            if target_device == "cuda":
+                self.logger.info("Moving model to CUDA")
+                if hasattr(pipeline, "enable_sequential_cpu_offload"):
+                    pipeline.enable_sequential_cpu_offload()
+                    self.logger.info("CPU offloading enabled")
+                if hasattr(pipeline, "enable_attention_slicing"):
+                    pipeline.enable_attention_slicing()
+                    self.logger.info("Attention slicing enabled")
+            else:
+                if hasattr(pipeline, "to"):
+                    pipeline.to(target_device)
+
+            self.logger.info("CatVTON ready")
+            self._pipeline = pipeline
+            return pipeline
+        except Exception as exc:
+            msg = f"Failed to load CatVTON model from '{self.model_path}': {exc}"
+            self.logger.warning(msg)
+            if not self.allow_fallback:
+                raise RuntimeError(msg) from exc
+            return None
+
+    def unload(self) -> None:
+        """Unload pipeline and clear GPU VRAM."""
+        if self._pipeline is not None:
+            self.logger.info("Unloading CatVTON model weights...")
+            self._pipeline = None
+            self.device_manager.clear_vram()
+
+    @property
+    def pipeline(self) -> Any | None:
+        return self._pipeline

@@ -1,0 +1,24 @@
+{
+  "model": "CatVTON",
+  "tryon_id": "tryon_benchmark_001_-473Wx593H-443010987",
+  "input_person": "person_01.png",
+  "input_garment": "benchmark_001_-473Wx593H-443010987.png",
+  "garment_type": "kurti",
+  "resolution": "1024x1024",
+  "validation_status": "passed",
+  "inference_time_seconds": 18.43,
+  "peak_vram_mb": 4990.8828125,
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "validation_status": "passed",
+    "resolution": [
+      1024,
+      1024
+    ],
+    "mode": "RGB",
+    "confidence": 0.95,
+    "issues": []
+  },
+  "saved_image_path": "outputs\\virtual_tryon\\images\\tryon_benchmark_001_-473Wx593H-443010987.png"
+}

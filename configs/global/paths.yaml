@@ -1,0 +1,7 @@
+# Global System Paths
+base_dir: .
+models_dir: models
+data_dir: data
+outputs_dir: data/outputs
+uploads_dir: data/raw
+configs_dir: configs

@@ -1,3 +1,0 @@
-output_root: curated_dataset
-model_path: models/Qwen2.5-VL-3B-Instruct
-device: auto

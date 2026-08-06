@@ -1,0 +1,38 @@
+{
+  "gender": "men",
+  "garment_type": "shirt",
+  "material": "cotton",
+  "color": "blue",
+  "pattern": "solid",
+  "sleeve": "short_sleeve",
+  "neckline": "round_neck",
+  "size": "M",
+  "model": "FLUX.1-schnell",
+  "prompt_version": "v1.0",
+  "generation_mode": "Fast Preview",
+  "seed": 42,
+  "positive_prompt": "A high-resolution studio product photograph of a men shirt crafted from cotton fabric featuring a solid pattern and soft texture. Design specifications: round neckline, short-sleeves, size M, casual style. Color palette: blue. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+  "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+  "generation_parameters": {
+    "height": 1024,
+    "width": 1024,
+    "num_inference_steps": 4,
+    "guidance_scale": 3.5,
+    "generation_mode": "Fast Preview"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "shirt",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      1024,
+      1024
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "saved_image_path": "outputs\\generated_garments\\images\\garment_afb6c7ba.png"
+}

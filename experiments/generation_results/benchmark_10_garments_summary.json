@@ -1,0 +1,362 @@
+[
+  {
+    "gender": "women",
+    "garment_type": "kurti",
+    "material": "cotton",
+    "color": "royal_blue",
+    "pattern": "floral",
+    "sleeve": "three_quarter_sleeve",
+    "neckline": "round_neck",
+    "size": "M",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a women kurti crafted from cotton fabric featuring a floral pattern and smooth texture. Design specifications: round neckline, three-quarter-sleeves, size M, classic style. Color palette: royal blue. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "kurti",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_01_women_kurti.png"
+  },
+  {
+    "gender": "women",
+    "garment_type": "saree",
+    "material": "silk",
+    "color": "crimson",
+    "pattern": "paisley",
+    "sleeve": "short_sleeve",
+    "neckline": "sweetheart_neck",
+    "size": "M",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a women saree crafted from silk fabric featuring a paisley pattern and smooth texture. Design specifications: sweetheart neckline, short-sleeves, size M, classic style. Color palette: crimson. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "saree",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_02_women_saree.png"
+  },
+  {
+    "gender": "women",
+    "garment_type": "lehenga",
+    "material": "velvet",
+    "color": "emerald_green",
+    "pattern": "embroidered",
+    "sleeve": "sleeveless",
+    "neckline": "v_neck",
+    "size": "S",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a women lehenga crafted from velvet fabric featuring a embroidered pattern and smooth texture. Design specifications: v neckline, sleeveless, size S, classic style. Color palette: emerald green. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "lehenga",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_03_women_lehenga.png"
+  },
+  {
+    "gender": "women",
+    "garment_type": "dress",
+    "material": "chiffon",
+    "color": "pastel_pink",
+    "pattern": "solid",
+    "sleeve": "short_sleeve",
+    "neckline": "square_neck",
+    "size": "M",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a women dress crafted from chiffon fabric featuring a solid pattern and smooth texture. Design specifications: square neckline, short-sleeves, size M, classic style. Color palette: pastel pink. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "dress",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_04_women_dress.png"
+  },
+  {
+    "gender": "women",
+    "garment_type": "jacket",
+    "material": "denim",
+    "color": "black",
+    "pattern": "solid",
+    "sleeve": "short_sleeve",
+    "neckline": "round_neck",
+    "size": "L",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a women jacket crafted from denim fabric featuring a solid pattern and smooth texture. Design specifications: round neckline, short-sleeves, size L, classic style. Color palette: black. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "jacket",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_05_women_jacket.png"
+  },
+  {
+    "gender": "men",
+    "garment_type": "shirt",
+    "material": "linen",
+    "color": "white",
+    "pattern": "striped",
+    "sleeve": "short_sleeve",
+    "neckline": "round_neck",
+    "size": "L",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a men shirt crafted from linen fabric featuring a striped pattern and smooth texture. Design specifications: round neckline, short-sleeves, size L, classic style. Color palette: white. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "shirt",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_06_men_shirt.png"
+  },
+  {
+    "gender": "men",
+    "garment_type": "t_shirt",
+    "material": "cotton",
+    "color": "navy_blue",
+    "pattern": "solid",
+    "sleeve": "short_sleeve",
+    "neckline": "round_neck",
+    "size": "M",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a men t shirt crafted from cotton fabric featuring a solid pattern and smooth texture. Design specifications: round neckline, short-sleeves, size M, classic style. Color palette: navy blue. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "t_shirt",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_07_men_t_shirt.png"
+  },
+  {
+    "gender": "men",
+    "garment_type": "hoodie",
+    "material": "fleece",
+    "color": "charcoal_grey",
+    "pattern": "solid",
+    "sleeve": "short_sleeve",
+    "neckline": "round_neck",
+    "size": "XL",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a men hoodie crafted from fleece fabric featuring a solid pattern and smooth texture. Design specifications: round neckline, short-sleeves, size XL, classic style. Color palette: charcoal grey. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "hoodie",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_08_men_hoodie.png"
+  },
+  {
+    "gender": "men",
+    "garment_type": "jacket",
+    "material": "leather",
+    "color": "brown",
+    "pattern": "solid",
+    "sleeve": "short_sleeve",
+    "neckline": "round_neck",
+    "size": "L",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a men jacket crafted from leather fabric featuring a solid pattern and smooth texture. Design specifications: round neckline, short-sleeves, size L, classic style. Color palette: brown. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "jacket",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_09_men_jacket.png"
+  },
+  {
+    "gender": "men",
+    "garment_type": "kurta",
+    "material": "cotton",
+    "color": "mustard_yellow",
+    "pattern": "printed",
+    "sleeve": "short_sleeve",
+    "neckline": "mandarin_collar",
+    "size": "L",
+    "model": "FLUX.1-schnell",
+    "prompt_version": "v1.0",
+    "seed": 42,
+    "positive_prompt": "A high-resolution studio product photograph of a men kurta crafted from cotton fabric featuring a printed pattern and smooth texture. Design specifications: mandarin collar, short-sleeves, size L, classic style. Color palette: mustard yellow. Neutral plain white studio background, clean apparel flat lay, detailed seams, photorealistic 8k quality, standalone garment, no human model, no mannequin.",
+    "negative_prompt": "blurry, low resolution, human model, person, face, mannequin, body parts, noise, artifacts, distorted proportions, busy background, shadows, cropped garment",
+    "generation_parameters": {
+      "height": 1024,
+      "width": 1024,
+      "num_inference_steps": 30,
+      "guidance_scale": 7.5
+    },
+    "validation": {
+      "valid": true,
+      "is_valid": true,
+      "garment": "kurta",
+      "human_detected": false,
+      "mannequin_detected": false,
+      "confidence": 0.94,
+      "resolution": [
+        1024,
+        1024
+      ],
+      "mode": "RGB",
+      "issues": []
+    },
+    "saved_image_path": "outputs\\generated_garments\\images\\benchmark_10_men_kurta.png"
+  }
+]

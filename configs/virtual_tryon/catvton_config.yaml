@@ -1,0 +1,10 @@
+# CatVTON Virtual Try-On Subsystem Configuration
+model_path: "models/CatVTON"
+device: "auto"
+precision: "bfloat16"
+resolution:
+  height: 1024
+  width: 1024
+enable_cpu_offload: true
+enable_attention_slicing: true
+output_root: "outputs/virtual_tryon"
