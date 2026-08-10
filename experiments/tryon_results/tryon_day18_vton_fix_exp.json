@@ -1,0 +1,82 @@
+{
+  "model": "CatVTON",
+  "status": "completed",
+  "garment_type": "dress",
+  "cloth_type": "overall",
+  "person_filename": "3a6a3931175246fdb66cbf4d9a8d73d9.jpg",
+  "garment_filename": "garment_aca36127.png",
+  "saved_image_path": "outputs\\virtual_tryon\\images\\tryon_day18_vton_fix.png",
+  "inference_time_s": 34.92,
+  "peak_vram_mb": 2286.36328125,
+  "vram_before_mb": 0.0,
+  "vram_after_mb": 1826.45,
+  "resolution": [
+    384,
+    512
+  ],
+  "num_inference_steps": 30,
+  "guidance_scale": 2.5,
+  "scheduler": "DDIMScheduler",
+  "attn_ckpt_version": "vitonhd",
+  "model_device": "cuda",
+  "model_dtype": "torch.bfloat16",
+  "person_input_size": [
+    384,
+    512
+  ],
+  "garment_input_size": [
+    384,
+    512
+  ],
+  "mask_input_size": [
+    384,
+    512
+  ],
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "validation_status": "passed",
+    "resolution": [
+      384,
+      512
+    ],
+    "mode": "RGB",
+    "confidence": 0.95,
+    "issues": []
+  },
+  "mask_source": "grabcut",
+  "mask_stats": {
+    "mask_area_ratio": 0.2363,
+    "mask_bbox": [
+      88,
+      120,
+      265,
+      432
+    ],
+    "upper_body_area_ratio": 0.2272,
+    "lower_body_area_ratio": 0.2473,
+    "leg_fill_ratio": 0.1457,
+    "head_fill_ratio": 0.0,
+    "background_edge_fill_ratio": 0.0,
+    "connected_components": 1,
+    "resolution": [
+      384,
+      512
+    ]
+  },
+  "mask_validation": "ok",
+  "was_fallback_used": false,
+  "was_real_catvton_used": true,
+  "inference_backend": "catvton_native",
+  "failed_stage": null,
+  "error_type": null,
+  "garment_mask_computed": true,
+  "raw_equals_final": true,
+  "limitations": [
+    "AutoMasker requires CATVTON_USE_AUTOMASKER=true and importable detectron2.",
+    "GrabCut cloth-region masks are approximate vs DensePose+SCHP agnostic masks.",
+    "Garment uses resize_and_padding; person/mask use resize_and_crop (upstream).",
+    "vitonhd-16k-512 + 384x512 used on RTX 3050 6GB (not mix 768x1024 / 50 steps).",
+    "fit_preference / background_action are accepted by the API but unused."
+  ]
+}

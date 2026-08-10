@@ -1,0 +1,48 @@
+{
+  "label": "day17_enhancement_v2_notile",
+  "candidate_model": "realesr-general-x4v3 (SRVGGNetCompact, Real-ESRGAN family)",
+  "loader": "spandrel",
+  "source_image_path": "outputs\\generated_garments\\images\\day17_enhancement_source.png",
+  "enhanced_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\enhanced\\day17_enhancement_v2_notile_enhanced.png",
+  "measured": {
+    "device": "cuda",
+    "model_load_s": 0.12,
+    "inference_s": 0.362,
+    "resize_s": 0.07,
+    "total_enhancement_s": 0.552,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 55.65,
+    "peak_vram_mb": 199.79,
+    "cpu_ram_before_mb": 473.5,
+    "cpu_ram_after_mb": 801.3,
+    "source_resolution": [
+      512,
+      512
+    ],
+    "network_native_output_resolution": [
+      2048,
+      2048
+    ],
+    "final_output_resolution": [
+      1024,
+      1024
+    ],
+    "network_scale": 4,
+    "requested_outscale": 2.0,
+    "tile": 10000,
+    "tile_pad": 16
+  },
+  "color_fidelity_signal": {
+    "fabric_mean_rgb": [
+      216.7,
+      183.5,
+      169.2
+    ],
+    "image_mean_rgb": [
+      247.1,
+      237.7,
+      233.5
+    ],
+    "note": "Coarse 64x64 mean-color signal only; garment fabric fill ratio differs from a full fabric swatch, so this is informational, not a pass/fail test."
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "garment_id": "garment_aca36127",
+  "positive_prompt": "Edit fabric-filled dress mockup into wearable women dress: round neckline, short-sleeves, slim fit. Keep exact uploaded print/colors (white, red, orange; cotton, printed). Do not recolor.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 47,
+    "token_budget": 77,
+    "prompt_compacted": true,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "fabric": "cotton",
+    "texture": "smooth",
+    "dominant_colors": [
+      "white",
+      "red",
+      "orange"
+    ],
+    "color": "match_fabric",
+    "style": "casual",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim",
+    "pattern": "patterned",
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, red, orange patterned textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "dress",
+    "material": "cotton",
+    "fabric": "cotton",
+    "texture": "smooth",
+    "neckline": "round",
+    "sleeve": "short",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim",
+    "style": "casual",
+    "force_recolor": false
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "dress",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "pixel_variance": 121.43,
+    "sharpness_edge_var": 574.94,
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 3,
+  "guidance_scale": 2.5,
+  "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\garment_aca36127.png",
+  "raw_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\raw\\garment_aca36127_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.054,
+    "prompt_building_s": 0.11,
+    "fabric_conditioning_s": 0.004,
+    "image_saving_s": 0.023,
+    "total_pipeline_s": 674.677
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": true,
+    "has_image": true,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 9.13,
+    "peak_vram_mb": 10208.93,
+    "cpu_ram_before_mb": 7291.2,
+    "cpu_ram_after_mb": 8140.6,
+    "generation_time_s": 672.123,
+    "model_load_time_s": 0.0,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 36.758,
+    "prompt_encode_cached": false,
+    "inference_time_s": 510.022,
+    "vae_decode_time_s": 22.8,
+    "diffusion_pipeline_s": 532.822,
+    "per_step_durations_s": [
+      192.352,
+      130.568,
+      187.102
+    ],
+    "num_inference_steps": 3,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 35.63,
+      "load_count": 1,
+      "reuse_count": 1,
+      "pipeline_resident": true,
+      "pytorch_cuda_alloc_conf": "expandable_segments:True",
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "cuda_allocated_mb": 0.0,
+      "cuda_reserved_mb": 0.0,
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    }
+  }
+}

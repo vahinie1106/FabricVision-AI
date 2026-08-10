@@ -1,0 +1,93 @@
+{
+  "label": "day17_fix_standard",
+  "mode": "Standard",
+  "wall_clock_s": 705.569,
+  "model_switch_s": 40.289,
+  "image_path": "outputs\\generated_garments\\images\\day17_fix_standard.png",
+  "raw_image_path": "outputs\\generated_garments\\raw\\day17_fix_standard_raw.png",
+  "config": {
+    "height": 512,
+    "width": 512,
+    "steps": 4,
+    "guidance": 2.5,
+    "seed": 42,
+    "max_sequence_length": "128"
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": true,
+    "has_image": true,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 8.13,
+    "peak_vram_mb": 9643.8,
+    "cpu_ram_before_mb": 7268.6,
+    "cpu_ram_after_mb": 6928.7,
+    "generation_time_s": 703.575,
+    "model_load_time_s": 0.0,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 0.0,
+    "prompt_encode_cached": false,
+    "inference_time_s": 686.397,
+    "vae_decode_time_s": 16.538,
+    "diffusion_pipeline_s": 702.935,
+    "per_step_durations_s": [
+      277.335,
+      141.207,
+      131.94,
+      135.915
+    ],
+    "num_inference_steps": 4,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 40.11,
+      "load_count": 1,
+      "reuse_count": 1,
+      "pipeline_resident": true,
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    },
+    "generation_mode": "Standard",
+    "mode_key": "standard",
+    "pipeline_timings": {
+      "fabric_appearance_s": 0.024,
+      "prompt_building_s": 0.124,
+      "fabric_conditioning_s": 0.025,
+      "image_saving_s": 0.031,
+      "total_pipeline_s": 705.552
+    },
+    "prompt_stats": {
+      "token_count": 74,
+      "token_budget": 77,
+      "prompt_compacted": true,
+      "truncated": false
+    }
+  },
+  "prompt_stats": {
+    "token_count": 74,
+    "token_budget": 77,
+    "prompt_compacted": true,
+    "truncated": false
+  }
+}

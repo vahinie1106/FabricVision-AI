@@ -1,0 +1,132 @@
+{
+  "garment_id": "garment_d5bc7826",
+  "positive_prompt": "Edit fabric-filled dress mockup into wearable women dress: square neckline, half-sleeves, slim fit. Keep exact uploaded print/colors (white, red; cotton, printed). Do not recolor.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 45,
+    "token_budget": 77,
+    "prompt_compacted": true,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "fabric": "cotton",
+    "texture": "smooth",
+    "dominant_colors": [
+      "white",
+      "red"
+    ],
+    "color": "match_fabric",
+    "style": "casual",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "pattern": "printed",
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, red printed textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "dress",
+    "material": "cotton",
+    "fabric": "cotton",
+    "texture": "smooth",
+    "neckline": "square_neck",
+    "sleeve": "half_sleeve",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "style": "casual",
+    "force_recolor": false
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "dress",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "pixel_variance": 219.46,
+    "sharpness_edge_var": 691.23,
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 3,
+  "guidance_scale": 2.5,
+  "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\garment_d5bc7826.png",
+  "raw_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\raw\\garment_d5bc7826_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.154,
+    "prompt_building_s": 0.33,
+    "fabric_conditioning_s": 0.087,
+    "image_saving_s": 0.037,
+    "total_pipeline_s": 616.547
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": true,
+    "has_image": true,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 9.13,
+    "peak_vram_mb": 10208.93,
+    "cpu_ram_before_mb": 6660.5,
+    "cpu_ram_after_mb": 7460.2,
+    "generation_time_s": 611.37,
+    "model_load_time_s": 0.0,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 59.326,
+    "prompt_encode_cached": false,
+    "inference_time_s": 444.899,
+    "vae_decode_time_s": 27.041,
+    "diffusion_pipeline_s": 471.94,
+    "per_step_durations_s": [
+      201.367,
+      124.093,
+      119.439
+    ],
+    "num_inference_steps": 3,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 40.83,
+      "load_count": 1,
+      "reuse_count": 1,
+      "pipeline_resident": true,
+      "pytorch_cuda_alloc_conf": "expandable_segments:True",
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "cuda_allocated_mb": 0.0,
+      "cuda_reserved_mb": 0.0,
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    }
+  }
+}

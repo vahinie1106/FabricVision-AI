@@ -1,0 +1,38 @@
+{
+  "gender": "women",
+  "garment_type": "shirt",
+  "material": "silk",
+  "color": "navy_blue",
+  "pattern": "solid",
+  "sleeve": "puff_sleeve",
+  "neckline": "sweetheart_neck",
+  "size": "M",
+  "model": "FLUX.1-schnell",
+  "prompt_version": "v1.0",
+  "generation_mode": "Fast Preview",
+  "seed": 42,
+  "positive_prompt": "Change this flat fabric swatch into a finished wearable women shirt. Use the reference image ONLY as clothing material - keep its pattern, print, weave, and colors - but do NOT reproduce the swatch, do NOT fill the canvas with fabric texture, and do NOT treat the fabric as the final object. Create a complete garment with clear silhouette, sweetheart neckline, puff-sleeves, slim fit, realistic folds and seams, on a clean white studio background. Color palette: navy blue. casual style for casual, summer season. Material: silk with solid pattern, smooth texture. Photorealistic apparel catalog flat lay, 8k, no model, no mannequin.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile pattern fill, edge-to-edge cloth texture, abstract fabric, flat cloth only, no garment structure, cropped fabric, pattern tile, material board, blurry, low resolution, human model, person, face, mannequin, body parts, busy background, distorted proportions, noise, artifacts",
+  "generation_parameters": {
+    "height": 512,
+    "width": 512,
+    "num_inference_steps": 4,
+    "guidance_scale": 3.5,
+    "generation_mode": "Fast Preview"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "shirt",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "saved_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\garment_6408e3de.png"
+}

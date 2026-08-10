@@ -1,0 +1,127 @@
+{
+  "garment_id": "garment_6e5db4dc",
+  "positive_prompt": "Edit fabric-filled dress mockup into wearable women dress: off shoulder neckline, sleeveless, slim fit. Keep exact uploaded print/colors (white, brown; cotton, printed). Do not recolor. Crisp silhouette, neckline, sleeves, seams, folds, hem. White studio product photo. No model, not a swatch. casual.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 73,
+    "token_budget": 77,
+    "prompt_compacted": false,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "fabric": "silk",
+    "texture": "smooth",
+    "dominant_colors": [
+      "white",
+      "brown"
+    ],
+    "color": "match_fabric",
+    "style": "casual",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "pattern": "printed",
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, brown printed textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "dress",
+    "material": "cotton",
+    "fabric": "silk",
+    "texture": "smooth",
+    "neckline": "off_shoulder",
+    "sleeve": "sleeveless",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "style": "casual",
+    "force_recolor": false
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "dress",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 3,
+  "guidance_scale": 2.5,
+  "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\garment_6e5db4dc.png",
+  "raw_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\raw\\garment_6e5db4dc_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.134,
+    "prompt_building_s": 0.248,
+    "fabric_conditioning_s": 0.052,
+    "image_saving_s": 0.041,
+    "total_pipeline_s": 554.829
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": true,
+    "has_image": true,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 8.13,
+    "peak_vram_mb": 9643.8,
+    "cpu_ram_before_mb": 6609.8,
+    "cpu_ram_after_mb": 7580.4,
+    "generation_time_s": 550.297,
+    "model_load_time_s": 0.001,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 0.0,
+    "prompt_encode_cached": false,
+    "inference_time_s": 508.514,
+    "vae_decode_time_s": 39.914,
+    "diffusion_pipeline_s": 548.428,
+    "per_step_durations_s": [
+      298.1,
+      121.249,
+      89.165
+    ],
+    "num_inference_steps": 3,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 53.0,
+      "load_count": 1,
+      "reuse_count": 1,
+      "pipeline_resident": true,
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    }
+  }
+}

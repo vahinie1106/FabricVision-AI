@@ -1,0 +1,37 @@
+{
+  "model": "CatVTON",
+  "status": "completed",
+  "garment_type": "garment",
+  "cloth_type": "upper",
+  "person_filename": "person_01.png",
+  "garment_filename": "generated_garment.png",
+  "saved_image_path": "outputs\\virtual_tryon\\images\\tryon_b891891a.png",
+  "inference_time_s": 11.21,
+  "peak_vram_mb": 10208.9267578125,
+  "resolution": [
+    512,
+    512
+  ],
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "validation_status": "passed",
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "confidence": 0.95,
+    "issues": []
+  },
+  "mask_source": "grabcut",
+  "was_fallback_used": false,
+  "inference_backend": "catvton_native",
+  "garment_mask_computed": true,
+  "limitations": [
+    "AutoMasker requires CATVTON_USE_AUTOMASKER=true and importable detectron2.",
+    "Default mask is OpenCV GrabCut when available; else box_fallback.",
+    "Garment silhouette mask is computed but not passed to native CatVTON (native uses person mask + cloth image).",
+    "fit_preference / background_action are accepted by the API but unused."
+  ]
+}

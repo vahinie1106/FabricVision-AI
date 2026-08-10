@@ -1,0 +1,164 @@
+{
+  "hardware": "NVIDIA RTX 3050 Laptop GPU 6GB",
+  "best_resolution": 384,
+  "seed": 42,
+  "guidance": 2.5,
+  "rows": [
+    {
+      "label": "day17_steps_2_r384",
+      "resolution": 384,
+      "steps": 2,
+      "guidance": 2.5,
+      "seed": 42,
+      "status": "ok",
+      "error": null,
+      "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\day17_resolution_tests\\best_resolution_steps2.png",
+      "wall_clock_s": 375.002,
+      "generation_time_s": 371.009,
+      "peak_vram_mb": 9476.4,
+      "cpu_ram_after_mb": 6677.7,
+      "prompt": "Edit fabric-filled top mockup into wearable women top: sweetheart neckline, short-sleeves, slim fit. Keep exact uploaded print/colors (white, red; cotton, floral). Do not recolor. Crisp silhouette, neckline, sleeves, seams, folds, hem. White studio product photo. No model, not a swatch. casual.",
+      "prompt_stats": {
+        "token_count": 74,
+        "token_budget": 77,
+        "prompt_compacted": false,
+        "truncated": false
+      },
+      "per_step_durations_s": [
+        278.533,
+        80.371
+      ],
+      "edge_energy": 3.322,
+      "mean_rgb": [
+        238.0,
+        224.2,
+        221.5
+      ],
+      "output_size": [
+        384,
+        384
+      ],
+      "model_load_time_s": 0.0,
+      "prompt_encoding_time_s": 0.0,
+      "inference_time_s": 358.904,
+      "vae_decode_time_s": 11.84,
+      "pipeline_timings": {
+        "fabric_appearance_s": 0.111,
+        "prompt_building_s": 0.054,
+        "fabric_conditioning_s": 0.021,
+        "image_saving_s": 0.025,
+        "total_pipeline_s": 374.983
+      },
+      "raw_image_path": "outputs\\generated_garments\\raw\\day17_steps_2_r384_raw.png",
+      "model_reused": true,
+      "attention_backend": "sdpa",
+      "offload_strategy": "model_cpu_offload",
+      "bnb_4bit": true
+    },
+    {
+      "label": "day17_steps_3_r384",
+      "resolution": 384,
+      "steps": 3,
+      "guidance": 2.5,
+      "seed": 42,
+      "status": "ok",
+      "error": null,
+      "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\day17_resolution_tests\\best_resolution_steps3.png",
+      "wall_clock_s": 439.749,
+      "generation_time_s": 436.594,
+      "peak_vram_mb": 9476.4,
+      "cpu_ram_after_mb": 6675.2,
+      "prompt": "Edit fabric-filled top mockup into wearable women top: sweetheart neckline, short-sleeves, slim fit. Keep exact uploaded print/colors (white, red; cotton, floral). Do not recolor. Crisp silhouette, neckline, sleeves, seams, folds, hem. White studio product photo. No model, not a swatch. casual.",
+      "prompt_stats": {
+        "token_count": 74,
+        "token_budget": 77,
+        "prompt_compacted": false,
+        "truncated": false
+      },
+      "per_step_durations_s": [
+        271.277,
+        69.521,
+        83.391
+      ],
+      "edge_energy": 3.417,
+      "mean_rgb": [
+        238.8,
+        224.4,
+        221.5
+      ],
+      "output_size": [
+        384,
+        384
+      ],
+      "model_load_time_s": 0.0,
+      "prompt_encoding_time_s": 0.0,
+      "inference_time_s": 424.189,
+      "vae_decode_time_s": 12.131,
+      "pipeline_timings": {
+        "fabric_appearance_s": 0.16,
+        "prompt_building_s": 0.056,
+        "fabric_conditioning_s": 0.03,
+        "image_saving_s": 0.023,
+        "total_pipeline_s": 439.735
+      },
+      "raw_image_path": "outputs\\generated_garments\\raw\\day17_steps_3_r384_raw.png",
+      "model_reused": true,
+      "attention_backend": "sdpa",
+      "offload_strategy": "model_cpu_offload",
+      "bnb_4bit": true
+    },
+    {
+      "label": "day17_steps_4_r384",
+      "resolution": 384,
+      "steps": 4,
+      "guidance": 2.5,
+      "seed": 42,
+      "status": "ok",
+      "error": null,
+      "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\day17_resolution_tests\\best_resolution_steps4.png",
+      "wall_clock_s": 576.545,
+      "generation_time_s": 573.531,
+      "peak_vram_mb": 9476.4,
+      "cpu_ram_after_mb": 6682.4,
+      "prompt": "Edit fabric-filled top mockup into wearable women top: sweetheart neckline, short-sleeves, slim fit. Keep exact uploaded print/colors (white, red; cotton, floral). Do not recolor. Crisp silhouette, neckline, sleeves, seams, folds, hem. White studio product photo. No model, not a swatch. casual.",
+      "prompt_stats": {
+        "token_count": 74,
+        "token_budget": 77,
+        "prompt_compacted": false,
+        "truncated": false
+      },
+      "per_step_durations_s": [
+        311.831,
+        91.291,
+        79.172,
+        76.372
+      ],
+      "edge_energy": 3.634,
+      "mean_rgb": [
+        238.9,
+        224.4,
+        221.1
+      ],
+      "output_size": [
+        384,
+        384
+      ],
+      "model_load_time_s": 0.0,
+      "prompt_encoding_time_s": 0.0,
+      "inference_time_s": 558.666,
+      "vae_decode_time_s": 14.546,
+      "pipeline_timings": {
+        "fabric_appearance_s": 0.098,
+        "prompt_building_s": 0.06,
+        "fabric_conditioning_s": 0.028,
+        "image_saving_s": 0.02,
+        "total_pipeline_s": 576.534
+      },
+      "raw_image_path": "outputs\\generated_garments\\raw\\day17_steps_4_r384_raw.png",
+      "model_reused": true,
+      "attention_backend": "sdpa",
+      "offload_strategy": "model_cpu_offload",
+      "bnb_4bit": true
+    }
+  ]
+}

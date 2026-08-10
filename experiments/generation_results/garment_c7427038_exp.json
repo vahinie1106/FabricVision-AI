@@ -1,0 +1,71 @@
+{
+  "garment_id": "garment_c7427038",
+  "positive_prompt": "Transform this fabric-covered shirt mockup into a photorealistic finished wearable women shirt. Preserve the exact fabric print, weave, texture, motifs and colors as clothing material. Add realistic folds, seams, sweetheart neckline, puff-sleeves, slim fit, white studio catalog background. Not a fabric swatch. Color palette: white. casual style for casual, summer season. Material: cotton with polka dot pattern, smooth texture. Photorealistic apparel catalog flat lay, 8k, no model, no mannequin.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile pattern fill, edge-to-edge cloth texture, abstract fabric, flat cloth only, no garment structure, cropped fabric, pattern tile, material board, blurry, low resolution, human model, person, face, mannequin, body parts, busy background, distorted proportions, noise, artifacts",
+  "fabric_metadata": {
+    "material": "cotton",
+    "fabric": "silk",
+    "texture": "smooth",
+    "dominant_colors": [
+      "white"
+    ],
+    "color": "white",
+    "style": "casual",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "pattern": "dotted"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "shirt",
+    "material": "cotton",
+    "fabric": "silk",
+    "texture": "smooth",
+    "color": "white",
+    "neckline": "sweetheart_neck",
+    "sleeve": "puff_sleeve",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "style": "casual"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "shirt",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "generation_mode": "Fast Preview",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 4,
+  "guidance_scale": 2.5,
+  "image_path": "outputs\\generated_garments\\images\\garment_c7427038.png",
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 8.1259765625,
+    "peak_vram_mb": 9645.68115234375,
+    "generation_time_s": 730.14,
+    "model_load_time_s": 0.0,
+    "prompt_encoding_time_s": 334.27,
+    "inference_time_s": 353.57,
+    "vae_decode_time_s": 42.25,
+    "num_inference_steps": 4,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512
+  }
+}

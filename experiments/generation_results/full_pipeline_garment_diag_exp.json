@@ -1,0 +1,74 @@
+{
+  "garment_id": "full_pipeline_garment_diag",
+  "positive_prompt": "Edit fabric-filled kurti mockup into wearable women kurti: round neckline, three-quarter-sleeves, regular fit. Keep exact uploaded print/colors (white, red; cotton, floral). Do not recolor. Define neckline, sleeve seams, side seams, hem, drape folds. Crisp catalog product photo on white. No model, not a swatch. traditional casual.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 64,
+    "token_budget": 77,
+    "prompt_compacted": false,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "texture": "soft",
+    "style": "traditional",
+    "pattern": "floral",
+    "dominant_colors": [
+      "white",
+      "red"
+    ],
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, red floral textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "kurti",
+    "sleeve": "three_quarter_sleeve",
+    "neckline": "round_neck",
+    "size": "M"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "kurti",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "pixel_variance": 150.66,
+    "sharpness_edge_var": 1003.98,
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 3,
+  "guidance_scale": 2.5,
+  "image_path": "outputs\\_fashion_diag\\generated_garments\\images\\full_pipeline_garment_diag.png",
+  "raw_image_path": "outputs\\_fashion_diag\\generated_garments\\raw\\full_pipeline_garment_diag_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.152,
+    "prompt_building_s": 0.002,
+    "fabric_conditioning_s": 0.011,
+    "image_saving_s": 0.03,
+    "total_pipeline_s": 0.748
+  },
+  "stats": {
+    "was_fallback_used": true,
+    "was_real_flux_used": false,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 0.0,
+    "peak_vram_mb": 0.0,
+    "generation_time_s": 0.01,
+    "model_load_time_s": 0.0,
+    "prompt_encoding_time_s": 0.0,
+    "inference_time_s": 0.0,
+    "vae_decode_time_s": 0.0
+  }
+}

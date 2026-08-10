@@ -1,0 +1,31 @@
+{
+  "hardware": "NVIDIA RTX 3050 Laptop GPU 6GB",
+  "model": "FLUX.1-Kontext",
+  "quantization": "nf4",
+  "offload": "model_cpu_offload",
+  "attention": "sdpa",
+  "torch_compile": false,
+  "selection_method": "visual_inspection_over_edge_energy",
+  "notes": [
+    "edge_energy auto-selected 384 due to pixelation noise; visual QA rejects 384 for Standard/Production.",
+    "640 and 768 remained soft while costing ~2–2.5× runtime vs 512 — rejected as defaults.",
+    "Steps 2/3/4 at 512 are similarly soft; 3 is Standard, 4 is Production. Guidance kept at 2.5 (unchanged).",
+    "5-minute generation with catalog-quality Kontext output is NOT achievable on this architecture."
+  ],
+  "baseline_runtime_s": {
+    "label": "prior Standard 512/4 after max_seq=128",
+    "generation_time_s": 704,
+    "source": "prior measured session (Day 17 floral/optimized runs ~695–797s class)"
+  },
+  "measured_cold_standard_512_steps3_s": 603.541,
+  "recommendation": {
+    "preview": {"height": 384, "width": 384, "steps": 2, "guidance": 2.5, "expected_runtime_s_cold": 375.0},
+    "standard": {"height": 512, "width": 512, "steps": 3, "guidance": 2.5, "expected_runtime_s_cold": 603.5},
+    "production": {"height": 512, "width": 512, "steps": 4, "guidance": 2.5, "expected_runtime_s_hot_session": 1213.4, "note": "prefer cold runs; hot session slower due to thermal/load variance"}
+  },
+  "five_minute_target_achieved": false,
+  "five_minute_statement": "5-minute generation is not achievable on the RTX 3050 6GB with the current FLUX.1-Kontext + NF4 + model_cpu_offload architecture while maintaining acceptable garment quality.",
+  "remaining_bottleneck": "CPU↔GPU thrash from model_cpu_offload (~120–400s/step depending on resolution/thermal). Peak VRAM reports ~9.5–10.1 GB via shared/host memory accounting on 6GB physical GPU.",
+  "blur_root_cause": "Raw FLUX.1-Kontext output is soft at 384–768 under NF4+few-steps; frontend not responsible. Higher resolution did not recover product-photography sharpness on this GPU path.",
+  "speed_root_cause": "model_cpu_offload memory movement dominates; per-step diffusion 120–180s+ at 512."
+}

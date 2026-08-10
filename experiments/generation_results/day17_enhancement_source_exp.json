@@ -1,0 +1,123 @@
+{
+  "garment_id": "day17_enhancement_source",
+  "positive_prompt": "Edit fabric-filled kurti mockup into wearable women kurti: round neckline, three-quarter-sleeves, slim fit. Keep exact uploaded print/colors (white, red; cotton, floral). Do not recolor.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 49,
+    "token_budget": 77,
+    "prompt_compacted": true,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "fabric": "cotton",
+    "texture": "smooth",
+    "style": "casual",
+    "fit": "slim",
+    "dominant_colors": [
+      "white",
+      "red"
+    ],
+    "color": "match_fabric",
+    "pattern": "floral",
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, red floral textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "kurti",
+    "material": "cotton",
+    "neckline": "round_neck",
+    "sleeve": "three_quarter_sleeve",
+    "fit": "slim",
+    "style": "casual",
+    "occasion": "casual",
+    "season": "summer",
+    "force_recolor": false
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "kurti",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 3,
+  "guidance_scale": 2.5,
+  "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\day17_enhancement_source.png",
+  "raw_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\raw\\day17_enhancement_source_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.098,
+    "prompt_building_s": 0.086,
+    "fabric_conditioning_s": 0.028,
+    "image_saving_s": 0.022,
+    "total_pipeline_s": 832.396
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": true,
+    "has_image": true,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 8.13,
+    "peak_vram_mb": 9643.8,
+    "cpu_ram_before_mb": 7152.7,
+    "cpu_ram_after_mb": 6846.9,
+    "generation_time_s": 829.442,
+    "model_load_time_s": 0.0,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 0.0,
+    "prompt_encode_cached": false,
+    "inference_time_s": 798.368,
+    "vae_decode_time_s": 30.441,
+    "diffusion_pipeline_s": 828.809,
+    "per_step_durations_s": [
+      286.997,
+      253.659,
+      257.712
+    ],
+    "num_inference_steps": 3,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 34.78,
+      "load_count": 1,
+      "reuse_count": 1,
+      "pipeline_resident": true,
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    }
+  }
+}

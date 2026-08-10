@@ -1,0 +1,42 @@
+{
+  "model": "CatVTON",
+  "status": "completed",
+  "garment_type": "shirt",
+  "cloth_type": "upper",
+  "person_filename": "8dd96489cf1a4262a9eeccfac617fd90.jpg",
+  "garment_filename": "garment_aca36127.png",
+  "saved_image_path": "outputs\\virtual_tryon\\images\\tryon_day18_clothmask.png",
+  "inference_time_s": 46.53,
+  "peak_vram_mb": 3020.36279296875,
+  "resolution": [
+    512,
+    512
+  ],
+  "num_inference_steps": 20,
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "validation_status": "passed",
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "confidence": 0.95,
+    "issues": []
+  },
+  "mask_source": "grabcut",
+  "was_fallback_used": false,
+  "was_real_catvton_used": true,
+  "inference_backend": "catvton_native",
+  "failed_stage": null,
+  "error_type": null,
+  "garment_mask_computed": true,
+  "limitations": [
+    "AutoMasker requires CATVTON_USE_AUTOMASKER=true and importable detectron2.",
+    "Default mask is cloth-region OpenCV GrabCut; box_fallback is refused when REQUIRE_REAL.",
+    "Garment silhouette mask is computed but not passed to native CatVTON (native uses person mask + cloth image).",
+    "fit_preference / background_action are accepted by the API but unused.",
+    "RTX 3050 6GB uses 512x512 and limited steps vs upstream 768x1024 / 50 steps."
+  ]
+}

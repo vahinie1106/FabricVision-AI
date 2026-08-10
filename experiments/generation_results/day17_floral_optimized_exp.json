@@ -1,0 +1,123 @@
+{
+  "garment_id": "day17_floral_optimized",
+  "positive_prompt": "Edit fabric-filled top mockup into wearable women top: sweetheart neckline, short-sleeves, slim fit. Keep exact uploaded print/colors (white, red; cotton, floral). Do not recolor. Crisp silhouette, neckline, sleeves, seams, folds, hem. White studio product photo. No model, not a swatch. casual.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 74,
+    "token_budget": 77,
+    "prompt_compacted": false,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "fabric": "cotton",
+    "texture": "smooth",
+    "dominant_colors": [
+      "white",
+      "red"
+    ],
+    "color": "match_fabric",
+    "style": "casual",
+    "fit": "slim",
+    "pattern": "floral",
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, red floral textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "top",
+    "material": "cotton",
+    "neckline": "sweetheart_neck",
+    "sleeve": "short_sleeve",
+    "fit": "slim",
+    "style": "casual",
+    "occasion": "casual",
+    "season": "summer"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "top",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 4,
+  "guidance_scale": 2.5,
+  "image_path": "outputs\\generated_garments\\images\\day17_floral_optimized.png",
+  "raw_image_path": "outputs\\generated_garments\\raw\\day17_floral_optimized_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.063,
+    "prompt_building_s": 0.1,
+    "fabric_conditioning_s": 0.036,
+    "image_saving_s": 0.021,
+    "total_pipeline_s": 799.209
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": true,
+    "has_image": true,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 8.13,
+    "peak_vram_mb": 9643.8,
+    "cpu_ram_before_mb": 6912.9,
+    "cpu_ram_after_mb": 7032.5,
+    "generation_time_s": 797.225,
+    "model_load_time_s": 0.0,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 0.0,
+    "prompt_encode_cached": false,
+    "inference_time_s": 786.044,
+    "vae_decode_time_s": 10.43,
+    "diffusion_pipeline_s": 796.474,
+    "per_step_durations_s": [
+      325.016,
+      161.503,
+      116.004,
+      183.521
+    ],
+    "num_inference_steps": 4,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 31.03,
+      "load_count": 1,
+      "reuse_count": 1,
+      "pipeline_resident": true,
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    }
+  }
+}

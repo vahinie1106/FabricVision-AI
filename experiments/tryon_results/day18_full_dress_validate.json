@@ -1,0 +1,26 @@
+{
+  "model": "CatVTON",
+  "cloth_type": "overall",
+  "attn_ckpt_version": "vitonhd",
+  "resolution": [
+    384,
+    512
+  ],
+  "num_inference_steps": 30,
+  "guidance_scale": 2.5,
+  "mask_source": "grabcut",
+  "was_real_catvton_used": true,
+  "was_fallback_used": false,
+  "raw_equals_final": true,
+  "inference_time_s": 26.39,
+  "peak_vram_mb": 2286.36328125,
+  "inference_backend": "catvton_native",
+  "mask_bottom_frac": 0.9355,
+  "lower_split_segments": 1,
+  "pink_y_frac_in_mask": [
+    0.131,
+    0.936
+  ],
+  "debug_stamp": "9c438d7b",
+  "audit_dir": "outputs\\virtual_tryon\\debug\\day18_full_dress_audit"
+}

@@ -1,0 +1,38 @@
+{
+  "gender": "women",
+  "garment_type": "dress",
+  "material": "cotton",
+  "color": "cream",
+  "pattern": "solid",
+  "sleeve": "short_sleeve",
+  "neckline": "round_neck",
+  "size": "M",
+  "model": "FLUX.1-schnell",
+  "prompt_version": "v1.0",
+  "generation_mode": "Fast Preview",
+  "seed": 42,
+  "positive_prompt": "Create a complete finished wearable women dress, not a fabric swatch. The clothing material is white, multicolor, brown dotted textile (cotton, soft). Preserve the fabric colors and print character as the garment material. Include a clear silhouette, round neckline, short-sleeves, regular fit, realistic folds and seams, white studio background. A finished wearable women dress as a high-resolution studio product photograph, regular fit, casual style for casual, summer season. The garment must clearly show a round neckline, short-sleeves, realistic seams, folds, and clothing drape. Crafted from cotton fabric with a solid pattern and soft texture. Color palette: cream. Clean plain white studio background, apparel catalog flat lay, photorealistic 8k quality, standalone complete garment, no human model, no mannequin.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile pattern fill, edge-to-edge cloth texture, abstract fabric, flat cloth only, no garment structure, cropped fabric, pattern tile, material board, blurry, low resolution, human model, person, face, mannequin, body parts, busy background, distorted proportions, noise, artifacts",
+  "generation_parameters": {
+    "height": 512,
+    "width": 512,
+    "num_inference_steps": 4,
+    "guidance_scale": 3.5,
+    "generation_mode": "Fast Preview"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "dress",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "saved_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\garment_92a28d07.png"
+}

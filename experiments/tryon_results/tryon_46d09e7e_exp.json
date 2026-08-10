@@ -1,0 +1,85 @@
+{
+  "model": "CatVTON",
+  "status": "completed",
+  "garment_type": "garment",
+  "cloth_type": "overall",
+  "person_filename": "person_01.png",
+  "garment_filename": "generated_garment.png",
+  "saved_image_path": "outputs\\virtual_tryon\\images\\tryon_46d09e7e.png",
+  "inference_time_s": 15.41,
+  "peak_vram_mb": 2286.36328125,
+  "vram_before_mb": 1818.33,
+  "vram_after_mb": 1826.45,
+  "resolution": [
+    384,
+    512
+  ],
+  "num_inference_steps": 30,
+  "guidance_scale": 2.5,
+  "scheduler": "DDIMScheduler",
+  "attn_ckpt_version": "vitonhd",
+  "model_device": "cuda",
+  "model_dtype": "torch.bfloat16",
+  "person_input_size": [
+    384,
+    512
+  ],
+  "garment_input_size": [
+    384,
+    512
+  ],
+  "mask_input_size": [
+    384,
+    512
+  ],
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "validation_status": "passed",
+    "resolution": [
+      384,
+      512
+    ],
+    "mode": "RGB",
+    "confidence": 0.95,
+    "issues": []
+  },
+  "mask_source": "grabcut",
+  "mask_stats": {
+    "mask_area_ratio": 0.2566,
+    "mask_bbox": [
+      114,
+      75,
+      270,
+      480
+    ],
+    "mask_bottom_frac": 0.9375,
+    "upper_body_area_ratio": 0.1903,
+    "lower_body_area_ratio": 0.3373,
+    "thigh_fill_ratio": 0.3943,
+    "leg_fill_ratio": 0.3118,
+    "head_fill_ratio": 0.0,
+    "background_edge_fill_ratio": 0.0,
+    "lower_split_segments": 1,
+    "connected_components": 1,
+    "resolution": [
+      384,
+      512
+    ]
+  },
+  "mask_validation": "ok",
+  "was_fallback_used": false,
+  "was_real_catvton_used": true,
+  "inference_backend": "catvton_native",
+  "failed_stage": null,
+  "error_type": null,
+  "garment_mask_computed": true,
+  "raw_equals_final": true,
+  "limitations": [
+    "AutoMasker requires CATVTON_USE_AUTOMASKER=true and importable detectron2.",
+    "GrabCut cloth-region masks are approximate vs DensePose+SCHP agnostic masks.",
+    "Garment uses resize_and_padding; person/mask use resize_and_crop (upstream).",
+    "vitonhd-16k-512 + 384x512 used on RTX 3050 6GB (not mix 768x1024 / 50 steps).",
+    "fit_preference / background_action are accepted by the API but unused."
+  ]
+}

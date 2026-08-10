@@ -1,0 +1,85 @@
+﻿tests/integration/test_full_fashion_pipeline.py::test_full_fashion_pipeline_integration
+tests/integration/test_full_virtual_tryon_pipeline.py::test_full_virtual_tryon_pipeline_integration
+tests/integration/test_garment_generation_pipeline.py::test_garment_generation_pipeline_dry_run
+tests/integration/test_semantic_analysis.py::test_pipeline_generates_metadata_and_organizes_image
+tests/integration/test_semantic_analysis.py::test_pipeline_loads_model_path_from_default_config_file
+tests/integration/test_semantic_analysis.py::test_pipeline_initializes_model_loader_before_inference
+tests/integration/test_semantic_analysis.py::test_metadata_validator_rejects_unknown_vocab_value
+tests/test_data_pipeline.py::test_dataset_loader_factory
+tests/test_data_pipeline.py::test_mock_dataset_loading
+tests/test_data_pipeline.py::test_deepfashion2_mock_loading
+tests/test_data_pipeline.py::test_fashionpedia_mock_loading
+tests/test_data_pipeline.py::test_metadata_validation_success
+tests/test_data_pipeline.py::test_metadata_validation_failure_missing_fields
+tests/test_data_pipeline.py::test_metadata_validation_invalid_vocabulary
+tests/test_data_pipeline.py::test_legacy_qwen_output_adaptation
+tests/test_data_pipeline.py::test_id_generation_and_metadata_store
+tests/test_direct_backend.py::test_01_health_check
+tests/unit/test_catvton_loader.py::test_catvton_loader_initialization
+tests/unit/test_catvton_loader.py::test_catvton_loader_dry_run_fallback
+tests/unit/test_color_vocabulary.py::test_color_vocabulary_normalization
+tests/unit/test_customization_schema.py::test_customization_schema_structure
+tests/unit/test_dataset_management.py::test_dataset_management_pipeline_creates_metadata_and_reports
+tests/unit/test_fabric_conditioning.py::test_cover_fabric_center_crops_large_swatch_without_downscale_smear
+tests/unit/test_fabric_conditioning.py::test_cover_fabric_tiles_small_swatch
+tests/unit/test_flux_oom_recovery.py::test_is_cuda_oom_detects_torch_message
+tests/unit/test_flux_oom_recovery.py::test_park_on_cpu_without_pipeline_is_safe
+tests/unit/test_garment_conditioning.py::test_garment_conditioning_preparation
+tests/unit/test_garment_prompt_builder.py::test_normalize_generation_mode_aliases
+tests/unit/test_garment_prompt_builder.py::test_kontext_prompt_within_clip_budget
+tests/unit/test_garment_prompt_builder.py::test_kontext_prompt_preserves_structure_attributes
+tests/unit/test_garment_prompt_builder.py::test_classic_prompt_builder_basic
+tests/unit/test_garment_validator.py::test_garment_validator_valid_image
+tests/unit/test_garment_validator.py::test_garment_validator_low_resolution
+tests/unit/test_generation_error_classification.py::test_classify_getcurrentstream_as_device_mismatch
+tests/unit/test_generation_error_classification.py::test_classify_cuda_oom
+tests/unit/test_generation_error_classification.py::test_park_on_cpu_skips_nf4_transformer_to_cpu
+tests/unit/test_job_stages.py::test_map_step_to_stage_generation_lifecycle
+tests/unit/test_job_stages.py::test_job_manager_derives_stage_on_update
+tests/unit/test_material_vocabulary.py::test_material_vocabulary_normalization
+tests/unit/test_metadata_normalizer.py::test_normalization_space_to_snake
+tests/unit/test_metadata_normalizer.py::test_normalization_synonym_mapping
+tests/unit/test_metadata_normalizer.py::test_normalization_unknown_fallback
+tests/unit/test_neckline_validation.py::test_neckline_vocabulary_validation
+tests/unit/test_pattern_validation.py::test_pattern_vocabulary_validation
+tests/unit/test_person_conditioning.py::test_person_conditioning_preparation
+tests/unit/test_person_masker.py::test_cloth_region_band_upper_excludes_legs
+tests/unit/test_person_masker.py::test_restrict_mask_clears_lower_body_for_upper
+tests/unit/test_person_masker.py::test_box_mask_upper_not_full_height
+tests/unit/test_person_masker.py::test_grabcut_upper_mask_avoids_legs
+tests/unit/test_person_masker.py::test_resolve_reports_mask_source
+tests/unit/test_port_check.py::test_is_port_free_ephemeral
+tests/unit/test_port_check.py::test_detects_fabricvision_uvicorn_cmdline
+tests/unit/test_preprocessing_pipeline.py::test_dataset_loader_discovers_images_and_metadata
+tests/unit/test_preprocessing_pipeline.py::test_preprocessing_pipeline_processes_sample_dataset
+tests/unit/test_sleeve_validation.py::test_sleeve_vocabulary_validation
+tests/unit/test_tryon_pipeline.py::test_virtual_tryon_pipeline_dry_run
+tests/unit/test_tryon_pipeline.py::test_require_real_rejects_blend
+tests/unit/test_tryon_validation.py::test_tryon_validator_success
+tests/unit/test_tryon_validation.py::test_tryon_validator_invalid_mode
+
+============================== warnings summary ===============================
+..\AppData\Roaming\Python\Python311\site-packages\fastapi\testclient.py:1
+  C:\Users\E VAHINI\AppData\Roaming\Python\Python311\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+backend_api\main.py:38
+  C:\Users\E VAHINI\FabricVision-AI\backend_api\main.py:38: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+..\AppData\Roaming\Python\Python311\site-packages\fastapi\applications.py:4681
+  C:\Users\E VAHINI\AppData\Roaming\Python\Python311\site-packages\fastapi\applications.py:4681: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+59/67 tests collected (8 deselected) in 1.57s

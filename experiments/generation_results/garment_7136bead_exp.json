@@ -1,0 +1,38 @@
+{
+  "gender": "women",
+  "garment_type": "shirt",
+  "material": "cotton",
+  "color": "royal_blue",
+  "pattern": "solid",
+  "sleeve": "puff_sleeve",
+  "neckline": "sweetheart_neck",
+  "size": "M",
+  "model": "FLUX.1-schnell",
+  "prompt_version": "v1.0",
+  "generation_mode": "Fast Preview",
+  "seed": 42,
+  "positive_prompt": "A high-resolution studio product photograph of a women shirt crafted from cotton fabric featuring a solid pattern and smooth texture. Features: sweetheart neckline, puff-sleeves, size M, casual style. Color palette: royal blue. Clean white studio background, standalone garment, no human model, no mannequin, photorealistic apparel catalog, 8k quality.",
+  "negative_prompt": "blurry, low quality, human body, face, mannequin, person, cropped garment, distorted seams, noise, artifacts",
+  "generation_parameters": {
+    "height": 1024,
+    "width": 1024,
+    "num_inference_steps": 4,
+    "guidance_scale": 3.5,
+    "generation_mode": "Fast Preview"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "shirt",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      1024,
+      1024
+    ],
+    "mode": "RGB",
+    "issues": []
+  },
+  "saved_image_path": "outputs\\generated_garments\\images\\garment_7136bead.png"
+}

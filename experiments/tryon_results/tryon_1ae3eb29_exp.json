@@ -1,0 +1,26 @@
+{
+  "model": "CatVTON",
+  "status": "completed",
+  "garment_type": "garment",
+  "person_filename": "person_01.png",
+  "garment_filename": "generated_garment.png",
+  "saved_image_path": "outputs\\virtual_tryon\\images\\tryon_1ae3eb29.png",
+  "inference_time_s": 24.65,
+  "peak_vram_mb": 9981.35791015625,
+  "resolution": [
+    512,
+    512
+  ],
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "validation_status": "passed",
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "confidence": 0.95,
+    "issues": []
+  }
+}

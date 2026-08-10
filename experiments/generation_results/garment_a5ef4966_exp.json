@@ -1,0 +1,132 @@
+{
+  "garment_id": "garment_a5ef4966",
+  "positive_prompt": "Edit fabric-filled dress mockup into wearable women dress: round neckline, short-sleeves, slim fit. Keep exact uploaded print/colors (white, brown; cotton, printed). Do not recolor.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 45,
+    "token_budget": 77,
+    "prompt_compacted": true,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "fabric": "linen",
+    "texture": "smooth",
+    "dominant_colors": [
+      "white",
+      "brown"
+    ],
+    "color": "match_fabric",
+    "style": "casual",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "pattern": "printed",
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, brown printed textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "dress",
+    "material": "cotton",
+    "fabric": "linen",
+    "texture": "smooth",
+    "neckline": "round_neck",
+    "sleeve": "short_sleeve",
+    "occasion": "casual",
+    "season": "summer",
+    "fit": "slim fit",
+    "style": "casual",
+    "force_recolor": false
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "dress",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "pixel_variance": 1361.77,
+    "sharpness_edge_var": 670.16,
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 3,
+  "guidance_scale": 2.5,
+  "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\garment_a5ef4966.png",
+  "raw_image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\raw\\garment_a5ef4966_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.403,
+    "prompt_building_s": 0.397,
+    "fabric_conditioning_s": 0.022,
+    "image_saving_s": 0.041,
+    "total_pipeline_s": 570.748
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": true,
+    "has_image": true,
+    "vram_before_mb": 103.15,
+    "vram_after_mb": 104.15,
+    "peak_vram_mb": 10307.36,
+    "cpu_ram_before_mb": 6593.9,
+    "cpu_ram_after_mb": 7470.5,
+    "generation_time_s": 567.154,
+    "model_load_time_s": 0.001,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 53.417,
+    "prompt_encode_cached": false,
+    "inference_time_s": 421.895,
+    "vae_decode_time_s": 19.209,
+    "diffusion_pipeline_s": 441.104,
+    "per_step_durations_s": [
+      179.118,
+      122.767,
+      120.01
+    ],
+    "num_inference_steps": 3,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 36.92,
+      "load_count": 1,
+      "reuse_count": 1,
+      "pipeline_resident": true,
+      "pytorch_cuda_alloc_conf": "expandable_segments:True",
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "cuda_allocated_mb": 103.2,
+      "cuda_reserved_mb": 228.0,
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    }
+  }
+}

@@ -1,0 +1,122 @@
+{
+  "garment_id": "garment_day18_quality",
+  "positive_prompt": "Edit fabric-filled shirt mockup into wearable women shirt: round neckline, short-sleeves, regular fit. Keep exact uploaded print/colors (white, red; cotton, floral). Do not recolor.",
+  "negative_prompt": "fabric swatch, textile sample, fabric close-up, repeating textile fill, abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, soft focus, muddy details, low resolution, human model, person, face, mannequin, busy background, distorted proportions, artifacts",
+  "prompt_stats": {
+    "token_count": 45,
+    "token_budget": 77,
+    "prompt_compacted": true,
+    "truncated": false
+  },
+  "fabric_metadata": {
+    "material": "cotton",
+    "texture": "smooth",
+    "style": "casual",
+    "pattern": "floral",
+    "dominant_colors": [
+      "white",
+      "red"
+    ],
+    "color_source": "fabric_pixels",
+    "fabric_appearance": "white, red floral textile"
+  },
+  "user_customization": {
+    "gender": "women",
+    "garment_type": "shirt",
+    "sleeve": "short_sleeve",
+    "neckline": "round_neck",
+    "size": "M",
+    "fit": "regular",
+    "generation_mode": "Standard"
+  },
+  "validation": {
+    "valid": true,
+    "is_valid": true,
+    "garment": "shirt",
+    "human_detected": false,
+    "mannequin_detected": false,
+    "confidence": 0.94,
+    "resolution": [
+      512,
+      512
+    ],
+    "mode": "RGB",
+    "pixel_variance": 1806.0,
+    "sharpness_edge_var": 2813.54,
+    "issues": []
+  },
+  "generation_mode": "Standard",
+  "mode_key": "standard",
+  "model": "FLUX.1-Kontext",
+  "height": 512,
+  "width": 512,
+  "num_inference_steps": 3,
+  "guidance_scale": 2.5,
+  "image_path": "outputs\\generated_garments\\images\\garment_day18_quality.png",
+  "raw_image_path": "outputs\\generated_garments\\raw\\garment_day18_quality_raw.png",
+  "pipeline_timings": {
+    "fabric_appearance_s": 0.058,
+    "prompt_building_s": 2.722,
+    "fabric_conditioning_s": 0.008,
+    "image_saving_s": 0.023,
+    "total_pipeline_s": 601.554
+  },
+  "stats": {
+    "was_fallback_used": false,
+    "was_real_flux_used": true,
+    "model_kind": "flux-kontext",
+    "model_reused": false,
+    "has_image": true,
+    "vram_before_mb": 0.0,
+    "vram_after_mb": 9.13,
+    "peak_vram_mb": 10208.93,
+    "cpu_ram_before_mb": 6642.2,
+    "cpu_ram_after_mb": 7386.8,
+    "generation_time_s": 598.147,
+    "model_load_time_s": 34.393,
+    "image_preprocess_time_s": 0.0,
+    "prompt_encoding_time_s": 38.178,
+    "prompt_encode_cached": false,
+    "inference_time_s": 415.532,
+    "vae_decode_time_s": 9.498,
+    "diffusion_pipeline_s": 425.03,
+    "per_step_durations_s": [
+      162.839,
+      109.975,
+      142.718
+    ],
+    "num_inference_steps": 3,
+    "guidance_scale": 2.5,
+    "height": 512,
+    "width": 512,
+    "max_sequence_length": 128,
+    "output_size": [
+      512,
+      512
+    ],
+    "offload_strategy": "model_cpu_offload",
+    "attention_backend": "sdpa",
+    "torch_compile": false,
+    "bnb_4bit": true,
+    "runtime": {
+      "model_kind": "flux-kontext",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "attention_backend": "sdpa",
+      "torch_compile": false,
+      "init_time_s": 34.39,
+      "load_count": 1,
+      "reuse_count": 0,
+      "pipeline_resident": true,
+      "pytorch_cuda_alloc_conf": "expandable_segments:True",
+      "torch_version": "2.6.0+cu124",
+      "cuda_available": true,
+      "cuda_version": "12.4",
+      "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "cuda_allocated_mb": 0.0,
+      "cuda_reserved_mb": 0.0,
+      "diffusers_version": "0.39.0",
+      "bitsandbytes_version": "0.50.0"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "note": "Prompt/mode micro-benchmark only. Wall-clock generation times must come from actual RTX 3050 runs via [FLUX PROFILE] logs \u2014 do not invent timings.",
+  "prompt": {
+    "token_count": 70,
+    "token_budget": 77,
+    "prompt_compacted": false,
+    "truncated": false,
+    "prompt": "Edit fabric-filled dress mockup into sharp detailed photoreal women dress: round neckline, short-sleeves, slim fit. Keep exact fabric print, color, texture (navy blue, cotton, floral). Clear seams, folds, hem, edges. White studio fashion product photo. No model, not a swatch. casual casual.",
+    "prompt_build_s": 5.6996,
+    "clip_budget": 77
+  },
+  "modes": [
+    {
+      "requested_mode": "Preview",
+      "resolved_mode": "Preview",
+      "mode_key": "preview",
+      "height": 384,
+      "width": 384,
+      "steps": 3,
+      "guidance": 2.5
+    },
+    {
+      "requested_mode": "Standard",
+      "resolved_mode": "Standard",
+      "mode_key": "standard",
+      "height": 512,
+      "width": 512,
+      "steps": 4,
+      "guidance": 2.5
+    },
+    {
+      "requested_mode": "Production",
+      "resolved_mode": "Production",
+      "mode_key": "production",
+      "height": 512,
+      "width": 512,
+      "steps": 8,
+      "guidance": 2.5
+    },
+    {
+      "requested_mode": "Fast Preview",
+      "resolved_mode": "Preview",
+      "mode_key": "preview",
+      "height": 384,
+      "width": 384,
+      "steps": 3,
+      "guidance": 2.5
+    },
+    {
+      "requested_mode": "High Quality",
+      "resolved_mode": "Production",
+      "mode_key": "production",
+      "height": 512,
+      "width": 512,
+      "steps": 8,
+      "guidance": 2.5
+    }
+  ],
+  "recommended_defaults": {
+    "preview": "384x384 / 3 steps / guidance 2.5",
+    "standard": "512x512 / 4 steps / guidance 2.5",
+    "production": "512x512 / 8 steps / guidance 2.5 (768 optional via FLUX_PRODUCTION_SIZE)",
+    "attention": "sdpa (auto)",
+    "torch_compile": false,
+    "offload": "model_cpu_offload",
+    "quantization": "nf4"
+  }
+}
