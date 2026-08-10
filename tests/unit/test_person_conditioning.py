@@ -1,7 +1,7 @@
 import pytest
 from PIL import Image
-from src.virtual_tryon.models import PersonConditioningInput
-from src.virtual_tryon.person_conditioning import PersonConditioner
+from src.features.virtual_tryon.models import PersonConditioningInput
+from src.features.virtual_tryon.person_conditioning import PersonConditioner
 
 def test_person_conditioning_preparation():
     conditioner = PersonConditioner(target_resolution=(512, 512))

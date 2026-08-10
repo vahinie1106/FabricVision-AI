@@ -63,16 +63,12 @@ def generate_flux_garment(
             "fit": fit.lower().replace(" ", "_"),
         }
 
-        progress(0.7, desc="Stage 5: Running FLUX Kontext Generation")
-        num_steps = 2 if generation_mode == "Fast Preview" else 4
+        progress(0.7, desc="Stage 5: Running FLUX.1-Kontext Generation")
         flux_config = GarmentGenerationConfig(
             config_dir=str(workspace_root / "configs"),
+            config_path=str(workspace_root / "configs" / "custom_generator" / "flux_config.yaml"),
             output_root=str(workspace_root / "outputs" / "garment_generation"),
             experiments_root=str(workspace_root / "experiments"),
-            height=512,
-            width=512,
-            num_inference_steps=num_steps,
-            guidance_scale=3.5,
             generation_mode=generation_mode,
             allow_fallback=True,
         )
@@ -199,8 +195,8 @@ def create_generator_ui(model_mgr: ModelManager):
             with gr.Row():
                 generation_mode_dd = gr.Dropdown(
                     label="Generation Quality",
-                    choices=["Fast Preview", "High Quality"],
-                    value="Fast Preview",
+                    choices=["Preview", "Standard", "Production"],
+                    value="Standard",
                 )
                 generate_flux_btn = gr.Button("Generate Garment", variant="primary", elem_classes=["primary"])
                 

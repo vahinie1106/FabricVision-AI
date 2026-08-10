@@ -2,9 +2,9 @@ import pytest
 from pathlib import Path
 from PIL import Image, ImageDraw
 
-from src.virtual_tryon.models import PersonConditioningInput, GarmentConditioningInput
-from src.virtual_tryon.tryon_pipeline import TryOnConfig, VirtualTryOnPipeline
-from src.models.model_manager import ModelManager
+from src.features.virtual_tryon.models import PersonConditioningInput, GarmentConditioningInput
+from src.features.virtual_tryon.tryon_pipeline import TryOnConfig, VirtualTryOnPipeline
+from src.common.models.model_manager import ModelManager
 
 
 def create_sample_image(color1, color2, width=512, height=512):
@@ -14,7 +14,8 @@ def create_sample_image(color1, color2, width=512, height=512):
     return img
 
 
-def test_full_virtual_tryon_pipeline_integration(tmp_path):
+def test_full_virtual_tryon_pipeline_integration(tmp_path, monkeypatch):
+    monkeypatch.setenv("CATVTON_REQUIRE_REAL", "false")
     output_dir = tmp_path / "outputs" / "virtual_tryon"
     exp_dir = tmp_path / "experiments"
 
@@ -28,7 +29,7 @@ def test_full_virtual_tryon_pipeline_integration(tmp_path):
         output_root=str(output_dir),
         experiments_root=str(exp_dir),
         height=512,
-        width=512,
+        width=384,
         allow_fallback=True,
     )
     pipeline = VirtualTryOnPipeline(config=config)
@@ -45,8 +46,14 @@ def test_full_virtual_tryon_pipeline_integration(tmp_path):
         output_filename="test_integration_tryon",
     )
 
-    assert result.status == "completed"
+    assert result.status in ("completed", "completed_with_fallback")
     assert Path(result.image_path).exists()
     assert Path(result.metadata_path).exists()
     assert result.validation["valid"] is True
     assert result.validation["validation_status"] == "passed"
+    import json
+
+    meta = json.loads(Path(result.metadata_path).read_text(encoding="utf-8"))
+    assert "was_real_catvton_used" in meta
+    assert "mask_source" in meta
+    assert meta.get("was_fallback_used") is (result.status == "completed_with_fallback")

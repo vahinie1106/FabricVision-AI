@@ -5,3 +5,7 @@ albumentations
 pyyaml
 tqdm
 scikit-image
+# FastAPI TestClient (starlette) requires httpx for tests/test_direct_backend.py
+httpx
+fastapi
+uvicorn

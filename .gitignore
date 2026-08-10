@@ -6,3 +6,23 @@ outputs/
 .gradio/
 datasets/
 models/
+
+# Runtime / generated data
+data/uploads/
+*.log
+
+# Generated experiment artifacts
+experiments/generation_results/Baseline_512x512_3step/
+experiments/generation_results/Candidate_A_512x512_12step_preencode/
+experiments/generation_results/Candidate_B_512x512_16step_preencode/
+
+
+# Runtime / generated data
+data/uploads/
+*.log
+
+# Generated experiment artifacts
+experiments/generation_results/Baseline_512x512_3step/
+experiments/generation_results/Candidate_A_512x512_12step_preencode/
+experiments/generation_results/Candidate_B_512x512_16step_preencode/
+

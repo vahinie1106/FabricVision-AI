@@ -1,6 +1,74 @@
-model_path: models/flux
+model_path: models/flux-kontext
+hf_model_id: eramth/flux-kontext-4bit
+official_model_id: black-forest-labs/FLUX.1-Kontext-dev
 device: auto
 precision: bfloat16
-enable_sequential_cpu_offload: true
-enable_attention_slicing: true
-max_sequence_length: 512
+
+# Memory: bnb NF4 + model_cpu_offload is the validated RTX 3050 6GB path.
+# Do NOT enable sequential_cpu_offload with bitsandbytes (meta-tensor risk).
+enable_model_cpu_offload: true
+enable_attention_slicing: false
+# CLIP prompts are ~70 tokens; T5 at 512 measured ~360s encode on this GPU.
+max_sequence_length: 128
+# VAE tiling softens garment edges — keep false unless OOM on larger sizes
+enable_vae_tiling: false
+
+# Optimizations (overridable via env)
+enable_torch_compile: false
+attention_backend: auto  # auto | sdpa | flash | xformers | default
+profile: true
+# Pre-encode T5 once, cache embeds, then free text encoders before diffusion.
+# Measured Candidate A: encode ~48–50s at seq=128; avoids re-paying T5 under offload.
+preencode_prompt: true
+
+default_generation_mode: standard
+
+# =============================================================================
+# Generation modes — values from Day-17 MEASURED runs on RTX 3050 6GB
+# (NF4 + model_cpu_offload + SDPA). DO NOT raise steps without a new benchmark:
+# each extra step costs ~120–400s under CPU↔GPU offload thrash.
+#
+# Measured cold Standard 512×512 / 3 steps ≈ 603s (~10 min)
+# Measured Production 512×512 / 4 steps ≈ 12–20 min (thermal variance)
+# 12–16 step configs previously pushed totals toward ~19–32 min — rejected.
+# 640/768 did NOT fix softness and cost ~2–2.5× runtime — rejected as defaults.
+# <2.5 min / 5-min catalog-quality is NOT achievable on this hardware path.
+# =============================================================================
+
+# Preview — structure check (measured class ~6–8 min cold at 384/few steps)
+preview:
+  height: 384
+  width: 384
+  num_inference_steps: 3
+  guidance_scale: 2.5
+  measured_runtime_note: "~6-8 min cold (Day-17 class); not <2.5 min"
+
+fast_preview:
+  height: 384
+  width: 384
+  num_inference_steps: 3
+  guidance_scale: 2.5
+  measured_runtime_note: "~6-8 min cold (Day-17 class); not <2.5 min"
+
+# Standard (DEFAULT) — Day-17 cold measured ≈ 603.5s @ 512/3
+standard:
+  height: 512
+  width: 512
+  num_inference_steps: 3
+  guidance_scale: 2.5
+  measured_runtime_s_cold: 603.5
+
+# Production — one extra denoise step; still within measured budget
+production:
+  height: 512
+  width: 512
+  num_inference_steps: 4
+  guidance_scale: 2.5
+  measured_runtime_note: "~12-20 min depending on thermal/session load"
+
+high_quality:
+  height: 512
+  width: 512
+  num_inference_steps: 4
+  guidance_scale: 2.5
+  measured_runtime_note: "alias of production on this GPU"

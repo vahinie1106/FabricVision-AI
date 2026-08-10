@@ -2,8 +2,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.preprocessing.dataset_loader import DatasetLoader
-from src.preprocessing.preprocessing_pipeline import PreprocessingConfig, PreprocessingPipeline
+from src.features.preprocessing.dataset_loader import DatasetLoader
+from src.features.preprocessing.preprocessing_pipeline import PreprocessingConfig, PreprocessingPipeline
 
 
 def test_dataset_loader_discovers_images_and_metadata(tmp_path: Path) -> None:

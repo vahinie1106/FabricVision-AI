@@ -1,10 +1,10 @@
 import json
 from pathlib import Path
-from src.garment_generation.prompting.garment_prompt_builder import GarmentPromptBuilder
+from src.features.custom_generator.prompting.garment_prompt_builder import GarmentPromptBuilder
 
 def test_color_vocabulary_normalization():
     builder = GarmentPromptBuilder(Path("configs"))
-    color_path = Path("configs/color_vocabulary.json")
+    color_path = Path("configs/semantic_analysis/color_vocabulary.json")
     assert color_path.exists()
     
     with open(color_path, "r", encoding="utf-8") as f:

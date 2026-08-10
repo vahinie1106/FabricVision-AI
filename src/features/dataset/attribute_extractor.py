@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List
 
-from .utils import infer_gender_from_path
+from src.common.utils.utils import infer_gender_from_path
 
 
 class AttributeExtractor:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.dataset_management.dataset_manager import DatasetManagementConfig, DatasetManager
+from src.features.dataset.dataset_manager import DatasetManagementConfig, DatasetManager
 
 
 def test_dataset_management_pipeline_creates_metadata_and_reports(tmp_path: Path) -> None:

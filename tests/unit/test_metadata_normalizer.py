@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from src.semantic_analysis.validation.metadata_normalizer import MetadataNormalizer
+from src.features.semantic_analysis.validation.metadata_normalizer import MetadataNormalizer
 
 def test_normalization_space_to_snake():
     normalizer = MetadataNormalizer(Path("configs"))

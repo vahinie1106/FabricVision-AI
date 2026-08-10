@@ -1,45 +1,103 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { ImageDropzone } from "@/components/ui/ImageDropzone";
 import { Button } from "@/components/ui/Button";
-import { Skeleton } from "@/components/feedback/Skeleton";
-import { ProgressTimeline, TimelineStep } from "@/components/feedback/ProgressTimeline";
-import { Sparkles, Download, Wand2, RefreshCw } from "lucide-react";
+import { LiveProgress } from "@/components/feedback/LiveProgress";
+import { EmptyState } from "@/components/feedback/EmptyState";
+import { FriendlyError } from "@/components/feedback/FriendlyError";
+import { ResultCard, DownloadCenter } from "@/components/studio/ResultCard";
+import { ImageComparison } from "@/components/studio/ImageComparison";
+import { HistorySidebar } from "@/components/studio/HistorySidebar";
+import { useToast } from "@/hooks/useToast";
+import { useLiveProgress, formatElapsed } from "@/hooks/useLiveProgress";
+import { useGenerationHistory, type HistoryItem } from "@/hooks/useGenerationHistory";
+import { toFriendlyError, type FriendlyError as FriendlyErrorType } from "@/lib/friendlyErrors";
+import { resolveMediaUrl } from "@/lib/resolveMediaUrl";
+import {
+  downloadFromUrl,
+  downloadJson,
+  downloadText,
+  downloadZip,
+  fetchAsBlob,
+} from "@/lib/download";
+import { Shirt, Sparkles, RefreshCw, Columns2 } from "lucide-react";
+import type { GenerationMode } from "@/types";
 
 export default function CustomGarmentGenerator() {
+  const toast = useToast();
+  const progress = useLiveProgress("garment");
+  const { items: history, addItem, removeItem } = useGenerationHistory("custom-garment");
+
   const [fabricImage, setFabricImage] = useState<File | null>(null);
+  const [fabricPreview, setFabricPreview] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDone, setIsDone] = useState(false);
+  const [showCompare, setShowCompare] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const [activeHistoryId, setActiveHistoryId] = useState<string | null>(null);
+  const [friendlyError, setFriendlyError] = useState<FriendlyErrorType | null>(null);
 
-  // Identity Fields
   const [gender, setGender] = useState("Women");
   const [season, setSeason] = useState("Summer");
   const [occasion, setOccasion] = useState("Casual");
-
-  // Garment Configuration Fields
   const [garmentType, setGarmentType] = useState("Dress");
   const [fit, setFit] = useState("Slim Fit");
   const [style, setStyle] = useState("Casual");
-
-  // Physical Fields (UI exposes Fabric & Color; Material & Texture remain hidden state values)
   const [fabric, setFabric] = useState("Cotton");
-  const [material] = useState("Cotton"); // Hidden from UI MVP
-  const [texture] = useState("Smooth");  // Hidden from UI MVP
-  const [color, setColor] = useState("White");
-
-  // Construction Fields
+  const [material] = useState("Cotton");
+  const [texture] = useState("Smooth");
+  const [color, setColor] = useState("Match Fabric");
   const [sleeve, setSleeve] = useState("Short Sleeve");
   const [neckline, setNeckline] = useState("Round Neck");
+  /** Standard = default quality/speed balance; Production maximizes detail on 6GB. */
+  const [generationMode, setGenerationMode] = useState<GenerationMode>("Standard");
 
   const [resultUrl, setResultUrl] = useState<string | null>(null);
-  const [metadata, setMetadata] = useState<any>(null);
+  const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  const [durationMs, setDurationMs] = useState<number | undefined>();
 
-  const [steps, setSteps] = useState<TimelineStep[]>([
-    { id: "01", label: "Queued", status: "waiting" },
-    { id: "02", label: "Processing", status: "waiting" },
-    { id: "03", label: "Completed", status: "waiting" },
-  ]);
+  const promptSummary = useMemo(
+    () =>
+      `${gender} ${color} ${fabric} ${garmentType}, ${fit}, ${style} style, ${sleeve}, ${neckline}, ${season}, ${occasion}`,
+    [gender, color, fabric, garmentType, fit, style, sleeve, neckline, season, occasion]
+  );
+
+  const resolvedResult = resolveMediaUrl(resultUrl) || resultUrl;
+
+  /** Prefer backend-measured generation time over client poll clock when available. */
+  const measuredDurationMs = useMemo(() => {
+    const backendSec = metadata?.generation_time_s;
+    if (typeof backendSec === "number" && backendSec > 0) {
+      return Math.round(backendSec * 1000);
+    }
+    return durationMs;
+  }, [metadata, durationMs]);
+
+  const resultResolution = useMemo(() => {
+    const w = metadata?.width;
+    const h = metadata?.height;
+    if (typeof w === "number" && typeof h === "number") return `${w}×${h}`;
+    return undefined;
+  }, [metadata]);
+
+  const onFabricSelected = useCallback(
+    (file: File | null) => {
+      setFabricImage(file);
+      setFriendlyError(null);
+      if (fabricPreview) URL.revokeObjectURL(fabricPreview);
+      if (file) {
+        const url = URL.createObjectURL(file);
+        setFabricPreview(url);
+        toast.success("Image uploaded", "Fabric texture ready for generation.");
+      } else {
+        setFabricPreview(null);
+      }
+    },
+    [fabricPreview, toast]
+  );
 
   const handleGenerate = async () => {
     if (!fabricImage) return;
@@ -48,12 +106,11 @@ export default function CustomGarmentGenerator() {
     setIsDone(false);
     setResultUrl(null);
     setMetadata(null);
-
-    setSteps([
-      { id: "01", label: "Queued", status: "processing" },
-      { id: "02", label: "Processing", status: "waiting" },
-      { id: "03", label: "Completed", status: "waiting" },
-    ]);
+    setFriendlyError(null);
+    setShowCompare(false);
+    setActiveHistoryId(null);
+    progress.start();
+    toast.info("Generation started", "FLUX Kontext is preparing your garment.");
 
     try {
       const { GenerationService } = await import("@/services/generationService");
@@ -70,377 +127,554 @@ export default function CustomGarmentGenerator() {
           fabric,
           material,
           texture,
-          color,
+          color: color.toLowerCase() === "match fabric" ? "match_fabric" : color,
           sleeve,
           neckline,
+          generationMode,
         },
-        (progress, currentStep) => {
-          if (progress > 0 && progress < 100) {
-            setSteps([
-              { id: "01", label: "Queued", status: "completed" },
-              { id: "02", label: currentStep || "Processing", status: "processing" },
-              { id: "03", label: "Completed", status: "waiting" },
-            ]);
-          }
+        (pct, currentStep) => {
+          progress.update(pct, currentStep);
         }
       );
 
-      setSteps([
-        { id: "01", label: "Queued", status: "completed" },
-        { id: "02", label: "Processing", status: "completed" },
-        { id: "03", label: "Completed", status: "completed" },
-      ]);
+      const elapsed = progress.complete();
+      const url = response.resultUrl || null;
+      const meta = (response.metadata as unknown as Record<string, unknown>) || null;
+      const ts = new Date().toISOString();
 
-      setResultUrl(response.resultUrl || null);
-      setMetadata(response.metadata || null);
+      setResultUrl(url);
+      setMetadata(meta);
+      setGeneratedAt(ts);
+      setDurationMs(elapsed);
       setIsDone(true);
+
+      const thumb = resolveMediaUrl(url) || fabricPreview || "";
+      const entry = addItem({
+        module: "custom-garment",
+        thumbnailUrl: thumb,
+        resultUrl: url || undefined,
+        title: `${color} ${garmentType}`,
+        model: "FLUX Kontext",
+        status: "completed",
+        durationMs: elapsed,
+        metadata: meta || undefined,
+        promptSummary,
+        createdAt: ts,
+      });
+      setActiveHistoryId(entry.id);
+      toast.success("Generation completed", "Your garment concept is ready.");
     } catch (err) {
       console.error(err);
-      setSteps([
-        { id: "01", label: "Queued", status: "failed" },
-        { id: "02", label: "Processing", status: "failed" },
-        { id: "03", label: "Completed", status: "failed" },
-      ]);
+      progress.fail();
+      const fe = toFriendlyError(err);
+      setFriendlyError(fe);
+      toast.error(fe.title, fe.message);
     } finally {
       setIsGenerating(false);
     }
   };
 
-  return (
-    <div className="w-full flex flex-col lg:flex-row h-[calc(100vh-140px)] gap-6 overflow-hidden">
+  const restoreHistory = (item: HistoryItem) => {
+    setActiveHistoryId(item.id);
+    setResultUrl(item.resultUrl || item.thumbnailUrl);
+    setMetadata((item.metadata as Record<string, unknown>) || null);
+    setGeneratedAt(item.createdAt);
+    setDurationMs(item.durationMs);
+    setIsDone(item.status === "completed");
+    setIsGenerating(false);
+    setFriendlyError(null);
+    setShowCompare(false);
+    toast.info("History restored", item.title);
+  };
 
-      {/* LEFT PANEL - Controls */}
-      <div className="w-full lg:w-1/3 min-w-[340px] flex flex-col h-full bg-white rounded-2xl border border-gray-200 shadow-sm overflow-y-auto">
-        <div className="p-6 border-b border-gray-100 sticky top-0 bg-white z-10">
+  const downloadActions = [
+    {
+      id: "png",
+      label: "Download PNG",
+      icon: "png" as const,
+      disabled: !resolvedResult,
+      onClick: async () => {
+        if (!resolvedResult) return;
+        await downloadFromUrl(resolvedResult, `fabricvision-garment-${Date.now()}.png`);
+        toast.success("Download ready", "PNG saved to your device.");
+      },
+    },
+    {
+      id: "json",
+      label: "Download Metadata JSON",
+      icon: "json" as const,
+      disabled: !isDone,
+      onClick: async () => {
+        await downloadJson(
+          {
+            generatedAt,
+            model: "FLUX Kontext",
+            prompt: promptSummary,
+            parameters: {
+              gender,
+              season,
+              occasion,
+              garmentType,
+              fit,
+              style,
+              fabric,
+              color,
+              sleeve,
+              neckline,
+            },
+            metadata,
+            resultUrl,
+          },
+          `fabricvision-garment-meta-${Date.now()}.json`
+        );
+        toast.success("JSON exported", "Metadata downloaded.");
+      },
+    },
+    {
+      id: "prompt",
+      label: "Download Prompt",
+      icon: "prompt" as const,
+      disabled: !isDone,
+      onClick: async () => {
+        await downloadText(promptSummary, `fabricvision-prompt-${Date.now()}.txt`);
+        toast.success("Download ready", "Prompt text exported.");
+      },
+    },
+    {
+      id: "zip",
+      label: "Download ZIP",
+      icon: "zip" as const,
+      disabled: !resolvedResult,
+      onClick: async () => {
+        if (!resolvedResult) return;
+        const imageBlob = await fetchAsBlob(resolvedResult);
+        const metaBlob = new Blob(
+          [JSON.stringify({ prompt: promptSummary, metadata, generatedAt }, null, 2)],
+          { type: "application/json" }
+        );
+        const promptBlob = new Blob([promptSummary], { type: "text/plain" });
+        await downloadZip(
+          [
+            { name: "garment.png", blob: imageBlob },
+            { name: "metadata.json", blob: metaBlob },
+            { name: "prompt.txt", blob: promptBlob },
+          ],
+          `fabricvision-garment-${Date.now()}.zip`
+        );
+        toast.success("Download ready", "ZIP package exported.");
+      },
+    },
+  ];
+
+  return (
+    <div className="w-full flex flex-col xl:flex-row gap-4 sm:gap-6 min-h-[calc(100vh-140px)] xl:h-[calc(100vh-140px)] xl:overflow-hidden">
+      {/* LEFT PANEL */}
+      <div className="w-full xl:w-[340px] 2xl:w-[380px] flex flex-col bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden xl:h-full">
+        <div className="p-5 sm:p-6 border-b border-gray-100 bg-white z-10">
           <h2 className="text-xl font-bold flex items-center">
-            <Wand2 className="w-5 h-5 mr-2 text-[#1A1A1A]" />
+            <Sparkles className="w-5 h-5 mr-2 text-[#1A1A1A]" />
             Custom Garment
           </h2>
-          <p className="text-xs text-[#767676] mt-1">Configure complete fashion metadata parameters.</p>
+          <p className="text-xs text-[#767676] mt-1">
+            Upload → Customize → Generate → Download
+          </p>
         </div>
 
-        <div className="p-6 flex-1 space-y-8">
-          {/* WORKFLOW STEP 1: Base Fabric */}
+        <div className="p-5 sm:p-6 flex-1 space-y-8 overflow-y-auto">
           <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">1. Base Fabric</h3>
-            <ImageDropzone label="Upload Texture" onImageSelected={setFabricImage} />
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">
+              1. Base Fabric
+            </h3>
+            <ImageDropzone
+              label="Upload Fabric"
+              onImageSelected={onFabricSelected}
+              onValidationError={(msg) => {
+                toast.error("Invalid Image", msg);
+              }}
+            />
           </div>
 
-          {/* WORKFLOW STEP 2: Identity */}
           <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">2. Identity</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">
+              2. Identity
+            </h3>
             <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Gender</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={gender}
-                  onChange={(e) => setGender(e.target.value)}
-                >
-                  <option>Men</option>
-                  <option>Women</option>
-                  <option>Unisex</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Season</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={season}
-                  onChange={(e) => setSeason(e.target.value)}
-                >
-                  <option>Summer</option>
-                  <option>Winter</option>
-                  <option>Spring</option>
-                  <option>Autumn</option>
-                  <option>All Season</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Occasion</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={occasion}
-                  onChange={(e) => setOccasion(e.target.value)}
-                >
-                  <option>Casual</option>
-                  <option>Formal</option>
-                  <option>Party</option>
-                  <option>Sports</option>
-                  <option>Traditional</option>
-                  <option>Business</option>
-                </select>
-              </div>
+              <SelectField label="Gender" value={gender} onChange={setGender} options={["Men", "Women", "Unisex"]} />
+              <SelectField label="Season" value={season} onChange={setSeason} options={["Summer", "Winter", "Spring", "Autumn", "All Season"]} />
+              <SelectField label="Occasion" value={occasion} onChange={setOccasion} options={["Casual", "Formal", "Party", "Sports", "Traditional", "Business"]} />
             </div>
           </div>
 
-          {/* WORKFLOW STEP 3: Garment Configuration */}
           <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">3. Garment Configuration</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">
+              3. Garment Configuration
+            </h3>
             <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Garment Type</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={garmentType}
-                  onChange={(e) => setGarmentType(e.target.value)}
-                >
-                  <option>Dress</option>
-                  <option>Shirt</option>
-                  <option>Trousers</option>
-                  <option>Jacket</option>
-                  <option>Kurti</option>
-                  <option>Lehenga</option>
-                  <option>Saree</option>
-                  <option>Top</option>
-                  <option>Skirt</option>
-                  <option>Jumpsuit</option>
-                  <option>Hoodie</option>
-                  <option>Blazer</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Fit</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={fit}
-                  onChange={(e) => setFit(e.target.value)}
-                >
-                  <option>Slim Fit</option>
-                  <option>Regular</option>
-                  <option>Oversized</option>
-                  <option>Relaxed</option>
-                  <option>Tailored</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Style</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={style}
-                  onChange={(e) => setStyle(e.target.value)}
-                >
-                  <option>Casual</option>
-                  <option>Formal</option>
-                  <option>Avant-Garde</option>
-                  <option>Minimalist</option>
-                  <option>Vintage</option>
-                  <option>Streetwear</option>
-                  <option>Bohemian</option>
-                </select>
-              </div>
+              <SelectField
+                label="Garment Type"
+                value={garmentType}
+                onChange={setGarmentType}
+                options={["Dress", "Shirt", "Trousers", "Jacket", "Kurti", "Lehenga", "Saree", "Top", "Skirt", "Jumpsuit", "Hoodie", "Blazer"]}
+              />
+              <SelectField label="Fit" value={fit} onChange={setFit} options={["Slim Fit", "Regular", "Oversized", "Relaxed", "Tailored"]} />
+              <SelectField
+                label="Style"
+                value={style}
+                onChange={setStyle}
+                options={["Casual", "Formal", "Avant-Garde", "Minimalist", "Vintage", "Streetwear", "Bohemian"]}
+              />
             </div>
           </div>
 
-          {/* WORKFLOW STEP 4: Physical Attributes */}
           <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">4. Physical Attributes</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">
+              4. Physical Attributes
+            </h3>
             <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Fabric</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={fabric}
-                  onChange={(e) => setFabric(e.target.value)}
-                >
-                  <option>Cotton</option>
-                  <option>Polyester</option>
-                  <option>Wool</option>
-                  <option>Silk</option>
-                  <option>Linen</option>
-                  <option>Denim</option>
-                  <option>Leather</option>
-                  <option>Fleece</option>
-                  <option>Nylon</option>
-                  <option>Spandex</option>
-                  <option>Velvet</option>
-                  <option>Corduroy</option>
-                  <option>Satin</option>
-                  <option>Chiffon</option>
-                  <option>Lace</option>
-                  <option>Rayon</option>
-                  <option>Viscose</option>
-                  <option>Cashmere</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Color</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={color}
-                  onChange={(e) => setColor(e.target.value)}
-                >
-                  <option>Black</option>
-                  <option>White</option>
-                  <option>Red</option>
-                  <option>Blue</option>
-                  <option>Green</option>
-                  <option>Yellow</option>
-                  <option>Navy Blue</option>
-                  <option>Royal Blue</option>
-                  <option>Maroon</option>
-                  <option>Beige</option>
-                  <option>Olive Green</option>
-                  <option>Pastel Pink</option>
-                  <option>Lavender</option>
-                  <option>Cream</option>
-                </select>
-              </div>
+              <SelectField
+                label="Fabric"
+                value={fabric}
+                onChange={setFabric}
+                options={["Cotton", "Polyester", "Wool", "Silk", "Linen", "Denim", "Leather", "Fleece", "Nylon", "Spandex", "Velvet", "Corduroy", "Satin", "Chiffon", "Lace", "Rayon", "Viscose", "Cashmere"]}
+              />
+              <SelectField
+                label="Color"
+                value={color}
+                onChange={setColor}
+                options={[
+                  "Match Fabric",
+                  "Black",
+                  "White",
+                  "Red",
+                  "Blue",
+                  "Green",
+                  "Yellow",
+                  "Navy Blue",
+                  "Royal Blue",
+                  "Maroon",
+                  "Beige",
+                  "Olive Green",
+                  "Pastel Pink",
+                  "Lavender",
+                  "Cream",
+                ]}
+              />
+              <p className="text-[11px] text-[#767676] mt-1 leading-relaxed">
+                Match Fabric keeps the uploaded textile colors (recommended). Other values only apply if you force a recolor.
+              </p>
             </div>
           </div>
 
-          {/* WORKFLOW STEP 5: Construction */}
           <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">5. Construction</h3>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">
+              5. Construction
+            </h3>
             <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Sleeve</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={sleeve}
-                  onChange={(e) => setSleeve(e.target.value)}
-                >
-                  <option>Sleeveless</option>
-                  <option>Cap Sleeve</option>
-                  <option>Short Sleeve</option>
-                  <option>Half Sleeve</option>
-                  <option>Three Quarter Sleeve</option>
-                  <option>Full Sleeve</option>
-                  <option>Puff Sleeve</option>
-                  <option>Bell Sleeve</option>
-                  <option>Bishop Sleeve</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-[#767676] mb-1">Neckline</label>
-                <select
-                  className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
-                  value={neckline}
-                  onChange={(e) => setNeckline(e.target.value)}
-                >
-                  <option>Round Neck</option>
-                  <option>V Neck</option>
-                  <option>U Neck</option>
-                  <option>Collar Neck</option>
-                  <option>Boat Neck</option>
-                  <option>Square Neck</option>
-                  <option>Sweetheart Neck</option>
-                  <option>Halter Neck</option>
-                  <option>High Neck</option>
-                  <option>Mandarin Collar</option>
-                  <option>Off Shoulder</option>
-                  <option>Keyhole Neck</option>
-                </select>
-              </div>
+              <SelectField
+                label="Sleeve"
+                value={sleeve}
+                onChange={setSleeve}
+                options={["Sleeveless", "Cap Sleeve", "Short Sleeve", "Half Sleeve", "Three Quarter Sleeve", "Full Sleeve", "Puff Sleeve", "Bell Sleeve", "Bishop Sleeve"]}
+              />
+              <SelectField
+                label="Neckline"
+                value={neckline}
+                onChange={setNeckline}
+                options={["Round Neck", "V Neck", "U Neck", "Collar Neck", "Boat Neck", "Square Neck", "Sweetheart Neck", "Halter Neck", "High Neck", "Mandarin Collar", "Off Shoulder", "Keyhole Neck"]}
+              />
             </div>
+          </div>
+
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#1A1A1A] mb-4">
+              6. Quality Mode
+            </h3>
+            <SelectField
+              label="Generation Mode"
+              value={generationMode}
+              onChange={(v) => setGenerationMode(v as GenerationMode)}
+              options={["Preview", "Standard", "Production"]}
+            />
+            <p className="text-[11px] text-[#767676] mt-2 leading-relaxed">
+              Preview: fast structure check. Standard: default balance. Production: max practical
+              detail clarity on this GPU.
+            </p>
           </div>
         </div>
 
-        <div className="p-6 border-t border-gray-100 bg-[#FDFCFB] sticky bottom-0 z-10">
+        <div className="p-5 sm:p-6 border-t border-gray-100 bg-[#FDFCFB] space-y-3">
           <Button
             className="w-full py-4 text-sm uppercase tracking-wide"
             onClick={handleGenerate}
             disabled={!fabricImage || isGenerating}
             isLoading={isGenerating}
           >
-            {isGenerating ? "Synthesizing..." : "Generate AI Concept"}
+            {isGenerating ? "Generating..." : isDone ? "Generate Again" : "Generate Garment"}
           </Button>
         </div>
       </div>
 
-      {/* CENTER PANEL - Workspace Canvas */}
-      <div className="w-full lg:flex-1 h-full bg-[#F7F5F0] rounded-2xl border border-gray-200 shadow-inner relative flex flex-col items-center justify-center overflow-hidden">
+      {/* CENTER */}
+      <div className="w-full flex-1 min-h-[420px] bg-[#F7F5F0] rounded-2xl border border-gray-200 shadow-inner relative flex flex-col overflow-hidden xl:h-full">
+        <AnimatePresence mode="wait">
+          {!isGenerating && !isDone && !friendlyError && (
+            <motion.div
+              key="empty"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex items-center justify-center p-6"
+            >
+              <EmptyState
+                icon={Shirt}
+                title="No garment generated yet."
+                description="Upload a fabric image to begin. Configure your preferences, then generate a concept with FLUX Kontext."
+                className="border-0 bg-transparent shadow-none max-w-md"
+              />
+            </motion.div>
+          )}
 
-        {!isGenerating && !isDone && (
-          <div className="flex flex-col items-center text-center p-8 opacity-50">
-            <Sparkles className="w-16 h-16 text-gray-300 mb-4" />
-            <p className="text-gray-400 font-medium">Your canvas is empty.<br />Upload a fabric and configure your settings to begin.</p>
-          </div>
-        )}
-
-        {isGenerating && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/50 backdrop-blur-sm z-10">
-            <div className="flex flex-col items-center">
-              <Skeleton className="w-[400px] h-[500px] max-w-full rounded-2xl shadow-lg" />
-              <p className="mt-6 font-semibold text-[#1A1A1A] animate-pulse uppercase tracking-wider">Processing with FLUX Kontext...</p>
-            </div>
-          </div>
-        )}
-
-        {isDone && (
-          <div className="relative w-full h-full p-8 flex items-center justify-center">
-            <div className="w-full max-w-[500px] aspect-[4/5] bg-gradient-to-br from-gray-200 to-gray-50 rounded-2xl shadow-2xl overflow-hidden relative group">
-              {resultUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={resultUrl.startsWith("http") ? resultUrl : `http://127.0.0.1:8000${resultUrl}`}
-                  alt="Generated Garment"
-                  className="w-full h-full object-cover rounded-2xl"
+          {(isGenerating || (progress.active && !isDone)) && (
+            <motion.div
+              key="progress"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex items-center justify-center p-6"
+            >
+              <div className="w-full max-w-md bg-white rounded-2xl border border-gray-100 p-6 shadow-sm">
+                <p className="text-xs font-bold uppercase tracking-wider text-[#767676] mb-4">
+                  Live Progress
+                </p>
+                <LiveProgress
+                  stages={progress.stages}
+                  stageIndex={progress.stageIndex}
+                  stageLabel={progress.stageLabel}
+                  percent={progress.percent}
+                  elapsedMs={progress.elapsedMs}
+                  failed={progress.failed}
                 />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center text-gray-400 font-medium z-0">
-                  No output returned
+              </div>
+            </motion.div>
+          )}
+
+          {friendlyError && !isGenerating && (
+            <motion.div
+              key="error"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 flex items-center justify-center p-6"
+            >
+              <FriendlyError error={friendlyError} onRetry={handleGenerate} className="max-w-lg" />
+            </motion.div>
+          )}
+
+          {isDone && resolvedResult && (
+            <motion.div
+              key="result"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="flex-1 overflow-y-auto p-4 sm:p-6"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <h3 className="text-sm font-bold uppercase tracking-wider text-[#1A1A1A]">
+                  Generated Result
+                </h3>
+                <div className="flex gap-2">
+                  {fabricPreview && (
+                    <Button
+                      variant="secondary"
+                      className="py-2 px-3 text-xs"
+                      onClick={() => setShowCompare((v) => !v)}
+                    >
+                      <Columns2 className="w-3.5 h-3.5 mr-1.5" />
+                      {showCompare ? "Result Only" : "Before / After"}
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    className="py-2 px-3 text-xs"
+                    onClick={handleGenerate}
+                    disabled={!fabricImage || isGenerating}
+                  >
+                    <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                    Generate Again
+                  </Button>
                 </div>
+              </div>
+
+              <div className="max-w-xl mx-auto">
+                {showCompare && fabricPreview ? (
+                  <ImageComparison beforeSrc={fabricPreview} afterSrc={resolvedResult} />
+                ) : (
+                  <ResultCard
+                    imageUrl={resolvedResult}
+                    title={`${color} ${garmentType}`}
+                    meta={{
+                      model: `FLUX.1 Kontext · ${String(metadata?.generation_mode || generationMode)}`,
+                      timestamp: generatedAt || undefined,
+                      durationMs: measuredDurationMs,
+                      promptSummary,
+                      resolution: resultResolution,
+                      extra: {
+                        Steps:
+                          typeof metadata?.num_inference_steps === "number"
+                            ? String(metadata.num_inference_steps)
+                            : undefined,
+                        Guidance:
+                          typeof metadata?.guidance_scale === "number"
+                            ? String(metadata.guidance_scale)
+                            : undefined,
+                      },
+                    }}
+                  />
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* RIGHT */}
+      <div className="w-full xl:w-[300px] 2xl:w-[320px] flex flex-col gap-4 xl:h-full">
+        <div className="flex-1 bg-white rounded-2xl border border-gray-200 shadow-sm overflow-y-auto flex flex-col min-h-[280px]">
+          <div className="p-5 border-b border-gray-100">
+            <h2 className="text-sm font-bold uppercase tracking-wider text-[#1A1A1A]">AI Insights</h2>
+          </div>
+
+          <div className="p-5 flex-1 flex flex-col space-y-6">
+            {(isGenerating || isDone || progress.failed) && (
+              <LiveProgress
+                stages={progress.stages}
+                stageIndex={progress.stageIndex}
+                stageLabel={progress.stageLabel}
+                percent={isDone ? 100 : progress.percent}
+                elapsedMs={progress.elapsedMs}
+                failed={progress.failed}
+              />
+            )}
+
+            <div className={isDone ? "opacity-100" : "opacity-40"}>
+              <h3 className="text-xs font-bold uppercase tracking-wider text-[#767676] mb-3 border-b border-gray-100 pb-2">
+                Generated Metadata
+              </h3>
+              {isDone ? (
+                <div className="space-y-3">
+                  <MetaRow label="Category" value={String(metadata?.category || garmentType)} />
+                  <MetaRow label="Fabric" value={String(metadata?.fabric || fabric)} />
+                  <MetaRow label="Style Affinity" value={String(metadata?.styleAffinity || style)} />
+                  <MetaRow
+                    label="Mode"
+                    value={String(metadata?.generation_mode || generationMode)}
+                  />
+                  <MetaRow label="Model" value="FLUX.1-Kontext" />
+                  <MetaRow
+                    label="Fabric mode"
+                    value={color === "Match Fabric" ? "Match Fabric" : String(color)}
+                  />
+                  <MetaRow
+                    label="Resolution"
+                    value={resultResolution || "—"}
+                  />
+                  <MetaRow
+                    label="Steps"
+                    value={
+                      typeof metadata?.num_inference_steps === "number"
+                        ? String(metadata.num_inference_steps)
+                        : "—"
+                    }
+                  />
+                  <MetaRow
+                    label="Generation Time"
+                    value={
+                      typeof measuredDurationMs === "number"
+                        ? formatElapsed(measuredDurationMs)
+                        : "—"
+                    }
+                    accent
+                  />
+                  <MetaRow
+                    label="Confidence"
+                    value={
+                      typeof metadata?.confidenceScore === "number"
+                        ? `${((metadata.confidenceScore as number) * 100).toFixed(0)}%`
+                        : "95%"
+                    }
+                  />
+                </div>
+              ) : (
+                <p className="text-xs text-[#767676]">No metadata generated.</p>
               )}
             </div>
-          </div>
-        )}
-      </div>
 
-      {/* RIGHT PANEL - AI Insights */}
-      <div className="w-full lg:w-[320px] flex flex-col h-full bg-white rounded-2xl border border-gray-200 shadow-sm overflow-y-auto">
-        <div className="p-6 border-b border-gray-100">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-[#1A1A1A]">AI Insights</h2>
+            {isDone && <DownloadCenter actions={downloadActions} />}
+          </div>
         </div>
 
-        <div className="p-6 flex-1 flex flex-col space-y-8">
-
-          {/* Progress Section */}
-          <div className={isGenerating || isDone ? "opacity-100" : "opacity-30 pointer-events-none"}>
-            <ProgressTimeline steps={steps} />
-          </div>
-
-          {/* Metadata Section */}
-          <div className={`mt-auto ${isDone ? "opacity-100" : "opacity-30 pointer-events-none"}`}>
-            <h3 className="text-xs font-bold uppercase tracking-wider text-[#767676] mb-4 border-b border-gray-100 pb-2">Generated Metadata</h3>
-            <div className="space-y-3">
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-[#767676]">Category</span>
-                <span className="font-semibold text-[#1A1A1A] capitalize">{metadata?.category || garmentType}</span>
-              </div>
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-[#767676]">Fabric</span>
-                <span className="font-semibold text-[#1A1A1A] capitalize">{metadata?.fabric || fabric}</span>
-              </div>
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-[#767676]">Style Affinity</span>
-                <span className="font-semibold text-[#1A1A1A] capitalize">{metadata?.styleAffinity || style}</span>
-              </div>
-              <div className="flex justify-between items-center text-sm">
-                <span className="text-[#767676]">Confidence</span>
-                <span className="font-semibold text-green-600">{metadata?.confidenceScore ? `${(metadata.confidenceScore * 100).toFixed(0)}%` : "95%"}</span>
-              </div>
-            </div>
-
-            <div className="mt-8 space-y-3">
-              <Button className="w-full" disabled={!isDone}>
-                <Download className="w-4 h-4 mr-2" /> Export Asset
-              </Button>
-              <Button variant="secondary" className="w-full" disabled={!isDone}>
-                <RefreshCw className="w-4 h-4 mr-2" /> Send to Try-On
-              </Button>
-            </div>
-          </div>
-
+        <div className="hidden xl:block relative h-[240px]">
+          <HistorySidebar
+            items={history}
+            open={historyOpen}
+            onToggle={() => setHistoryOpen((o) => !o)}
+            onSelect={restoreHistory}
+            onRemove={removeItem}
+            activeId={activeHistoryId}
+            className="h-full"
+          />
         </div>
       </div>
 
+      {/* Mobile history */}
+      <div className="xl:hidden w-full">
+        <HistorySidebar
+          items={history}
+          open={historyOpen}
+          onToggle={() => setHistoryOpen((o) => !o)}
+          onSelect={restoreHistory}
+          onRemove={removeItem}
+          activeId={activeHistoryId}
+        />
+      </div>
+    </div>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-[#767676] mb-1">{label}</label>
+      <select
+        className="w-full bg-[#F7F5F0] border-none rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-[#1A1A1A] outline-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {options.map((o) => (
+          <option key={o}>{o}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function MetaRow({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div className="flex justify-between items-center text-sm gap-3">
+      <span className="text-[#767676]">{label}</span>
+      <span className={`font-semibold capitalize truncate ${accent ? "text-green-600" : "text-[#1A1A1A]"}`}>
+        {value}
+      </span>
     </div>
   );
 }

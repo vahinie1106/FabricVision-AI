@@ -22,10 +22,14 @@ async def generate_garment(
     texture: str = Form("smooth"),
     color: str = Form("white"),
     sleeve: str = Form("short"),
-    neckline: str = Form("round")
+    neckline: str = Form("round"),
+    generation_mode: str = Form("standard"),
 ):
     """
-    Submit a custom garment generation job.
+    Submit a custom garment generation job (FLUX.1-Kontext image-conditioned).
+
+    generation_mode: preview | standard | production
+    (also accepts legacy "Fast Preview" / "High Quality").
     """
     try:
         fabric_path = save_upload_file(fabric_image)
@@ -49,7 +53,8 @@ async def generate_garment(
         texture,
         color,
         sleeve,
-        neckline
+        neckline,
+        generation_mode,
     )
     
     return JobCreationResponse(job_id=job_id)

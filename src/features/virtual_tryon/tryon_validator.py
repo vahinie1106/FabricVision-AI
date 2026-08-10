@@ -8,7 +8,8 @@ from PIL import Image, ImageStat
 class TryOnValidator:
     """Validate virtual try-on output quality, resolution, color space, and pixel integrity."""
 
-    def __init__(self, min_resolution: int = 512) -> None:
+    def __init__(self, min_resolution: int = 384) -> None:
+        """min_resolution applies to the shorter image side (supports 384x512 portrait)."""
         self.min_resolution = min_resolution
         self.logger = logging.getLogger("fabricvision.virtual_tryon.validator")
 
@@ -26,9 +27,13 @@ class TryOnValidator:
             }
 
         width, height = result_image.size
+        shorter = min(width, height)
 
-        if width < self.min_resolution or height < self.min_resolution:
-            issues.append(f"Try-on image resolution ({width}x{height}) below minimum threshold ({self.min_resolution}px)")
+        if shorter < self.min_resolution:
+            issues.append(
+                f"Try-on image resolution ({width}x{height}) shorter side below "
+                f"minimum threshold ({self.min_resolution}px)"
+            )
 
         if result_image.mode != "RGB":
             issues.append(f"Invalid try-on image mode '{result_image.mode}', expected 'RGB'")

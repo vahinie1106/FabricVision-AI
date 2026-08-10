@@ -18,7 +18,19 @@ def create_sample_image(filename="test_garment.png", color=(100, 150, 200), size
     buf.seek(0)
     return buf.getvalue()
 
+@pytest.mark.slow
 class TestFastAPIBackend:
+    """
+    Real end-to-end smoke test against a LIVE FastAPI server on 127.0.0.1:8000
+    (e.g. `uvicorn backend_api.main:app`), not the in-process TestClient.
+
+    Requires the dev server to be running, and test_03/test_04 drive real
+    FLUX.1-Kontext / CatVTON jobs to completion (many minutes on RTX 3050 6GB).
+    Non-hermetic by design (external process dependency) — excluded from the
+    default `pytest -q` run via the `slow` marker. Run with `pytest -m slow`
+    only when the dev server is already up and you want a real hardware
+    end-to-end check.
+    """
     
     @classmethod
     def setup_class(cls):

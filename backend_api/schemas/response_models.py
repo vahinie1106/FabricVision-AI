@@ -14,9 +14,15 @@ class JobStatusResponse(BaseModel):
     status: str  # "queued", "processing", "completed", "failed"
     progress: int = 0
     current_step: Optional[str] = None
+    # Authoritative lifecycle stage (e.g. generating, saving, completed).
+    # Frontend must prefer this over inferred UI percentages.
+    stage: Optional[str] = None
     result_url: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    # Machine-stable failure classification for UI mapping (failed jobs only).
+    error_type: Optional[str] = None
+    failed_stage: Optional[str] = None
 
 class SemanticAnalysisResponse(BaseModel):
     status: str

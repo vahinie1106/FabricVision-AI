@@ -1,10 +1,10 @@
 import json
 from pathlib import Path
-from src.garment_generation.prompting.garment_prompt_builder import GarmentPromptBuilder
+from src.features.custom_generator.prompting.garment_prompt_builder import GarmentPromptBuilder
 
 def test_material_vocabulary_normalization():
     builder = GarmentPromptBuilder(Path("configs"))
-    mat_path = Path("configs/material_vocabulary.json")
+    mat_path = Path("configs/semantic_analysis/material_vocabulary.json")
     assert mat_path.exists()
     
     with open(mat_path, "r", encoding="utf-8") as f:

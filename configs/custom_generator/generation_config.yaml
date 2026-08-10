@@ -1,6 +1,12 @@
-default_num_inference_steps: 4
-default_guidance_scale: 3.5
-default_height: 1024
-default_width: 1024
+# Defaults used when mode presets are absent. Mode blocks in flux_config.yaml win.
+default_generation_mode: standard
+default_num_inference_steps: 3
+default_guidance_scale: 2.5
+default_height: 512
+default_width: 512
 seed: 42
 output_root: outputs/generated_garments
+
+# Lossless PNG: lower compress_level = faster encode, same visual quality
+png_compress_level: 3
+png_optimize: false

@@ -2,6 +2,8 @@ import uuid
 from typing import Dict, Any
 
 from backend_api.schemas.response_models import JobStatusResponse
+from backend_api.services.job_stages import map_step_to_stage
+
 
 class JobManager:
     """
@@ -18,7 +20,8 @@ class JobManager:
             job_id=job_id,
             status="queued",
             progress=0,
-            current_step="Waiting for worker..."
+            current_step="Waiting for worker...",
+            stage="queued",
         )
         return job_id
 
@@ -27,11 +30,15 @@ class JobManager:
         return self._jobs.get(job_id)
 
     def update_job(self, job_id: str, **kwargs):
-        """Update job fields."""
+        """Update job fields; stage is always derived from status + current_step."""
         if job_id in self._jobs:
             job = self._jobs[job_id]
             for key, value in kwargs.items():
+                if key == "stage":
+                    continue  # derived below — callers must not invent stages
                 if hasattr(job, key):
                     setattr(job, key, value)
+            job.stage = map_step_to_stage(job.current_step, job.status)
+
 
 job_manager = JobManager()

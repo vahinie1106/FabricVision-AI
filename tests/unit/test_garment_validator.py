@@ -1,6 +1,6 @@
 import pytest
 from PIL import Image, ImageDraw
-from src.garment_generation.validation.garment_validator import GarmentValidator
+from src.features.custom_generator.validation.garment_validator import GarmentValidator
 
 def test_garment_validator_valid_image():
     validator = GarmentValidator(min_resolution=256)

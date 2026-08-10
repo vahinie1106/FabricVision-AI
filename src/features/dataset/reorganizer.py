@@ -4,7 +4,7 @@ from pathlib import Path
 from shutil import copytree
 from typing import Any, Dict, List, Sequence
 
-from .utils import ensure_directory
+from src.common.utils.utils import ensure_directory
 
 
 class DatasetReorganizer:

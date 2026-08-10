@@ -32,6 +32,19 @@ class QwenModelLoader:
 
     def load(self) -> tuple[object | None, object | None]:
         """Load the model and processor if available, otherwise return None values."""
+        if self._model is not None and self._processor is not None:
+            return self._model, self._processor
+
+        import os
+
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            # Mirrors FLUXModelLoader's pytest guard: real weights exist locally
+            # for Qwen2.5-VL (~7.5GB) and would otherwise load onto the GPU during
+            # a default `pytest -q` run. Tests that need the real model opt in
+            # explicitly via the `slow` marker.
+            self.logger.info("Pytest environment detected; skipping Qwen weight load.")
+            return None, None
+
         if not self._is_complete_model_dir():
             self.logger.warning("Qwen model path incomplete or missing: %s", self.model_path)
             return None, None

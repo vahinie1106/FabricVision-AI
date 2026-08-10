@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Optional
-from PIL import Image, ImageStat
+from PIL import Image, ImageStat, ImageFilter
 
 
 class GarmentValidator:
@@ -21,6 +21,20 @@ class GarmentValidator:
     ) -> Dict[str, Any]:
         """Fashion validation interface returning valid, garment, human_detected, mannequin_detected, confidence."""
         return self.validate(image, target_garment, target_color)
+
+    @staticmethod
+    def _laplacian_var(image: Image.Image) -> float:
+        """Cheap sharpness proxy (higher = sharper). Diagnostic only — not garment QA."""
+        try:
+            import numpy as np
+
+            gray = image.convert("L")
+            # Approximate Laplacian via PIL edge filter energy
+            edges = gray.filter(ImageFilter.FIND_EDGES)
+            arr = np.asarray(edges, dtype=np.float32)
+            return float(arr.var())
+        except Exception:
+            return -1.0
 
     def validate(
         self,
@@ -52,6 +66,7 @@ class GarmentValidator:
             issues.append(f"Invalid image mode '{image.mode}', expected 'RGB'")
 
         # Check pixel variance (detect blank/flat output)
+        avg_variance = 0.0
         try:
             stat = ImageStat.Stat(image)
             variances = stat.var
@@ -61,6 +76,11 @@ class GarmentValidator:
         except Exception as exc:
             self.logger.warning("Could not calculate image pixel variance: %s", exc)
 
+        sharpness = self._laplacian_var(image)
+        # Extremely soft outputs (diagnostic threshold — not a hard fail alone)
+        if 0.0 <= sharpness < 15.0:
+            issues.append(f"Low edge energy (sharpness≈{sharpness:.1f}); output may be overly soft")
+
         # Fashion validation analysis
         fashion_val = self._run_fashion_validation(image, target_garment, target_color)
         
@@ -69,7 +89,7 @@ class GarmentValidator:
         if fashion_val.get("mannequin_detected"):
             issues.append("Mannequin detected in standalone garment synthesis")
 
-        tech_valid = len(issues) == 0
+        tech_valid = len([i for i in issues if not i.startswith("Low edge energy")]) == 0
         overall_valid = tech_valid and fashion_val.get("valid", True)
 
         return {
@@ -81,6 +101,8 @@ class GarmentValidator:
             "confidence": fashion_val.get("confidence", 0.95),
             "resolution": (width, height),
             "mode": image.mode,
+            "pixel_variance": round(avg_variance, 2),
+            "sharpness_edge_var": round(sharpness, 2),
             "issues": issues,
         }
 

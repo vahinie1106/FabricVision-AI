@@ -1,7 +1,7 @@
 import pytest
 from PIL import Image
-from src.virtual_tryon.models import GarmentConditioningInput
-from src.virtual_tryon.garment_conditioning import GarmentConditioner
+from src.features.virtual_tryon.models import GarmentConditioningInput
+from src.features.virtual_tryon.garment_conditioning import GarmentConditioner
 
 def test_garment_conditioning_preparation():
     conditioner = GarmentConditioner(target_resolution=(512, 512))

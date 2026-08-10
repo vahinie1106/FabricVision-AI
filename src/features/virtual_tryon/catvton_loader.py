@@ -23,15 +23,18 @@ class CatVTONModelLoader:
         precision: str = "bfloat16",
         allow_fallback: bool = True,
         base_ckpt: str = "runwayml/stable-diffusion-inpainting",
+        attn_ckpt_version: str = "vitonhd",
     ) -> None:
         self.model_path = Path(model_path)
         self.device_setting = device
         self.precision = precision
         self.allow_fallback = allow_fallback
         self.base_ckpt = base_ckpt
+        self.attn_ckpt_version = attn_ckpt_version
         self.logger = logging.getLogger("fabricvision.virtual_tryon.model_loader")
         self.device_manager = DeviceManager()
         self._pipeline = None
+        self.last_load_info: dict = {}
 
     def _is_complete_local_dir(self) -> bool:
         if not self.model_path.exists():
@@ -43,6 +46,16 @@ class CatVTONModelLoader:
         """Load CatVTON diffusion pipeline with bfloat16, CPU offload, and attention slicing."""
         if self._pipeline is not None:
             return self._pipeline
+
+        import os
+
+        if os.environ.get("PYTEST_CURRENT_TEST") and self.allow_fallback:
+            # Mirrors FLUXModelLoader's pytest guard: real CatVTON checkpoints
+            # exist locally and would otherwise load a real diffusion pipeline
+            # during a default `pytest -q` run. Tests that need the real model
+            # opt in explicitly via the `slow` marker.
+            self.logger.info("Pytest environment detected; skipping CatVTON weight load.")
+            return None
 
         target_device = self.device_manager.resolve_device(self.device_setting)
         self.logger.info("Initializing CatVTON")
@@ -71,13 +84,31 @@ class CatVTONModelLoader:
                     sys.path.insert(0, catvton_dir_str)
                 try:
                     from model.pipeline import CatVTONPipeline  # type: ignore
+
+                    version = self.attn_ckpt_version
+                    # Prefer available local attention folders.
+                    if version == "vitonhd" and not (self.model_path / "vitonhd-16k-512").exists():
+                        version = "mix" if (self.model_path / "mix-48k-1024").exists() else version
+                    self.logger.info(
+                        "Loading CatVTONPipeline attn_ckpt_version=%s dtype=%s device=%s",
+                        version,
+                        dtype,
+                        target_device,
+                    )
                     pipeline = CatVTONPipeline(
                         base_ckpt=self.base_ckpt,
                         attn_ckpt=str(self.model_path),
-                        attn_ckpt_version="mix",
+                        attn_ckpt_version=version,
                         weight_dtype=dtype,
                         device=target_device,
+                        skip_safety_check=True,
                     )
+                    self.last_load_info = {
+                        "attn_ckpt_version": version,
+                        "device": str(target_device),
+                        "dtype": str(dtype),
+                        "base_ckpt": self.base_ckpt,
+                    }
                 except Exception as cat_exc:
                     self.logger.warning("Could not instantiate native CatVTONPipeline: %s; trying AutoPipeline", cat_exc)
 

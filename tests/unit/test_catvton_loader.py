@@ -1,6 +1,6 @@
 import pytest
 from pathlib import Path
-from src.virtual_tryon.catvton_loader import CatVTONModelLoader
+from src.features.virtual_tryon.catvton_loader import CatVTONModelLoader
 
 def test_catvton_loader_initialization():
     loader = CatVTONModelLoader(model_path="models/CatVTON", allow_fallback=True)

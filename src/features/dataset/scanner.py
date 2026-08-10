@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Sequence
 
 from .dataset_index import DatasetIndex, ProductRecord
-from .utils import infer_gender_from_path, infer_product_id, supported_image
+from src.common.utils.utils import infer_gender_from_path, infer_product_id, supported_image
 
 
 class DatasetScanner:

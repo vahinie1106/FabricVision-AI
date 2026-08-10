@@ -13,7 +13,7 @@ from .quality_checker import QualityChecker
 from .reorganizer import DatasetReorganizer
 from .report_generator import ReportGenerator
 from .scanner import DatasetScanner
-from .utils import ensure_directory, load_yaml_config
+from src.common.utils.utils import ensure_directory, load_yaml_config
 from .validator import DatasetValidator
 
 

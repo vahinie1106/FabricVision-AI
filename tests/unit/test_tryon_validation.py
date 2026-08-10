@@ -1,6 +1,6 @@
 import pytest
 from PIL import Image, ImageDraw
-from src.virtual_tryon.tryon_validator import TryOnValidator
+from src.features.virtual_tryon.tryon_validator import TryOnValidator
 
 def create_non_flat_image(width=512, height=512):
     img = Image.new("RGB", (width, height), color=(100, 150, 200))

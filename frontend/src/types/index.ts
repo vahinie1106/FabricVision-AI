@@ -18,6 +18,9 @@ export interface GarmentMetadata {
   confidenceScore: number;
 }
 
+/** Garment generation quality mode (maps to backend Preview / Standard / Production). */
+export type GenerationMode = "Preview" | "Standard" | "Production";
+
 export interface GenerationRequest {
   fabricImage: File;
   garmentType: string;
@@ -32,6 +35,8 @@ export interface GenerationRequest {
   color: string;
   sleeve: string;
   neckline: string;
+  /** Default: Standard — balanced quality on RTX 3050 6GB */
+  generationMode?: GenerationMode;
 }
 
 export interface GenerationResponse {
@@ -53,5 +58,16 @@ export interface TryOnResponse {
   id: string;
   status: GenerationStatus;
   resultUrl?: string;
+  metadata?: Record<string, unknown>;
   error?: string;
+}
+
+export type StudioModule = "custom-garment" | "virtual-tryon" | "semantic-analysis";
+
+export interface ResultViewerMeta {
+  model?: string;
+  timestamp?: string;
+  resolution?: string;
+  durationMs?: number;
+  promptSummary?: string;
 }

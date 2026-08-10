@@ -1,10 +1,15 @@
+"""Run FLUX.1-Kontext image-conditioned garment generation with VRAM tracking."""
+
 from __future__ import annotations
 
 import gc
+import inspect
 import logging
+import os
 import random
 import time
-from typing import Any, Optional, Dict
+from typing import Any, Callable, Dict, Optional
+
 from PIL import Image, ImageDraw
 
 try:
@@ -12,49 +17,225 @@ try:
 except ImportError:
     torch = None
 
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
+
+ProgressCallback = Optional[Callable[[str, int], None]]
+
+# CLIP-safe prompts are ~70 tokens; T5 default of 512 was measured at ~360s encode
+# under model_cpu_offload on RTX 3050. 128 preserves full prompt semantics with far less work.
+DEFAULT_MAX_SEQUENCE_LENGTH = 128
+
 
 class FLUXInferenceEngine:
-    """Run diffusion generation with FLUX Kontext model loader and VRAM tracking."""
+    """FLUX.1-Kontext inference: fabric conditioning image + garment edit prompt."""
 
     def __init__(self, model_loader: Any, allow_fallback: bool = True) -> None:
         self.model_loader = model_loader
         self.allow_fallback = allow_fallback
         self.logger = logging.getLogger("fabricvision.garment_generation.inference")
         self.last_execution_stats: Dict[str, Any] = {}
+        # Small prompt-embed cache: identical prompt → skip expensive T5 encode on reuse.
+        # Keyed by (prompt, max_sequence_length). Cleared on loader change.
+        self._prompt_embed_cache: Dict[tuple[str, int], tuple[Any, Any, Any]] = {}
+
+    def _profile_enabled(self) -> bool:
+        flag = os.environ.get("FLUX_PROFILE", "true").strip().lower()
+        return flag not in ("0", "false", "no", "off")
+
+    def _cpu_ram_mb(self) -> float:
+        if psutil is None:
+            return 0.0
+        try:
+            return round(psutil.Process(os.getpid()).memory_info().rss / (1024**2), 1)
+        except Exception:
+            return 0.0
+
+    def _max_sequence_length(self) -> int:
+        raw = os.environ.get("FLUX_MAX_SEQUENCE_LENGTH", "").strip()
+        if raw.isdigit():
+            return max(32, min(512, int(raw)))
+        return DEFAULT_MAX_SEQUENCE_LENGTH
+
+    def _clear_cuda(self) -> None:
+        gc.collect()
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+
+    def _evict_text_encoders(self, pipeline: Any) -> None:
+        """
+        Move CLIP/T5 to CPU after prompt encoding.
+
+        Do NOT call ``maybe_free_model_hooks()`` here: that tears down accelerate
+        offload hooks on the NF4 transformer and can cause
+        ``invalid argument to getCurrentStream`` on later diffusion steps.
+        """
+        for attr in ("text_encoder", "text_encoder_2"):
+            mod = getattr(pipeline, attr, None)
+            if mod is None:
+                continue
+            try:
+                if hasattr(mod, "to"):
+                    mod.to("cpu")
+            except Exception as exc:
+                self.logger.debug("Encoder %s CPU move skipped: %s", attr, exc)
+        self._clear_cuda()
+
+    def _vram_snapshot(self) -> dict[str, float]:
+        if torch is None or not torch.cuda.is_available():
+            return {"allocated_mb": 0.0, "reserved_mb": 0.0, "max_allocated_mb": 0.0}
+        return {
+            "allocated_mb": round(torch.cuda.memory_allocated() / (1024**2), 1),
+            "reserved_mb": round(torch.cuda.memory_reserved() / (1024**2), 1),
+            "max_allocated_mb": round(torch.cuda.max_memory_allocated() / (1024**2), 1),
+        }
+
+    def _park_pipeline(self, pipeline: Any) -> None:
+        loader = self.model_loader
+        if loader is not None and hasattr(loader, "park_on_cpu"):
+            loader.park_on_cpu()
+            return
+        # Fallback path when loader has no park helper — still avoid NF4 .to(cpu)
+        self._evict_text_encoders(pipeline)
+        vae = getattr(pipeline, "vae", None)
+        if vae is not None and hasattr(vae, "to"):
+            try:
+                vae.to("cpu")
+            except Exception:
+                pass
+        self._clear_cuda()
+
+    @staticmethod
+    def _is_cuda_oom(exc: BaseException) -> bool:
+        name = type(exc).__name__.lower()
+        msg = str(exc).lower()
+        if "outofmemory" in name:
+            return True
+        return "cuda" in msg and ("out of memory" in msg or "oom" in msg)
+
+    def _encode_prompt_timed(
+        self,
+        pipeline: Any,
+        prompt: str,
+        max_sequence_length: int,
+        device: Any,
+    ) -> tuple[Any, Any, Any, float, bool]:
+        """
+        Encode once with explicit timing.
+
+        WHY: Under model_cpu_offload, T5 (text_encoder_2) dominates wall time when
+        max_sequence_length=512 (~6 min measured). Encoding at 128 + caching identical
+        prompts removes that bottleneck without changing garment semantics.
+
+        Cache key is the full prompt string + sequence length. Safe because the
+        prompt builder embeds garment metadata/customization into that string;
+        different user requests produce different keys. Kontext image conditioning
+        is passed separately and is never cached here.
+        """
+        cache_key = (prompt, max_sequence_length)
+        if cache_key in self._prompt_embed_cache:
+            embeds = self._prompt_embed_cache[cache_key]
+            self.logger.info("[FLUX] Prompt embed cache HIT (skipping T5 encode)")
+            return embeds[0], embeds[1], embeds[2], 0.0, True
+
+        t0 = time.perf_counter()
+        prompt_embeds, pooled_prompt_embeds, text_ids = pipeline.encode_prompt(
+            prompt=prompt,
+            prompt_2=None,
+            device=device,
+            num_images_per_prompt=1,
+            max_sequence_length=max_sequence_length,
+        )
+        encode_s = round(time.perf_counter() - t0, 3)
+
+        # Always return/cache CPU tensors — do not keep T5 outputs on GPU into diffusion.
+        try:
+            prompt_embeds = prompt_embeds.detach().to("cpu")
+            pooled_prompt_embeds = pooled_prompt_embeds.detach().to("cpu")
+            text_ids_cpu = text_ids.detach().to("cpu") if text_ids is not None else None
+            self._prompt_embed_cache[cache_key] = (
+                prompt_embeds,
+                pooled_prompt_embeds,
+                text_ids_cpu,
+            )
+            if len(self._prompt_embed_cache) > 4:
+                oldest = next(iter(self._prompt_embed_cache))
+                del self._prompt_embed_cache[oldest]
+        except Exception as exc:
+            self.logger.warning("Prompt embed cache store skipped: %s", exc)
+            text_ids_cpu = text_ids
+
+        self._evict_text_encoders(pipeline)
+        return prompt_embeds, pooled_prompt_embeds, text_ids_cpu, encode_s, False
 
     def generate(
         self,
         prompt: str,
         negative_prompt: str = "",
         reference_image: Optional[Image.Image] = None,
-        height: int = 1024,
-        width: int = 1024,
+        height: int = 512,
+        width: int = 512,
         num_inference_steps: int = 4,
-        guidance_scale: float = 3.5,
+        guidance_scale: float = 2.5,
         seed: Optional[int] = 42,
+        progress_callback: ProgressCallback = None,
+        save_raw_path: Optional[str] = None,
     ) -> Image.Image:
-        """Generate a garment image given prompt parameters and optional reference image conditioning."""
-        t_start = time.time()
+        """Generate a garment with FLUX.1-Kontext image conditioning."""
+        t_start = time.perf_counter()
+        profile = self._profile_enabled()
+        max_seq = self._max_sequence_length()
+
+        def _progress(step: str, pct: int) -> None:
+            if progress_callback is not None:
+                try:
+                    progress_callback(step, pct)
+                except Exception:
+                    pass
+
         pipeline = getattr(self.model_loader, "pipeline", None)
-        t_model_load_start = time.time()
+        t_model_load_start = time.perf_counter()
+        model_was_reused = pipeline is not None
         if pipeline is None and hasattr(self.model_loader, "load"):
+            _progress("Loading model", 12)
             pipeline = self.model_loader.load()
-        t_model_load_end = time.time()
-        model_load_time = round(t_model_load_end - t_model_load_start, 2) if pipeline is not None else 0.0
+            model_was_reused = False
+        elif pipeline is not None:
+            self.logger.info("[FLUX] Reusing loaded Kontext pipeline")
+            if hasattr(self.model_loader, "load"):
+                pipeline = self.model_loader.load()
+        t_model_load_end = time.perf_counter()
+        model_load_time = round(t_model_load_end - t_model_load_start, 3)
 
         if seed is not None:
             random.seed(seed)
-            if torch is not None and torch.cuda.is_available():
+            if torch is not None:
                 torch.manual_seed(seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed)
 
-        vram_before = torch.cuda.memory_allocated() / (1024 ** 2) if (torch and torch.cuda.is_available()) else 0.0
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+        vram_before = (
+            torch.cuda.memory_allocated() / (1024**2)
+            if (torch and torch.cuda.is_available())
+            else 0.0
+        )
+        ram_before = self._cpu_ram_mb()
 
         if pipeline is None:
-            msg = "FLUX pipeline not initialized or weights missing."
+            msg = "FLUX.1-Kontext pipeline not initialized or weights missing."
             self.logger.warning(msg)
             if not self.allow_fallback:
-                raise RuntimeError(f"Real FLUX model execution required but failed: {msg}")
-            
+                raise RuntimeError(f"Real FLUX Kontext execution required but failed: {msg}")
             self.last_execution_stats = {
                 "was_fallback_used": True,
                 "was_real_flux_used": False,
@@ -69,141 +250,418 @@ class FLUXInferenceEngine:
             }
             return self._generate_synthetic_preview(width, height, prompt)
 
-        # Convert to FluxKontextPipeline in-memory via from_pipe when reference_image is provided
-        if reference_image is not None:
-            try:
-                from diffusers import FluxKontextPipeline
-                from_pipe_fn = getattr(FluxKontextPipeline, "from_pipe", None)
-                if not isinstance(pipeline, FluxKontextPipeline) and callable(from_pipe_fn):
-                    self.logger.info("Converting resident FLUX pipeline to FluxKontextPipeline via from_pipe (0.0s latency)...")
-                    pipeline = from_pipe_fn(pipeline)
-                    if hasattr(self.model_loader, "_pipeline"):
-                        self.model_loader._pipeline = pipeline
-            except Exception as kontext_exc:
-                self.logger.warning("FluxKontextPipeline conversion notice (%s); proceeding with active pipeline", kontext_exc)
+        if reference_image is None:
+            raise RuntimeError(
+                "FLUX.1-Kontext requires a fabric conditioning image. "
+                "Upload a fabric photo — text-only generation is not supported for this module."
+            )
 
-        self.logger.info("Inference started (Reference Image Provided: %s)", reference_image is not None)
-        self.logger.info("Before inference VRAM: %.2f MB", vram_before)
-        
-        t_pipe_start = time.time()
-        step_times: Dict[str, float] = {}
+        runtime = {}
+        if hasattr(self.model_loader, "get_runtime_info"):
+            runtime = self.model_loader.get_runtime_info()
+
+        self.logger.info("Kontext inference started (conditioning image present)")
+        snap0 = self._vram_snapshot()
+        self.logger.info(
+            "[FLUX] Effective config: %sx%s steps=%s guidance=%s max_seq=%s "
+            "preencode=%s offload=%s bnb4bit=%s dtype=%s alloc_conf=%s | "
+            "CUDA allocated=%.1f MB reserved=%.1f MB (physical VRAM=6144 MiB)",
+            width,
+            height,
+            num_inference_steps,
+            guidance_scale,
+            max_seq,
+            os.environ.get("FLUX_PREENCODE_PROMPT", "true"),
+            runtime.get("offload_strategy"),
+            runtime.get("bnb_4bit"),
+            getattr(self.model_loader, "precision", "unknown"),
+            os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
+            snap0["allocated_mb"],
+            snap0["reserved_mb"],
+        )
+
+        # Critical on 6GB: previous run may have left transformer/VAE on GPU.
+        self._park_pipeline(pipeline)
+        snap1 = self._vram_snapshot()
+        self.logger.info(
+            "[FLUX] After park_on_cpu: allocated=%.1f MB reserved=%.1f MB",
+            snap1["allocated_mb"],
+            snap1["reserved_mb"],
+        )
+
+        per_step_durations: list[float] = []
+        step_wall: Dict[int, float] = {}
+        last_step_t = time.perf_counter()
+        encode_s = 0.0
+        encode_cached = False
+        resize_time = 0.0
+        diffusion_s = 0.0
+        decode_s = 0.0
 
         try:
-            generator = torch.Generator().manual_seed(seed) if (seed is not None and torch and torch.cuda.is_available()) else None
-            
-            # Step callback logging & sub-stage timing tracking
+            generator = None
+            if seed is not None and torch is not None:
+                # Prefer CPU generator — CUDA generators can force extra device syncs with offload
+                generator = torch.Generator(device="cpu").manual_seed(seed)
+
             def step_callback(pipe: Any, step_index: int, timestep: Any, callback_kwargs: Any) -> Any:
-                now = time.time()
-                if step_index == 0:
-                    step_times["prompt_encoding_end"] = now
-                    step_times["step_start"] = now
-                elif step_index == num_inference_steps - 1:
-                    step_times["step_end"] = now
-                self.logger.info("Step %d/%d", step_index + 1, num_inference_steps)
+                nonlocal last_step_t
+                now = time.perf_counter()
+                dur = round(now - last_step_t, 3)
+                step_wall[step_index] = dur
+                per_step_durations.append(dur)
+                last_step_t = now
+                self.logger.info(
+                    "[FLUX PROFILE] Step %d/%d: %.3f sec",
+                    step_index + 1,
+                    num_inference_steps,
+                    dur,
+                )
+                pct = 55 + int(30 * (step_index + 1) / max(1, num_inference_steps))
+                _progress(f"Generating (step {step_index + 1}/{num_inference_steps})", pct)
                 return callback_kwargs
 
-            # Construct instruction-guided prompt when reference image is supplied
-            final_prompt = prompt
-            if reference_image is not None:
-                final_prompt = (
-                    f"{prompt}. Preserve the exact pattern, texture, colors, and visual identity of the reference image. "
-                    "Synthesize a high-fashion standalone garment output using the exact fabric pattern, colors, print, weave texture, and design identity from the reference image."
-                )
+            _progress("Preparing fabric conditioning", 35)
+            t_resize = time.perf_counter()
+            if hasattr(reference_image, "resize"):
+                if reference_image.size != (width, height):
+                    cond_image = reference_image.resize((width, height), Image.Resampling.LANCZOS)
+                else:
+                    cond_image = reference_image
+            else:
+                cond_image = reference_image
+            resize_time = round(time.perf_counter() - t_resize, 3)
+
+            self.logger.info("=== FLUX KONTEXT CALL PROMPT ===\n%s", prompt)
+            if negative_prompt:
+                self.logger.info("=== FLUX KONTEXT NEGATIVE PROMPT ===\n%s", negative_prompt)
+
+            signature = inspect.signature(pipeline.__call__)
+            device = getattr(pipeline, "_execution_device", None)
+            if device is None and torch is not None:
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            # Phase A — prefer letting the pipeline encode with a short T5 budget.
+            # WHY not always pre-encode: holding T5 on GPU while transformer onloads OOMs 6GB.
+            # max_sequence_length=128 alone dropped encode from ~360s → ~50s in measurement.
+            _progress("Encoding prompt", 45)
+            prompt_embeds = pooled_prompt_embeds = None
+            # Default true: measured encode ~50s at seq=128; cache + CPU eviction helps 6GB.
+            use_preencode = os.environ.get("FLUX_PREENCODE_PROMPT", "true").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if use_preencode:
+                try:
+                    (
+                        prompt_embeds,
+                        pooled_prompt_embeds,
+                        _text_ids,
+                        encode_s,
+                        encode_cached,
+                    ) = self._encode_prompt_timed(pipeline, prompt, max_seq, device)
+                    self.logger.info(
+                        "[FLUX] Pre-encode done (%.3fs, cached=%s); encoders on CPU | %s",
+                        encode_s,
+                        encode_cached,
+                        self._vram_snapshot(),
+                    )
+                except Exception as enc_exc:
+                    # Do NOT fall through to inline encode while GPU is full —
+                    # that double-OOMs. Park, retry once, then fail clearly.
+                    if self._is_cuda_oom(enc_exc):
+                        self.logger.warning(
+                            "Pre-encode CUDA OOM (%s); parking pipeline and retrying once",
+                            enc_exc,
+                        )
+                        self._park_pipeline(pipeline)
+                        try:
+                            (
+                                prompt_embeds,
+                                pooled_prompt_embeds,
+                                _text_ids,
+                                encode_s,
+                                encode_cached,
+                            ) = self._encode_prompt_timed(pipeline, prompt, max_seq, device)
+                            self.logger.info(
+                                "[FLUX] Pre-encode retry OK (%.3fs) | %s",
+                                encode_s,
+                                self._vram_snapshot(),
+                            )
+                        except Exception as retry_exc:
+                            self._park_pipeline(pipeline)
+                            raise RuntimeError(
+                                f"CUDA out of memory during FLUX prompt encoding "
+                                f"(T5/CLIP) after cleanup retry: {retry_exc}"
+                            ) from retry_exc
+                    else:
+                        self.logger.warning(
+                            "Explicit encode_prompt failed (%s); using inline encode",
+                            enc_exc,
+                        )
+                        prompt_embeds = pooled_prompt_embeds = None
+                        encode_s = 0.0
 
             kwargs: Dict[str, Any] = {
-                "prompt": final_prompt,
+                "image": cond_image,
                 "height": height,
                 "width": width,
                 "num_inference_steps": num_inference_steps,
                 "guidance_scale": guidance_scale,
                 "callback_on_step_end": step_callback,
+                "max_area": int(height) * int(width),
+                # Keep exact HxW — do not jump to 1024 preferred (OOM on 6GB).
+                "_auto_resize": False,
+                "max_sequence_length": max_seq,
             }
-            if reference_image is not None:
-                if hasattr(reference_image, "resize"):
-                    ref_img_input = reference_image.resize((width, height), Image.Resampling.LANCZOS)
-                else:
-                    ref_img_input = reference_image
-                kwargs["image"] = ref_img_input
 
-            if generator is not None:
+            if prompt_embeds is not None and pooled_prompt_embeds is not None:
+                # Keep embeds on the execution device for the full denoise loop.
+                # Leaving them on CPU caused step-2+ NF4 failures:
+                # RuntimeError: invalid argument to getCurrentStream
+                # (bitsandbytes saw A.device.index=None).
+                try:
+                    exec_dev = device
+                    if exec_dev is None and torch is not None:
+                        exec_dev = torch.device(
+                            "cuda" if torch.cuda.is_available() else "cpu"
+                        )
+                    if hasattr(prompt_embeds, "to"):
+                        prompt_embeds = prompt_embeds.to(exec_dev)
+                    if hasattr(pooled_prompt_embeds, "to"):
+                        pooled_prompt_embeds = pooled_prompt_embeds.to(exec_dev)
+                    self.logger.info(
+                        "[FLUX] Prompt embeds on %s before diffusion | %s",
+                        exec_dev,
+                        self._vram_snapshot(),
+                    )
+                except Exception as move_exc:
+                    self.logger.warning("Prompt embed device move failed: %s", move_exc)
+                kwargs["prompt_embeds"] = prompt_embeds
+                kwargs["pooled_prompt_embeds"] = pooled_prompt_embeds
+                if "prompt" in signature.parameters:
+                    kwargs["prompt"] = None
+            else:
+                kwargs["prompt"] = prompt
+                # encode_s will be inferred from step callback / pipeline timing
+                encode_s = 0.0
+                encode_cached = False
+
+            true_cfg = float(os.environ.get("FLUX_TRUE_CFG_SCALE", "1.0"))
+            if negative_prompt and "negative_prompt" in signature.parameters:
+                if true_cfg > 1.0 and "true_cfg_scale" in signature.parameters:
+                    kwargs["negative_prompt"] = negative_prompt
+                    kwargs["true_cfg_scale"] = true_cfg
+                    self.logger.info("Kontext true_cfg_scale=%s (negatives active)", true_cfg)
+                else:
+                    self.logger.info(
+                        "Negative prompt prepared but true_cfg_scale=1.0 "
+                        "(set FLUX_TRUE_CFG_SCALE=1.5+ on higher VRAM to activate)"
+                    )
+
+            if generator is not None and "generator" in signature.parameters:
                 kwargs["generator"] = generator
 
-            output = pipeline(**kwargs)
-            image = output.images[0]
-            
-            t_pipe_end = time.time()
-            total_time = round(t_pipe_end - t_start, 2)
-            
-            prompt_enc_time = round(step_times.get("prompt_encoding_end", t_pipe_start) - t_pipe_start, 2)
-            infer_time = round(step_times.get("step_end", t_pipe_end) - step_times.get("step_start", t_pipe_start), 2)
-            decode_time = round(t_pipe_end - step_times.get("step_end", t_pipe_end), 2)
-            if infer_time < 0.0:
-                infer_time = round(t_pipe_end - t_pipe_start, 2)
+            # Drop kwargs not accepted by this diffusers version
+            kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters or k.startswith("_")}
 
-            vram_after = torch.cuda.memory_allocated() / (1024 ** 2) if (torch and torch.cuda.is_available()) else 0.0
-            peak_vram = torch.cuda.max_memory_allocated() / (1024 ** 2) if (torch and torch.cuda.is_available()) else 0.0
-
-            self.logger.info("After inference VRAM: %.2f MB", vram_after)
-            self.logger.info("Peak VRAM: %.2f MB", peak_vram)
             self.logger.info(
-                "\n=== FLUX Performance Report ===\n"
-                "Model Load: %.2f sec\n"
-                "Prompt Encoding: %.2f sec\n"
-                "Inference: %.2f sec\n"
-                "Decode: %.2f sec\n"
-                "Total: %.2f sec\n"
-                "===============================",
-                model_load_time,
-                prompt_enc_time,
-                infer_time,
-                decode_time,
-                total_time,
+                "Kontext inputs: steps=%s guidance=%s seed=%s size=%sx%s "
+                "has_image=True model_reused=%s max_seq=%s embeds_precomputed=%s",
+                num_inference_steps,
+                guidance_scale,
+                seed,
+                width,
+                height,
+                model_was_reused,
+                max_seq,
+                prompt_embeds is not None,
             )
+
+            self._clear_cuda()
+            _progress("Generating", 55)
+            t_diff_start = time.perf_counter()
+            last_step_t = t_diff_start
+            output = pipeline(**kwargs)
+            t_diff_end = time.perf_counter()
+            diffusion_s = round(t_diff_end - t_diff_start, 3)
+
+            _progress("Decoding image", 88)
+            t_dec = time.perf_counter()
+            image = output.images[0]
+            decode_s = round(time.perf_counter() - t_dec, 3)
+
+            # Raw model output before any UI path — for blur root-cause isolation
+            if save_raw_path:
+                try:
+                    from pathlib import Path
+
+                    raw_p = Path(save_raw_path)
+                    raw_p.parent.mkdir(parents=True, exist_ok=True)
+                    image.save(raw_p, format="PNG", compress_level=3)
+                    self.logger.info("[FLUX] Saved raw model output → %s (%sx%s)", raw_p, image.size[0], image.size[1])
+                except Exception as raw_exc:
+                    self.logger.warning("Raw output save failed: %s", raw_exc)
+
+            total_time = round(time.perf_counter() - t_start, 3)
+
+            # If explicit encode was used, diffusion_s includes only denoise+vae inside pipeline;
+            # pipeline still may decode VAE inside __call__, so diffusion_s ≈ denoise+vae.
+            # Prefer step sum for denoise estimate when available.
+            step_sum = round(sum(per_step_durations), 3) if per_step_durations else 0.0
+            if step_sum > 0:
+                infer_time = step_sum
+                # Remainder of pipeline call after steps ≈ VAE + overhead
+                vae_est = max(0.0, round(diffusion_s - step_sum, 3))
+            else:
+                infer_time = diffusion_s
+                vae_est = decode_s
+
+            vram_after = (
+                torch.cuda.memory_allocated() / (1024**2)
+                if (torch and torch.cuda.is_available())
+                else 0.0
+            )
+            peak_vram = (
+                torch.cuda.max_memory_allocated() / (1024**2)
+                if (torch and torch.cuda.is_available())
+                else 0.0
+            )
+            ram_after = self._cpu_ram_mb()
+
+            if profile:
+                step_lines = "\n".join(
+                    f"Step {i + 1}: {d:.3f} sec" for i, d in enumerate(per_step_durations)
+                )
+                self.logger.info(
+                    "\n[FLUX PROFILE]\n"
+                    "Resolution: %sx%s\n"
+                    "Steps: %s\n"
+                    "Guidance: %s\n"
+                    "max_sequence_length: %s\n"
+                    "\n"
+                    "Model loading: %.3f sec (reused=%s)\n"
+                    "Image preprocess: %.3f sec\n"
+                    "Prompt encoding: %.3f sec (cached=%s)\n"
+                    "Diffusion (pipeline call): %.3f sec\n"
+                    "%s\n"
+                    "VAE/decode estimate: %.3f sec\n"
+                    "\n"
+                    "TOTAL: %.3f sec\n"
+                    "\n"
+                    "VRAM before: %.1f MB\n"
+                    "Peak VRAM: %.1f MB\n"
+                    "VRAM after: %.1f MB\n"
+                    "CPU RAM: %.1f → %.1f MB\n"
+                    "Offload: %s\n"
+                    "Quantization: %s\n"
+                    "Attention: %s\n"
+                    "torch.compile: %s\n"
+                    "=======================================",
+                    width,
+                    height,
+                    num_inference_steps,
+                    guidance_scale,
+                    max_seq,
+                    model_load_time,
+                    model_was_reused,
+                    resize_time,
+                    encode_s,
+                    encode_cached,
+                    diffusion_s,
+                    step_lines or "(no per-step samples)",
+                    vae_est,
+                    total_time,
+                    vram_before,
+                    peak_vram,
+                    vram_after,
+                    ram_before,
+                    ram_after,
+                    runtime.get(
+                        "offload_strategy",
+                        getattr(self.model_loader, "_offload_strategy", "unknown"),
+                    ),
+                    "nf4"
+                    if runtime.get("bnb_4bit", getattr(self.model_loader, "_used_bnb_4bit", False))
+                    else "full",
+                    runtime.get("attention_backend", "unknown"),
+                    runtime.get("torch_compile", False),
+                )
 
             self.last_execution_stats = {
                 "was_fallback_used": False,
                 "was_real_flux_used": True,
-                "vram_before_mb": vram_before,
-                "vram_after_mb": vram_after,
-                "peak_vram_mb": peak_vram,
+                "model_kind": "flux-kontext",
+                "model_reused": model_was_reused,
+                "has_image": True,
+                "vram_before_mb": round(vram_before, 2),
+                "vram_after_mb": round(vram_after, 2),
+                "peak_vram_mb": round(peak_vram, 2),
+                "cpu_ram_before_mb": ram_before,
+                "cpu_ram_after_mb": ram_after,
                 "generation_time_s": total_time,
                 "model_load_time_s": model_load_time,
-                "prompt_encoding_time_s": prompt_enc_time,
+                "image_preprocess_time_s": resize_time,
+                "prompt_encoding_time_s": encode_s,
+                "prompt_encode_cached": encode_cached,
                 "inference_time_s": infer_time,
-                "vae_decode_time_s": decode_time,
+                "vae_decode_time_s": vae_est,
+                "diffusion_pipeline_s": diffusion_s,
+                "per_step_durations_s": per_step_durations,
                 "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "height": height,
+                "width": width,
+                "max_sequence_length": max_seq,
+                "output_size": list(image.size) if hasattr(image, "size") else [width, height],
+                "offload_strategy": runtime.get(
+                    "offload_strategy",
+                    getattr(self.model_loader, "_offload_strategy", None),
+                ),
+                "attention_backend": runtime.get("attention_backend"),
+                "torch_compile": runtime.get("torch_compile"),
+                "bnb_4bit": runtime.get("bnb_4bit"),
+                "runtime": runtime,
             }
 
-            gc.collect()
-            if torch is not None and torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            self._park_pipeline(pipeline)
             return image
         except Exception as exc:
-            self.logger.exception("FLUX inference error: %s", exc)
+            self.logger.exception("FLUX Kontext inference error: %s", exc)
+            # Always reclaim GPU after failure so the next job is not stuck at ~6GB used.
+            try:
+                if pipeline is not None:
+                    self._park_pipeline(pipeline)
+                elif hasattr(self.model_loader, "park_on_cpu"):
+                    self.model_loader.park_on_cpu()
+            except Exception as park_exc:
+                self.logger.warning("post-error park_on_cpu failed: %s", park_exc)
+            if self._is_cuda_oom(exc):
+                raise RuntimeError(
+                    f"CUDA out of memory during FLUX generation "
+                    f"(allocated≈{self._vram_snapshot().get('allocated_mb')} MB; "
+                    f"physical VRAM=6144 MiB): {exc}"
+                ) from exc
             if not self.allow_fallback:
-                raise RuntimeError(f"Real FLUX model inference failed: {exc}") from exc
-            
+                raise RuntimeError(f"Real FLUX Kontext inference failed: {exc}") from exc
             self.last_execution_stats = {
                 "was_fallback_used": True,
                 "was_real_flux_used": False,
                 "vram_before_mb": vram_before,
                 "vram_after_mb": vram_before,
                 "peak_vram_mb": vram_before,
-                "generation_time_s": round(time.time() - t_start, 2),
+                "generation_time_s": round(time.perf_counter() - t_start, 3),
             }
             return self._generate_synthetic_preview(width, height, prompt)
 
     def _generate_synthetic_preview(self, width: int, height: int, prompt: str) -> Image.Image:
-        """Generate a neutral studio garment preview canvas for dry-run testing."""
         img = Image.new("RGB", (width, height), color=(255, 255, 255))
         draw = ImageDraw.Draw(img)
-        
         margin_x, margin_y = int(width * 0.25), int(height * 0.2)
         garment_box = [margin_x, margin_y, width - margin_x, height - margin_y]
-        
         draw.rectangle(garment_box, fill=(240, 240, 245), outline=(200, 200, 210), width=3)
         draw.text((margin_x + 20, margin_y + 40), "FabricVision-AI", fill=(80, 80, 90))
-        draw.text((margin_x + 20, margin_y + 80), "FLUX Garment Output", fill=(100, 100, 110))
-        
+        draw.text((margin_x + 20, margin_y + 80), "FLUX Kontext Output", fill=(100, 100, 110))
         return img

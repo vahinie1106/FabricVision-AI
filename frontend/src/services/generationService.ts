@@ -20,6 +20,7 @@ export const GenerationService = {
     formData.append("color", req.color);
     formData.append("sleeve", req.sleeve);
     formData.append("neckline", req.neckline);
+    formData.append("generation_mode", req.generationMode || "standard");
 
     const initRes = await ApiClient.postFormData<{ job_id: string }>("/generate", formData);
     
@@ -34,7 +35,13 @@ export const GenerationService = {
     });
 
     if (finalStatus.status === "failed") {
-      throw new Error(finalStatus.error || "Generation failed");
+      const err = new Error(finalStatus.error || "Generation failed") as Error & {
+        errorType?: string;
+        failedStage?: string;
+      };
+      err.errorType = finalStatus.error_type || finalStatus.metadata?.error_type;
+      err.failedStage = finalStatus.failed_stage || finalStatus.metadata?.failed_stage;
+      throw err;
     }
 
     return {
@@ -68,13 +75,34 @@ export const GenerationService = {
     });
 
     if (finalStatus.status === "failed") {
-      throw new Error(finalStatus.error || "Virtual try-on failed");
+      const err = new Error(finalStatus.error || "Virtual try-on failed") as Error & {
+        errorType?: string;
+        failedStage?: string;
+        metadata?: Record<string, unknown>;
+      };
+      err.errorType = finalStatus.error_type || finalStatus.metadata?.error_type;
+      err.failedStage = finalStatus.failed_stage || finalStatus.metadata?.failed_stage;
+      err.metadata = finalStatus.metadata;
+      throw err;
+    }
+
+    const meta = finalStatus.metadata || {};
+    // Defense-in-depth: never treat blend/fallback as UI success even if status slipped.
+    if (meta.was_fallback_used || meta.was_real_catvton_used === false) {
+      const err = new Error(
+        "Virtual try-on did not use real CatVTON inference (fallback/blend rejected)."
+      ) as Error & { errorType?: string; failedStage?: string; metadata?: Record<string, unknown> };
+      err.errorType = "CATVTON_FALLBACK";
+      err.failedStage = meta.failed_stage || "fallback";
+      err.metadata = meta;
+      throw err;
     }
 
     return {
       id: finalStatus.job_id,
       status: finalStatus.status as GenerationStatus,
-      resultUrl: finalStatus.result_url
+      resultUrl: finalStatus.result_url,
+      metadata: finalStatus.metadata,
     };
   }
 };

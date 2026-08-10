@@ -28,7 +28,17 @@ def test_01_health_check():
     assert "version" in data
     print(f" -> PASS: Health check status={data['status']}, version={data['version']} ({lat} ms)")
 
+@pytest.mark.slow
 def test_02_storage_validation():
+    """
+    Real Qwen2.5-VL semantic analysis through the live FastAPI app.
+
+    Local weights for Qwen2.5-VL-3B-Instruct exist under models/, so
+    /api/v1/analyze loads and runs the actual 3B vision-language model on the
+    RTX 3050 6GB (real, potentially multi-minute GPU work), not a placeholder.
+    Excluded from the default `pytest -q` run via the `slow` marker; run with
+    `pytest -m slow` when you want a real hardware smoke test.
+    """
     print("\n[STEP 4] Testing File Storage & Format Validation...")
     
     # Invalid format .txt
@@ -46,7 +56,17 @@ def test_02_storage_validation():
     assert resp_png.status_code == 200
     print(" -> PASS: Accepted valid PNG image upload")
 
+@pytest.mark.slow
 def test_03_generation_flow():
+    """
+    Real end-to-end FLUX.1-Kontext generation through the live FastAPI app.
+
+    generation_service.process_generation() forces allow_fallback=False, so this
+    hits actual model weights (~10-13 min on RTX 3050 6GB) and, because
+    BackgroundTasks run inside the ASGI call, TestClient blocks until it finishes.
+    Excluded from the default `pytest -q` run via the `slow` marker; run with
+    `pytest -m slow` when you want a real hardware smoke test.
+    """
     print("\n[STEP 3.C] Testing POST /api/v1/generate & Status Polling...")
     jpg_data = create_sample_image(fmt="JPEG")
     resp = client.post("/api/v1/generate", files={"fabric_image": ("fabric.jpg", jpg_data, "image/jpeg")}, data={"garment_type": "kurti", "fit": "regular", "style": "casual"})
@@ -59,7 +79,16 @@ def test_03_generation_flow():
     assert status_resp.status_code == 200
     print(f" -> PASS: Initial Job Status: {status_resp.json()}")
 
+@pytest.mark.slow
 def test_04_tryon_flow():
+    """
+    Real end-to-end CatVTON try-on through the live FastAPI app.
+
+    Local CatVTON checkpoints exist under models/CatVTON, so /api/v1/tryon can
+    load and run the actual diffusion pipeline instead of the composite
+    fallback. Excluded from the default `pytest -q` run via the `slow` marker;
+    run with `pytest -m slow` for a real hardware smoke test.
+    """
     print("\n[STEP 3.D] Testing POST /api/v1/tryon & Status Polling...")
     g_data = create_sample_image(fmt="PNG")
     p_data = create_sample_image(fmt="PNG")

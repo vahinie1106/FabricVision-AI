@@ -3,7 +3,7 @@ import pytest
 from pathlib import Path
 
 def test_customization_schema_structure():
-    schema_path = Path("configs/customization_schema.json")
+    schema_path = Path("configs/custom_generator/customization_schema.json")
     assert schema_path.exists()
     
     with open(schema_path, "r", encoding="utf-8") as f:

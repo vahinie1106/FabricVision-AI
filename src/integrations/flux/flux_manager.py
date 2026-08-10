@@ -8,11 +8,11 @@ from src.common.models.device_manager import DeviceManager
 
 
 class FluxManager:
-    """Specialized model manager for FLUX.1-schnell diffusion model lifecycle."""
+    """Specialized model manager for FLUX.1-Kontext diffusion model lifecycle."""
 
     def __init__(
         self,
-        model_path: str | Path = "models/flux",
+        model_path: str | Path = "models/flux-kontext",
         device: str = "auto",
         precision: str = "bfloat16",
         allow_fallback: bool = True,
@@ -26,24 +26,45 @@ class FluxManager:
         self.loader: Optional[Any] = None
 
     def load(self) -> Any | None:
-        """Load FLUX model weights into memory dynamically."""
+        """Load FLUX.1-Kontext weights into memory (reuses resident pipeline)."""
         if self.loader is not None and getattr(self.loader, "pipeline", None) is not None:
-            return self.loader.pipeline
+            self.logger.info("[FLUX] Reusing loaded Kontext pipeline via FluxManager")
+            # Touch loader.load() so reuse counters / logs stay consistent
+            return self.loader.load()
 
-        self.logger.info("Loading FLUX model via FluxManager from %s", self.model_path)
+        self.logger.info(
+            "[FLUX] Model initialization started via FluxManager from %s",
+            self.model_path,
+        )
         from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
+
         self.loader = FLUXModelLoader(
             model_path=self.model_path,
             device=self.device,
             precision=self.precision,
             allow_fallback=self.allow_fallback,
         )
-        return self.loader.load()
+        pipeline = self.loader.load()
+        if pipeline is not None:
+            self.logger.info("[FLUX] Model initialization completed via FluxManager")
+        return pipeline
 
     def unload(self) -> None:
         """Unload FLUX pipeline and free GPU memory."""
         if self.loader is not None:
-            self.logger.info("Unloading FLUX model pipeline...")
+            self.logger.info("Unloading FLUX.1-Kontext pipeline...")
+            if hasattr(self.loader, "park_on_cpu"):
+                try:
+                    self.loader.park_on_cpu()
+                except Exception as exc:
+                    self.logger.warning("park_on_cpu during unload failed: %s", exc)
             self.loader._pipeline = None
             self.loader = None
+            self.device_manager.clear_vram()
+
+    def recover_after_oom(self) -> None:
+        """Park resident FLUX modules on CPU so the next job can start cleanly."""
+        if self.loader is not None and hasattr(self.loader, "park_on_cpu"):
+            self.loader.park_on_cpu()
+        else:
             self.device_manager.clear_vram()
