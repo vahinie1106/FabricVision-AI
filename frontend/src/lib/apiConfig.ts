@@ -4,17 +4,19 @@
  * LOCAL (Next on :3000 talking to FastAPI on :8000):
  *   http://127.0.0.1:8000/api/v1
  *
- * SAME-ORIGIN gateway (FastAPI proxies UI on :8000, e.g. Kaggle):
- *   {basePath}/api/v1   — basePath is "" locally, or "/proxy/8000" on Kaggle
+ * SAME-ORIGIN gateway (FastAPI on :8000, including Kaggle Jupyter proxy):
+ *   {detectedOrConfiguredBasePath}/api/v1
  *
- * Override anytime with NEXT_PUBLIC_API_URL / NEXT_PUBLIC_API_ORIGIN.
+ * On Kaggle the public prefix is dynamic, e.g.:
+ *   /k/<kernel>/<token>/proxy/proxy/8000
+ * Never assume a hard-coded "/proxy/8000"-only path in the browser.
  */
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-/** Next.js basePath baked at build time (Kaggle: /proxy/8000). */
+/** Optional build-time basePath (set by scripts/run_kaggle.py from live Jupyter). */
 export function getConfiguredBasePath(): string {
   const fromEnv = (process.env.NEXT_PUBLIC_BASE_PATH || "").trim();
   if (fromEnv) {
@@ -24,17 +26,47 @@ export function getConfiguredBasePath(): string {
 }
 
 /**
- * Runtime base path for public deployments behind Jupyter-style proxies.
- * Prefers build-time NEXT_PUBLIC_BASE_PATH; otherwise detects /proxy/<port>.
+ * Detect the public gateway prefix from the browser location.
+ * Supports classic `/proxy/<port>` and Kaggle `/k/.../proxy/proxy/<port>`.
  */
-export function getDeploymentBasePath(): string {
-  const configured = getConfiguredBasePath();
-  if (configured) return configured;
-  if (typeof window !== "undefined") {
-    const match = window.location.pathname.match(/^(\/proxy\/\d+)/);
-    if (match) return match[1];
+export function detectRuntimeBasePath(): string {
+  if (typeof window === "undefined") return "";
+  const path = window.location.pathname || "";
+
+  // Prefer the longest match ending at /proxy[/proxy]/<port>
+  const kaggleOrProxy = path.match(/^(.*?\/proxy(?:\/proxy)?\/\d+)(?:\/|$)/);
+  if (kaggleOrProxy) {
+    return stripTrailingSlash(kaggleOrProxy[1]);
+  }
+
+  const simple = path.match(/^(\/proxy\/\d+)(?:\/|$)/);
+  if (simple) {
+    return stripTrailingSlash(simple[1]);
   }
   return "";
+}
+
+/**
+ * Runtime base path for public deployments behind Jupyter-style proxies.
+ * On kaggle/jupyter-proxy hosts, prefer live URL detection over a stale build value.
+ */
+export function getDeploymentBasePath(): string {
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname || "";
+    const runtime = detectRuntimeBasePath();
+    if (
+      runtime &&
+      (host.includes("kaggle.net") ||
+        host.includes("jupyter-proxy") ||
+        host.includes("googleapis.com") ||
+        process.env.NEXT_PUBLIC_USE_SAME_ORIGIN === "true")
+    ) {
+      return runtime;
+    }
+    if (runtime) return runtime;
+  }
+
+  return getConfiguredBasePath();
 }
 
 function isAbsoluteHttpUrl(value: string): boolean {
@@ -86,9 +118,20 @@ export function resolveApiBaseUrl(): string {
 
   const basePath = getDeploymentBasePath();
   if (configured) {
-    // Relative override, e.g. "/api/v1" or "./api/v1"
+    // Relative override such as "/api/v1" — if it already includes the full
+    // public prefix, use as-is; otherwise prefix with the live base path.
     const path = configured.replace(/^\.\//, "/");
     const normalized = path.startsWith("/") ? path : `/${path}`;
+    if (basePath && normalized.startsWith(`${basePath}/`)) {
+      return stripTrailingSlash(normalized);
+    }
+    if (basePath && normalized === "/api/v1") {
+      return stripTrailingSlash(`${basePath}/api/v1`);
+    }
+    // Configured absolute-from-root API under a dynamic public prefix.
+    if (basePath && normalized.startsWith("/api/")) {
+      return stripTrailingSlash(`${basePath}${normalized}`);
+    }
     return stripTrailingSlash(`${basePath}${normalized}`);
   }
 
@@ -102,6 +145,15 @@ export function resolveApiBaseUrl(): string {
 export function resolveApiOrigin(): string {
   const configuredOrigin = (process.env.NEXT_PUBLIC_API_ORIGIN || "").trim();
   if (configuredOrigin) {
+    // If a stale "/proxy/8000" was baked but runtime path differs, prefer runtime.
+    const runtime = getDeploymentBasePath();
+    if (
+      runtime &&
+      configuredOrigin.replace(/\/+$/, "") === "/proxy/8000" &&
+      runtime !== "/proxy/8000"
+    ) {
+      return runtime;
+    }
     return stripTrailingSlash(configuredOrigin);
   }
 
@@ -119,7 +171,6 @@ export function resolveApiOrigin(): string {
     return "http://127.0.0.1:8000";
   }
 
-  // Same-origin / gateway: keep media paths relative (prepend basePath only).
   return getDeploymentBasePath();
 }
 

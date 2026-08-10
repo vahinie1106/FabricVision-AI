@@ -36,7 +36,7 @@ def frontend_upstream() -> str:
 
 
 def frontend_base_path() -> str:
-    """Next.js basePath used at build time (e.g. /proxy/8000 on Kaggle)."""
+    """Next.js basePath used at build time (dynamic Kaggle public path when set)."""
     return (os.environ.get("NEXT_PUBLIC_BASE_PATH") or "").rstrip("/")
 
 
@@ -56,9 +56,9 @@ def _forward_path(path: str) -> str:
     """
     Map the path FastAPI received to the path Next.js expects.
 
-    Kaggle's Jupyter proxy strips `/proxy/8000` before the request reaches the
-    app, while a Next.js build with basePath=`/proxy/8000` still expects that
-    prefix. Re-attach it when configured.
+    Jupyter/Kaggle proxies typically strip the public prefix before the request
+    reaches the app, while a Next.js build with basePath still expects that
+    prefix. Re-attach NEXT_PUBLIC_BASE_PATH when configured.
     """
     base = frontend_base_path()
     if not base:

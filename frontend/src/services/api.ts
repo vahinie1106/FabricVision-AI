@@ -3,6 +3,7 @@ import { resolveApiBaseUrl } from "@/lib/apiConfig";
 export {
   API_BASE_URL,
   API_ORIGIN,
+  detectRuntimeBasePath,
   getConfiguredBasePath,
   getDeploymentBasePath,
   resolveApiBaseUrl,
