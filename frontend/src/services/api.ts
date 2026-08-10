@@ -1,4 +1,13 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+import { resolveApiBaseUrl } from "@/lib/apiConfig";
+
+export {
+  API_BASE_URL,
+  API_ORIGIN,
+  getConfiguredBasePath,
+  getDeploymentBasePath,
+  resolveApiBaseUrl,
+  resolveApiOrigin,
+} from "@/lib/apiConfig";
 
 export interface JobStatusResponse {
   job_id: string;
@@ -16,9 +25,10 @@ export interface JobStatusResponse {
 
 export class ApiClient {
   static async get<T>(endpoint: string): Promise<T> {
+    const base = resolveApiBaseUrl();
     let res: Response;
     try {
-      res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      res = await fetch(`${base}${endpoint}`, {
         method: "GET",
         headers: {
           Accept: "application/json",
@@ -35,9 +45,10 @@ export class ApiClient {
   }
 
   static async post<T>(endpoint: string, data: unknown): Promise<T> {
+    const base = resolveApiBaseUrl();
     let res: Response;
     try {
-      res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      res = await fetch(`${base}${endpoint}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -56,9 +67,10 @@ export class ApiClient {
   }
 
   static async postFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+    const base = resolveApiBaseUrl();
     let res: Response;
     try {
-      res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      res = await fetch(`${base}${endpoint}`, {
         method: "POST",
         body: formData,
         // Note: Do not set Content-Type header when sending FormData,
@@ -73,13 +85,16 @@ export class ApiClient {
     }
     return res.json();
   }
-  
+
   /**
    * Polls a job status endpoint repeatedly until it is no longer queued or processing.
    * Long FLUX Kontext jobs on RTX 3050 can run for many minutes — transient network
    * blips must not surface as "Unable to connect to backend".
    */
-  static async pollJobStatus(jobId: string, onProgress?: (status: JobStatusResponse) => void): Promise<JobStatusResponse> {
+  static async pollJobStatus(
+    jobId: string,
+    onProgress?: (status: JobStatusResponse) => void
+  ): Promise<JobStatusResponse> {
     const pollInterval = 2000;
     const maxConsecutiveErrors = 8;
 
