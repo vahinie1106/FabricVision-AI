@@ -27,10 +27,29 @@ class ModelManager:
 
     def switch_to(self, model_name: Literal["qwen", "flux", "catvton"]) -> None:
         """Sequential execution guard: Unloads inactive models before activating requested model."""
+        needs_reload = False
         if self._active_model == model_name:
-            return
+            if model_name == "flux":
+                loader = getattr(self.flux_manager, "loader", None)
+                if loader is None or getattr(loader, "pipeline", None) is None:
+                    needs_reload = True
+                else:
+                    return
+            elif model_name == "catvton":
+                loader = getattr(self.catvton_manager, "loader", None)
+                if loader is None or getattr(loader, "pipeline", None) is None:
+                    needs_reload = True
+                else:
+                    return
+            else:
+                return
 
-        self.logger.info("Switching active model from '%s' to '%s'", self._active_model, model_name)
+        self.logger.info(
+            "Switching active model from '%s' to '%s'%s",
+            self._active_model,
+            model_name,
+            " (forced reload)" if needs_reload else "",
+        )
 
         # Default pytest runs must not load multi-GB weights (hangs under GPU contention).
         # Marked `slow` tests that need real residency should call managers directly.
@@ -39,11 +58,11 @@ class ModelManager:
             self.logger.info("Pytest: recorded active_model=%s without weight load", model_name)
             return
 
-        if self._active_model == "qwen":
+        if self._active_model == "qwen" and model_name != "qwen":
             self.qwen_manager.unload()
-        elif self._active_model == "flux":
+        elif self._active_model == "flux" and (model_name != "flux" or needs_reload):
             self.flux_manager.unload()
-        elif self._active_model == "catvton":
+        elif self._active_model == "catvton" and (model_name != "catvton" or needs_reload):
             self.catvton_manager.unload()
 
         self.device_manager.clear_vram()

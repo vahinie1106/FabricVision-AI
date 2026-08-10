@@ -64,6 +64,7 @@ export function toFriendlyError(error: unknown): FriendlyError {
 
   if (
     type === "CUDA_OOM" ||
+    type === "OUT_OF_MEMORY" ||
     lower.includes("out of memory") ||
     lower.includes("outofmemory") ||
     (lower.includes("cuda") && lower.includes("out of memory"))
@@ -73,6 +74,50 @@ export function toFriendlyError(error: unknown): FriendlyError {
       title: "CUDA Memory Full",
       message:
         "The GPU ran out of memory during generation. Wait a moment and try again — the backend frees VRAM after a failed job.",
+    };
+  }
+
+  if (type === "MODEL_AUTH_FAILED" || lower.includes("model_auth_failed")) {
+    return {
+      code: "MODEL_LOAD",
+      title: "Model Access Denied",
+      message:
+        "Hugging Face authentication failed while loading FLUX. Add a Kaggle secret named HF_TOKEN if the model requires access.",
+    };
+  }
+
+  if (type === "MODEL_NOT_FOUND" || lower.includes("model_not_found")) {
+    return {
+      code: "MODEL_LOAD",
+      title: "Model Not Found",
+      message:
+        "FLUX Kontext weights were not found. On Kaggle, allow the first run to download eramth/flux-kontext-4bit, or run scripts/download_flux_kontext.py.",
+    };
+  }
+
+  if (type === "MODEL_DOWNLOAD_FAILED" || lower.includes("model_download_failed")) {
+    return {
+      code: "MODEL_LOAD",
+      title: "Model Download Failed",
+      message:
+        "FLUX weights could not be downloaded from Hugging Face. Check Kaggle internet access and try again.",
+    };
+  }
+
+  if (type === "MODEL_DEPENDENCY_ERROR" || lower.includes("model_dependency_error")) {
+    return {
+      code: "MODEL_LOAD",
+      title: "Model Dependency Error",
+      message:
+        "A required FLUX dependency is missing or incompatible (diffusers / bitsandbytes / FluxKontextPipeline).",
+    };
+  }
+
+  if (type === "CUDA_ERROR" || (lower.includes("cuda") && lower.includes("error"))) {
+    return {
+      code: "DEVICE_MISMATCH",
+      title: "GPU Error",
+      message: "A CUDA error interrupted FLUX loading or generation. Check the backend logs for details.",
     };
   }
 
@@ -89,7 +134,8 @@ export function toFriendlyError(error: unknown): FriendlyError {
     return {
       code: "MODEL_LOAD",
       title: "Model Load Failed",
-      message: "The FLUX model could not be loaded. Check that model weights are present and try again.",
+      message:
+        "The FLUX Kontext model could not be loaded. Check backend logs for the root exception (weights, auth, download, or CUDA).",
     };
   }
 

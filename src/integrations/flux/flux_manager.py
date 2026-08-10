@@ -16,11 +16,13 @@ class FluxManager:
         device: str = "auto",
         precision: str = "bfloat16",
         allow_fallback: bool = True,
+        hf_model_id: Optional[str] = None,
     ) -> None:
         self.model_path = Path(model_path)
         self.device = device
         self.precision = precision
         self.allow_fallback = allow_fallback
+        self.hf_model_id = hf_model_id
         self.logger = logging.getLogger("fabricvision.models.flux_manager")
         self.device_manager = DeviceManager()
         self.loader: Optional[Any] = None
@@ -43,7 +45,9 @@ class FluxManager:
             device=self.device,
             precision=self.precision,
             allow_fallback=self.allow_fallback,
+            hf_model_id=self.hf_model_id,
         )
+        self.logger.info("FLUX model ID: %s", self.loader.hf_model_id)
         pipeline = self.loader.load()
         if pipeline is not None:
             self.logger.info("[FLUX] Model initialization completed via FluxManager")

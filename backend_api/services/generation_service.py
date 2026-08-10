@@ -85,15 +85,37 @@ async def process_generation(
             remote_provider = RemoteFluxProvider()
             loader = None
         else:
+            # Prefer YAML / env HF id; never hard-code secrets.
+            hf_id = os.environ.get("FLUX_KONTEXT_MODEL_ID", "").strip() or None
+            if not hf_id:
+                try:
+                    from src.common.utils.utils import load_yaml_config
+
+                    flux_yaml = load_yaml_config(
+                        settings.BASE_DIR / "configs" / "custom_generator" / "flux_config.yaml"
+                    ) or {}
+                    hf_id = (flux_yaml.get("hf_model_id") or "").strip() or None
+                except Exception:
+                    hf_id = None
+
             model_manager.flux_manager.allow_fallback = False
             model_manager.flux_manager.model_path = settings.BASE_DIR / "models" / "flux-kontext"
-            model_manager.switch_to("flux")
+            model_manager.flux_manager.hf_model_id = hf_id
+            os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+            try:
+                model_manager.switch_to("flux")
+            except Exception as load_exc:
+                # Preserve the real loader exception for classification / logs.
+                raise RuntimeError(str(load_exc) or "FLUX.1-Kontext failed to load") from load_exc
 
             loader = model_manager.flux_manager.loader
             if loader is None or getattr(loader, "pipeline", None) is None:
                 raise RuntimeError(
-                    "FLUX.1-Kontext failed to load. Download weights into models/flux-kontext "
-                    "or check GPU VRAM availability."
+                    "MODEL_LOAD_ERROR: FLUX.1-Kontext pipeline is not initialized after load. "
+                    "Weights may be missing from models/flux-kontext (gitignored) — "
+                    "run python scripts/download_flux_kontext.py or ensure Kaggle can reach "
+                    "Hugging Face for eramth/flux-kontext-4bit."
                 )
 
             if already_loaded or getattr(loader, "_reuse_count", 0) > 0:

@@ -18,7 +18,22 @@ def test_classify_cuda_oom():
             "CUDA out of memory. Tried to allocate 80.00 MiB. GPU 0 has a total capacity of 6.00 GiB"
         )
     )
-    assert err_type == "CUDA_OOM"
+    assert err_type in ("OUT_OF_MEMORY", "CUDA_OOM")
+
+
+def test_classify_model_auth_failed():
+    err_type, stage, _ = classify_generation_error(
+        RuntimeError("MODEL_AUTH_FAILED: 401 Unauthorized for gated model")
+    )
+    assert err_type == "MODEL_AUTH_FAILED"
+    assert stage == "model_load"
+
+
+def test_classify_model_download_failed():
+    err_type, stage, _ = classify_generation_error(
+        RuntimeError("MODEL_DOWNLOAD_FAILED: snapshot_download timed out")
+    )
+    assert err_type == "MODEL_DOWNLOAD_FAILED"
 
 
 def test_park_on_cpu_skips_nf4_transformer_to_cpu():

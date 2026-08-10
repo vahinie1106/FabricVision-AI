@@ -170,20 +170,131 @@ class FLUXModelLoader:
             return self.model_path
         return None
 
+    def _local_t5_ready(self, path: Path) -> bool:
+        te2 = path / "text_encoder_2"
+        if not te2.exists():
+            return False
+        return bool(list(te2.glob("*.safetensors")) + list(te2.glob("*.bin")))
+
+    def _hf_token_present(self) -> bool:
+        return bool(
+            (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
+        )
+
+    def _gpu_vram_mb(self) -> float:
+        if torch is None:
+            return 0.0
+        try:
+            if torch.cuda.is_available():
+                return float(torch.cuda.get_device_properties(0).total_memory) / (1024**2)
+        except Exception:
+            return 0.0
+        return 0.0
+
+    def _ensure_hub_package(self, repo_id: str) -> str:
+        """
+        Ensure a complete Diffusers Kontext package exists under model_path.
+
+        On Kaggle, ``models/`` is gitignored so a fresh clone has no weights.
+        Download the configured HF package into ``model_path`` when incomplete.
+        """
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
+        if self._is_complete_local_dir(self.model_path) and self._local_t5_ready(self.model_path):
+            self.logger.info("FLUX local package ready at %s", self.model_path.resolve())
+            return str(self.model_path)
+
+        download_root = self.model_path
+        if self._has_transformer_weights(self.model_path) and not self._local_t5_ready(
+            self.model_path
+        ):
+            if not self._is_complete_local_dir(self.LEGACY_SCHNELL_PATH):
+                download_root = self.model_path.parent / f"{self.model_path.name}-hub"
+                self.logger.warning(
+                    "Incomplete local Kontext tree at %s (transformer without T5/VAE). "
+                    "Downloading hub package to %s",
+                    self.model_path,
+                    download_root,
+                )
+
+        if self._is_complete_local_dir(download_root) and self._local_t5_ready(download_root):
+            return str(download_root)
+
+        self.logger.info(
+            "FLUX weights missing locally — downloading %s -> %s "
+            "(HF_TOKEN present: %s)",
+            repo_id,
+            download_root,
+            self._hf_token_present(),
+        )
+        download_root.mkdir(parents=True, exist_ok=True)
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError as exc:
+            raise RuntimeError(
+                "MODEL_DEPENDENCY_ERROR: huggingface_hub is required to download FLUX weights"
+            ) from exc
+
+        token = (
+            os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
+        )
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                local_dir=str(download_root),
+                resume_download=True,
+                max_workers=2,
+                token=token,
+            )
+        except Exception as exc:
+            err = str(exc).lower()
+            if any(k in err for k in ("401", "403", "unauthorized", "gated", "access")):
+                raise RuntimeError(
+                    "MODEL_AUTH_FAILED: Hugging Face authentication failed while downloading "
+                    f"{repo_id}. Set Kaggle secret HF_TOKEN (or HUGGING_FACE_HUB_TOKEN) if "
+                    "the repo requires access. Do not commit tokens."
+                ) from exc
+            if any(k in err for k in ("404", "not found", "repository not found")):
+                raise RuntimeError(
+                    f"MODEL_NOT_FOUND: Hugging Face repo '{repo_id}' was not found."
+                ) from exc
+            raise RuntimeError(
+                f"MODEL_DOWNLOAD_FAILED: Could not download '{repo_id}' into "
+                f"'{download_root}': {type(exc).__name__}: {exc}"
+            ) from exc
+
+        if not (
+            self._is_complete_local_dir(download_root) and self._local_t5_ready(download_root)
+        ):
+            raise RuntimeError(
+                f"MODEL_DOWNLOAD_FAILED: Download of '{repo_id}' completed but package at "
+                f"'{download_root}' is still incomplete (missing T5/VAE/weights)."
+            )
+        self.logger.info("FLUX hub package ready at %s", download_root.resolve())
+        return str(download_root)
+
     def _resolve_model_source(self) -> tuple[str, Optional[str]]:
         """
         Returns (pipeline_root, transformer_root_or_None).
 
         Prefer a complete Kontext directory. Otherwise load shared components from
         schnell (`models/flux`) and the Kontext transformer from `models/flux-kontext`.
+        On Kaggle (no gitignored weights), download the configured HF package.
         """
+        self.logger.info("FLUX model ID: %s", self.hf_model_id)
+        self.logger.info(
+            "FLUX resolve: model_path=%s exists=%s hf_token_present=%s cuda=%s gpu_vram_mb=%.0f",
+            self.model_path,
+            self.model_path.exists(),
+            self._hf_token_present(),
+            bool(torch is not None and torch.cuda.is_available()),
+            self._gpu_vram_mb(),
+        )
+
         if self._is_complete_local_dir(self.model_path) and self._has_transformer_weights(
             self.model_path
         ):
-            t5_ok = any(
-                (self.model_path / "text_encoder_2").glob("*.safetensors")
-            ) or any((self.model_path / "text_encoder_2").glob("*.bin"))
-            if t5_ok:
+            if self._local_t5_ready(self.model_path):
                 self.logger.info("Found complete local Kontext weights at %s", self.model_path)
                 return str(self.model_path), None
 
@@ -197,13 +308,24 @@ class FLUXModelLoader:
             )
             return str(self.LEGACY_SCHNELL_PATH), str(self.model_path)
 
-        if self.hf_model_id:
-            self.logger.info("Using Hugging Face Kontext source: %s", self.hf_model_id)
+        if not self.hf_model_id:
+            raise RuntimeError(
+                "MODEL_NOT_FOUND: No FLUX.1-Kontext weights found. "
+                "Run: python scripts/download_flux_kontext.py"
+            )
+
+        skip_prefetch = os.environ.get("FLUX_SKIP_HUB_PREFETCH", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if skip_prefetch:
+            self.logger.info("Using Hugging Face Kontext source directly: %s", self.hf_model_id)
             return self.hf_model_id, None
 
-        raise RuntimeError(
-            "No FLUX.1-Kontext weights found. Run: python scripts/download_flux_kontext.py"
-        )
+        local_pkg = self._ensure_hub_package(self.hf_model_id)
+        return local_pkg, None
 
     def _configure_attention(self, pipeline: Any) -> str:
         """
@@ -327,7 +449,10 @@ class FLUXModelLoader:
         try:
             from diffusers import FluxKontextPipeline, FluxTransformer2DModel
         except ImportError as exc:
-            msg = f"Diffusers FluxKontextPipeline unavailable: {exc}"
+            msg = (
+                "MODEL_DEPENDENCY_ERROR: Diffusers FluxKontextPipeline unavailable: "
+                f"{exc}. Install a recent diffusers build that exports FluxKontextPipeline."
+            )
             self.logger.error(msg)
             if not self.allow_fallback:
                 raise RuntimeError(msg) from exc
@@ -652,11 +777,12 @@ class FLUXModelLoader:
 
         self.logger.info(
             "[FLUX] park_on_cpu: allocated %.1f→%.1f MB, reserved %.1f→%.1f MB "
-            "(physical GPU=6144 MiB, bnb4bit=%s, offload=%s)",
+            "(physical GPU=%.0f MiB, bnb4bit=%s, offload=%s)",
             before,
             after,
             reserved_before,
             reserved_after,
+            self._gpu_vram_mb(),
             self._used_bnb_4bit,
             self._offload_strategy,
         )
@@ -684,6 +810,10 @@ class FLUXModelLoader:
             "reuse_count": self._reuse_count,
             "pipeline_resident": self._pipeline is not None,
             "pytorch_cuda_alloc_conf": os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
+            "hf_model_id": self.hf_model_id,
+            "model_path": str(self.model_path),
+            "hf_token_present": self._hf_token_present(),
+            "gpu_vram_mb": round(self._gpu_vram_mb(), 1),
         }
         if torch is not None:
             info["torch_version"] = torch.__version__
