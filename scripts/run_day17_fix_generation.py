@@ -27,7 +27,7 @@ logging.basicConfig(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--image", required=True, help="Fabric image path")
-    parser.add_argument("--mode", default="Standard", choices=["Preview", "Standard", "Production"])
+    parser.add_argument("--mode", default="Standard", help="Preview|Standard|Production|quality_15|quality_20|quality_30|quality_768")
     parser.add_argument("--garment-type", default="kurti")
     parser.add_argument("--sleeve", default="three_quarter_sleeve")
     parser.add_argument("--neckline", default="v_neck")

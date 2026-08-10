@@ -64,6 +64,22 @@ class FLUXModelLoader:
         self._init_time_s = 0.0
         self._load_count = 0
         self._reuse_count = 0
+        # Quantization profile: nf4 (default / low-VRAM) | full (bf16/fp16, quality path)
+        quant_env = os.environ.get("FLUX_QUANTIZATION", "").strip().lower()
+        disable_nf4 = os.environ.get("FLUX_DISABLE_NF4", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if quant_env in ("full", "bf16", "fp16", "none", "off"):
+            self._want_nf4 = False
+        elif quant_env in ("nf4", "4bit", "bnb"):
+            self._want_nf4 = True
+        elif disable_nf4:
+            self._want_nf4 = False
+        else:
+            self._want_nf4 = True  # preserve RTX 3050 default
 
         # Env overrides win so operators can tune without code edits.
         env_compile = os.environ.get("FLUX_ENABLE_TORCH_COMPILE", "").strip().lower()
@@ -345,44 +361,59 @@ class FLUXModelLoader:
 
         try:
             transformer = None
+            want_nf4 = bool(getattr(self, "_want_nf4", True))
+            self.logger.info(
+                "[FLUX] Quantization profile: %s (FLUX_QUANTIZATION / FLUX_DISABLE_NF4)",
+                "nf4" if want_nf4 else "full_precision",
+            )
             if transformer_root is not None:
                 self.logger.info(
                     "Loading Kontext transformer from %s (shared root %s)",
                     transformer_root,
                     pipeline_root,
                 )
-                try:
-                    from transformers import BitsAndBytesConfig
+                if want_nf4:
+                    try:
+                        from transformers import BitsAndBytesConfig
 
-                    quant_config = BitsAndBytesConfig(
-                        load_in_4bit=True,
-                        bnb_4bit_quant_type="nf4",
-                        bnb_4bit_compute_dtype=dtype or torch.bfloat16,
-                    )
-                    transformer = FluxTransformer2DModel.from_pretrained(
-                        transformer_root,
-                        subfolder="transformer",
-                        quantization_config=quant_config,
-                        torch_dtype=dtype or torch.bfloat16,
-                        low_cpu_mem_usage=use_low_cpu_mem,
-                    )
-                    used_bnb_4bit = True
-                except Exception as q_exc:
-                    self.logger.info(
-                        "NF4 transformer load deferred (%s); loading as-is...", q_exc
-                    )
+                        quant_config = BitsAndBytesConfig(
+                            load_in_4bit=True,
+                            bnb_4bit_quant_type="nf4",
+                            bnb_4bit_compute_dtype=dtype or torch.bfloat16,
+                        )
+                        transformer = FluxTransformer2DModel.from_pretrained(
+                            transformer_root,
+                            subfolder="transformer",
+                            quantization_config=quant_config,
+                            torch_dtype=dtype or torch.bfloat16,
+                            low_cpu_mem_usage=use_low_cpu_mem,
+                        )
+                        used_bnb_4bit = True
+                    except Exception as q_exc:
+                        self.logger.info(
+                            "NF4 transformer load deferred (%s); loading as-is...", q_exc
+                        )
+                        transformer = FluxTransformer2DModel.from_pretrained(
+                            transformer_root,
+                            subfolder="transformer",
+                            torch_dtype=dtype,
+                            low_cpu_mem_usage=use_low_cpu_mem,
+                        )
+                        used_bnb_4bit = bool(
+                            any(
+                                "Linear4bit" in type(m).__name__
+                                for m in list(transformer.modules())[:50]
+                            )
+                        )
+                else:
+                    # Quality path: load transformer weights without BitsAndBytes NF4.
                     transformer = FluxTransformer2DModel.from_pretrained(
                         transformer_root,
                         subfolder="transformer",
                         torch_dtype=dtype,
                         low_cpu_mem_usage=use_low_cpu_mem,
                     )
-                    used_bnb_4bit = bool(
-                        any(
-                            "Linear4bit" in type(m).__name__
-                            for m in list(transformer.modules())[:50]
-                        )
-                    )
+                    used_bnb_4bit = False
 
             self.logger.info("Loading FluxKontextPipeline from %s ...", pipeline_root)
             kwargs = {
@@ -403,14 +434,28 @@ class FLUXModelLoader:
                             for m in list(trans.modules())[:50]
                         )
                     )
+                    if not want_nf4 and used_bnb_4bit:
+                        raise RuntimeError(
+                            "Requested full-precision FLUX but pipeline transformer "
+                            "still contains Linear4bit modules (likely an NF4 checkpoint). "
+                            "Point FLUX model path at a non-quantized Kontext root, or "
+                            "set FLUX_QUANTIZATION=nf4."
+                        )
             except Exception as direct_exc:
+                if not want_nf4:
+                    raise
                 self.logger.info(
                     "Direct Kontext load deferred (%s); trying explicit NF4 transformer...",
                     direct_exc,
                 )
                 pipeline = None
 
-            if pipeline is None and torch is not None and torch.cuda.is_available():
+            if (
+                pipeline is None
+                and want_nf4
+                and torch is not None
+                and torch.cuda.is_available()
+            ):
                 from transformers import BitsAndBytesConfig
 
                 quant_config = BitsAndBytesConfig(
@@ -449,9 +494,31 @@ class FLUXModelLoader:
                         "[FLUX] PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True"
                     )
 
+                # Offload policy:
+                # - default / FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB path)
+                # - FLUX_MODEL_CPU_OFFLOAD=false → keep weights on GPU (16GB quality path)
+                offload_env = os.environ.get("FLUX_MODEL_CPU_OFFLOAD", "").strip().lower()
+                prefer_offload = True
+                if offload_env in ("0", "false", "no", "off"):
+                    prefer_offload = False
+                elif offload_env in ("1", "true", "yes", "on"):
+                    prefer_offload = True
+                elif not want_nf4:
+                    # Full precision without explicit offload flag: prefer GPU-resident
+                    # when physical VRAM looks large enough; else keep offload.
+                    physical_mb = 0.0
+                    try:
+                        if torch is not None and torch.cuda.is_available():
+                            physical_mb = torch.cuda.get_device_properties(0).total_memory / (
+                                1024**2
+                            )
+                    except Exception:
+                        physical_mb = 0.0
+                    prefer_offload = physical_mb < 14000
+
                 # WHY model_cpu_offload (not sequential): sequential + bnb NF4 previously
                 # raised "Cannot copy out of meta tensor; no data!" on this stack.
-                if hasattr(pipeline, "enable_model_cpu_offload"):
+                if prefer_offload and hasattr(pipeline, "enable_model_cpu_offload"):
                     pipeline.enable_model_cpu_offload()
                     self._offload_strategy = "model_cpu_offload"
                     self.logger.info(
@@ -459,13 +526,14 @@ class FLUXModelLoader:
                         "bnb-safe" if used_bnb_4bit else "standard",
                     )
                 else:
-                    self.logger.warning(
-                        "model_cpu_offload unavailable; loading without sequential "
-                        "offload (bnb meta-tensor safety)"
-                    )
                     if hasattr(pipeline, "to"):
                         pipeline.to(target_device)
-                    self._offload_strategy = "none"
+                    self._offload_strategy = "gpu_resident" if not prefer_offload else "none"
+                    self.logger.info(
+                        "Kontext GPU-resident load (offload=%s, nf4=%s)",
+                        self._offload_strategy,
+                        used_bnb_4bit,
+                    )
 
                 if hasattr(pipeline, "vae") and pipeline.vae is not None:
                     # Slicing: lower VRAM during decode without softening details.
@@ -604,6 +672,10 @@ class FLUXModelLoader:
         info: dict[str, Any] = {
             "model_kind": self._model_kind,
             "bnb_4bit": self._used_bnb_4bit,
+            "want_nf4": bool(getattr(self, "_want_nf4", True)),
+            "quantization_profile": (
+                "nf4" if self._used_bnb_4bit else "full_precision"
+            ),
             "offload_strategy": self._offload_strategy,
             "attention_backend": self._attention_backend,
             "torch_compile": self._torch_compile_enabled,

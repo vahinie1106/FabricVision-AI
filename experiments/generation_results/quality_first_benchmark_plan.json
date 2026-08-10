@@ -1,0 +1,87 @@
+{
+  "title": "Quality-first FLUX + CatVTON benchmark plan",
+  "created": "2026-08-11",
+  "priority": "REAL MODEL → HIGHER QUALITY → SHARP OUTPUT → FAITHFUL FABRIC → CORRECT MAPPING",
+  "gpu_note": "Plan targets ~16GB VRAM. Current measured Windows venv GPU may still be RTX 3050 6GB — high-precision/high-res cells must skip or OOM-fail clearly rather than invent results.",
+  "preserve_low_vram": {
+    "preview": "NF4 + model_cpu_offload + 384/3",
+    "standard": "NF4 + model_cpu_offload + 512/3 guidance 3.0",
+    "production": "NF4 + model_cpu_offload + 512/4",
+    "env_defaults": {
+      "FLUX_QUANTIZATION": "nf4",
+      "FLUX_MODEL_CPU_OFFLOAD": "true"
+    }
+  },
+  "flux_matrix": {
+    "shared_inputs": {
+      "fabric": "real fabric photograph (not synthetic grid)",
+      "garment_type": "kurti or dress matching fabric use-case",
+      "seed": 42,
+      "prompt_budget": "CLIP 77; record token_count/token_budget/truncated/prompt_compacted"
+    },
+    "step_ladder_512_nf4": [
+      {"id": "baseline_512_3_nf4", "mode": "standard", "steps": 3, "res": [512, 512], "quant": "nf4", "offload": true},
+      {"id": "q15_512_nf4", "mode": "quality_15", "steps": 15, "res": [512, 512], "quant": "nf4", "offload": true},
+      {"id": "q20_512_nf4", "mode": "quality_20", "steps": 20, "res": [512, 512], "quant": "nf4", "offload": true},
+      {"id": "q30_512_nf4", "mode": "quality_30", "steps": 30, "res": [512, 512], "quant": "nf4", "offload": true}
+    ],
+    "precision_compare_20step": [
+      {"id": "q20_512_nf4", "quant": "nf4", "offload": true},
+      {"id": "q20_512_full", "quant": "full", "offload": "auto_if_vram_lt_14gb", "requires_vram_gb_min": 14}
+    ],
+    "resolution_compare": [
+      {"id": "q20_512_nf4", "res": [512, 512]},
+      {"id": "q20_768_nf4", "mode": "quality_768", "res": [768, 768], "quant": "nf4", "requires_vram_gb_min": 10},
+      {"id": "q20_768x1024_nf4", "res": [768, 1024], "quant": "nf4", "optional": true, "note": "only if pipeline accepts non-square Kontext sizes without distortion"}
+    ],
+    "metrics_required": [
+      "configuration", "resolution", "steps", "guidance", "precision/quantization",
+      "device", "load_time_s", "generation_time_s", "diffusion_time_s", "vae_decode_time_s",
+      "peak_cuda_allocated_mb", "peak_cuda_reserved_mb", "physical_gpu_vram_mb",
+      "output_path", "prompt_stats", "objective_image_stats"
+    ],
+    "do_not": [
+      "Invent human quality scores",
+      "Claim laplacian/edge metrics equal perceived quality",
+      "Delete LOW_VRAM NF4 path"
+    ]
+  },
+  "catvton_matrix": {
+    "hard_requirements": [
+      "Real full-/half-body person photograph",
+      "Real or generated garment image",
+      "CATVTON_REQUIRE_REAL=true",
+      "No fabric-as-person / geometric placeholder"
+    ],
+    "cells": [
+      {"id": "A_baseline_grabcut_30", "mask_strategy": "grabcut", "steps": 30, "res": [384, 512]},
+      {"id": "B_automasker_30", "mask_strategy": "automasker", "steps": 30, "res": [384, 512], "requires": "fvcore+detectron2+DensePose/SCHP"},
+      {"id": "C_automasker_higher_if_vram", "mask_strategy": "automasker", "steps": 40, "res": [384, 512], "optional": true}
+    ],
+    "automasker_deps_documented": {
+      "source": "models/CatVTON/requirements.txt",
+      "python": "3.11.x",
+      "torch_current_env": "2.6.0+cu124",
+      "catvton_pinned_torch_note": "CatVTON lists torch==2.4.0; do not downgrade project torch blindly — install AutoMasker Python deps only",
+      "required_python_packages": [
+        "fvcore==0.1.5.post20221221",
+        "cloudpickle",
+        "omegaconf",
+        "iopath (fvcore dependency)"
+      ],
+      "weights": "models/CatVTON/{model,SCHP,densepose|DensePose}",
+      "status_on_this_machine": "detectron2 vendored under models/CatVTON but import fails without fvcore"
+    },
+    "manual_mapping_checklist": [
+      "upper: shoulders, neckline, sleeves, collar",
+      "body: torso width/length, side boundaries, hem",
+      "fabric: print/color/texture preservation",
+      "person: face/skin/hair/proportions",
+      "artifacts: doubled limbs, floating garment, hands, face warp, background, bleed"
+    ]
+  },
+  "runner_scripts": {
+    "flux": "scripts/benchmark_flux_quality_matrix.py",
+    "catvton": "scripts/tryon/run_catvton_quality_matrix.py"
+  }
+}

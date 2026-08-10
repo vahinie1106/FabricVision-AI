@@ -1,0 +1,196 @@
+{
+  "status": "completed",
+  "device": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+  "physical_gpu_vram_mb": 6143.5,
+  "fabric_path": "data\\uploads\\8dd96489cf1a4262a9eeccfac617fd90.jpg",
+  "results": [
+    {
+      "id": "baseline_512_3_nf4",
+      "configuration": {
+        "id": "baseline_512_3_nf4",
+        "mode": "standard",
+        "steps": 3,
+        "height": 512,
+        "width": 512,
+        "guidance": 3.0,
+        "quant": "nf4",
+        "offload": "true",
+        "min_physical_vram_mb": 0,
+        "decision": "run",
+        "device": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+        "physical_gpu_vram_mb": 6143.5
+      },
+      "status": "completed",
+      "device": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "physical_gpu_vram_mb": 6143.5,
+      "load_time_s": 43.05,
+      "generation_time_s": 531.797,
+      "diffusion_time_s": null,
+      "vae_decode_time_s": 26.147,
+      "resolution": [
+        512,
+        512
+      ],
+      "steps": 3,
+      "guidance": 3.0,
+      "precision_quantization": "nf4",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "peak_cuda_allocated_mb": 10208.9,
+      "peak_cuda_reserved_mb": 10228.0,
+      "output_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\flux_quality_baseline_512_3_nf4.png",
+      "metadata_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\experiments\\generation_results\\flux_quality_baseline_512_3_nf4_exp.json",
+      "prompt_stats": {
+        "token_count": 53,
+        "token_budget": 77,
+        "truncated": false,
+        "prompt_compacted": true
+      },
+      "objective_image_stats": {
+        "resolution": [
+          512,
+          512
+        ],
+        "laplacian_variance": 123.723,
+        "edge_energy": 1.852,
+        "image_variance": 1580.562,
+        "non_empty_pixel_pct": 43.19,
+        "note": "Objective diagnostics only; not perceived quality scores."
+      },
+      "fabric_path": "data\\uploads\\8dd96489cf1a4262a9eeccfac617fd90.jpg",
+      "loader_runtime": {
+        "model_kind": "flux-kontext",
+        "bnb_4bit": true,
+        "want_nf4": true,
+        "quantization_profile": "nf4",
+        "offload_strategy": "model_cpu_offload",
+        "attention_backend": "sdpa",
+        "torch_compile": false,
+        "init_time_s": 42.98,
+        "load_count": 1,
+        "reuse_count": 0,
+        "pipeline_resident": true,
+        "pytorch_cuda_alloc_conf": "expandable_segments:True",
+        "torch_version": "2.6.0+cu124",
+        "cuda_available": true,
+        "cuda_version": "12.4",
+        "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+        "cuda_allocated_mb": 0.0,
+        "cuda_reserved_mb": 0.0,
+        "diffusers_version": "0.39.0",
+        "bitsandbytes_version": "0.50.0"
+      },
+      "was_fallback_used": false,
+      "was_real_flux_used": true
+    },
+    {
+      "id": "q15_512_nf4",
+      "configuration": {
+        "id": "q15_512_nf4",
+        "mode": "quality_15",
+        "steps": 15,
+        "height": 512,
+        "width": 512,
+        "guidance": 3.0,
+        "quant": "nf4",
+        "offload": "true",
+        "min_physical_vram_mb": 0,
+        "decision": "run",
+        "device": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+        "physical_gpu_vram_mb": 6143.5
+      },
+      "status": "completed",
+      "device": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+      "physical_gpu_vram_mb": 6143.5,
+      "load_time_s": 23.396,
+      "generation_time_s": 2054.433,
+      "diffusion_time_s": null,
+      "vae_decode_time_s": 27.304,
+      "resolution": [
+        512,
+        512
+      ],
+      "steps": 15,
+      "guidance": 3.0,
+      "precision_quantization": "nf4",
+      "bnb_4bit": true,
+      "offload_strategy": "model_cpu_offload",
+      "peak_cuda_allocated_mb": 10208.9,
+      "peak_cuda_reserved_mb": 10228.0,
+      "output_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\generated_garments\\images\\flux_quality_q15_512_nf4.png",
+      "metadata_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\experiments\\generation_results\\flux_quality_q15_512_nf4_exp.json",
+      "prompt_stats": {
+        "token_count": 53,
+        "token_budget": 77,
+        "truncated": false,
+        "prompt_compacted": true
+      },
+      "objective_image_stats": {
+        "resolution": [
+          512,
+          512
+        ],
+        "laplacian_variance": 116.042,
+        "edge_energy": 1.757,
+        "image_variance": 2103.149,
+        "non_empty_pixel_pct": 37.01,
+        "note": "Objective diagnostics only; not perceived quality scores."
+      },
+      "fabric_path": "data\\uploads\\8dd96489cf1a4262a9eeccfac617fd90.jpg",
+      "loader_runtime": {
+        "model_kind": "flux-kontext",
+        "bnb_4bit": true,
+        "want_nf4": true,
+        "quantization_profile": "nf4",
+        "offload_strategy": "model_cpu_offload",
+        "attention_backend": "sdpa",
+        "torch_compile": false,
+        "init_time_s": 23.0,
+        "load_count": 1,
+        "reuse_count": 0,
+        "pipeline_resident": true,
+        "pytorch_cuda_alloc_conf": "expandable_segments:True",
+        "torch_version": "2.6.0+cu124",
+        "cuda_available": true,
+        "cuda_version": "12.4",
+        "gpu_name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+        "cuda_allocated_mb": 8.1,
+        "cuda_reserved_mb": 20.0,
+        "diffusers_version": "0.39.0",
+        "bitsandbytes_version": "0.50.0"
+      },
+      "was_fallback_used": false,
+      "was_real_flux_used": true
+    }
+  ],
+  "recommended_note": "Pick the best cell by inspecting outputs + objective stats. Do not treat laplacian_variance as perceptual quality.",
+  "skipped_on_this_gpu": [
+    {
+      "id": "q20_512_nf4",
+      "reason": "Deferred this session after baseline+q15 on 6GB; re-run on ~16GB."
+    },
+    {
+      "id": "q30_512_nf4",
+      "reason": "Deferred; scale from q15/q20 on 16GB."
+    },
+    {
+      "id": "q20_768_nf4",
+      "reason": "physical_vram 6GB < 10GB gate"
+    },
+    {
+      "id": "q20_512_full",
+      "reason": "physical_vram 6GB < 14GB gate; full precision reserved for 16GB"
+    }
+  ],
+  "quality_observations": {
+    "baseline_3step": "Very soft edges; floral motif barely readable; grain/mesh noise.",
+    "q15_15step": "Clear large floral motif vs baseline; still soft edges; outline fidelity imperfect.",
+    "recommended_next_on_16gb": [
+      "q20_512_nf4",
+      "q30_512_nf4",
+      "q20_512_full",
+      "q20_768_nf4"
+    ],
+    "recommended_interim": "quality_15 or quality_20 with NF4+offload until 16GB full-precision available"
+  }
+}

@@ -13,24 +13,106 @@ PIL person / garment / mask the official app.py would supply.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
 logger = logging.getLogger("fabricvision.virtual_tryon.catvton_conditioning")
 
+# Cache keyed by resolved CatVTON root path (or the requested path string).
+_UTILS_CACHE: Dict[str, Tuple[Callable[..., Image.Image], Callable[..., Image.Image]]] = {}
+
+
+def _resize_and_crop(image: Image.Image, size: Tuple[int, int]) -> Image.Image:
+    """Project-owned mirror of CatVTON ``utils.resize_and_crop`` (center-crop + LANCZOS)."""
+    w, h = image.size
+    target_w, target_h = size
+    if w / h < target_w / target_h:
+        new_w = w
+        new_h = w * target_h // target_w
+    else:
+        new_h = h
+        new_w = h * target_w // target_h
+    image = image.crop(
+        ((w - new_w) // 2, (h - new_h) // 2, (w + new_w) // 2, (h + new_h) // 2)
+    )
+    return image.resize(size, Image.LANCZOS)
+
+
+def _resize_and_padding(image: Image.Image, size: Tuple[int, int]) -> Image.Image:
+    """Project-owned mirror of CatVTON ``utils.resize_and_padding`` (fit + white letterbox)."""
+    w, h = image.size
+    target_w, target_h = size
+    if w / h < target_w / target_h:
+        new_h = target_h
+        new_w = w * target_h // h
+    else:
+        new_w = target_w
+        new_h = h * target_w // w
+    image = image.resize((new_w, new_h), Image.LANCZOS)
+    padding = Image.new("RGB", size, (255, 255, 255))
+    padding.paste(image, ((target_w - new_w) // 2, (target_h - new_h) // 2))
+    return padding
+
 
 def _import_catvton_utils(catvton_root: Path):
-    root = str(catvton_root.resolve())
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    from utils import resize_and_crop, resize_and_padding  # type: ignore
+    """Load CatVTON resize helpers from an explicit utils.py path, with local fallback.
 
-    return resize_and_crop, resize_and_padding
+    Prefers the real ``{catvton_root}/utils.py`` when present (loaded via importlib
+    from that filesystem path — no ``sys.path`` mutation / bare ``import utils``).
+    If the CatVTON checkout is missing or its utils module cannot be imported,
+    returns project-owned implementations that match upstream resize semantics.
+    This does not imply that real CatVTON inference is available.
+    """
+    root = Path(catvton_root)
+    try:
+        cache_key = str(root.resolve())
+    except OSError:
+        cache_key = str(root)
+
+    cached = _UTILS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    utils_path = root / "utils.py"
+    if utils_path.is_file():
+        try:
+            module_name = f"fabricvision_catvton_utils_{abs(hash(cache_key))}"
+            spec = importlib.util.spec_from_file_location(module_name, utils_path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Cannot create import spec for {utils_path}")
+            module = importlib.util.module_from_spec(spec)
+            # Register before exec so any late self-references resolve cleanly.
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            resize_and_crop = getattr(module, "resize_and_crop")
+            resize_and_padding = getattr(module, "resize_and_padding")
+            if not callable(resize_and_crop) or not callable(resize_and_padding):
+                raise AttributeError("CatVTON utils.py missing resize helpers")
+            pair = (resize_and_crop, resize_and_padding)
+            _UTILS_CACHE[cache_key] = pair
+            logger.debug("Loaded CatVTON resize utils from %s", utils_path)
+            return pair
+        except Exception as exc:
+            logger.warning(
+                "Failed to load CatVTON utils from %s (%s); "
+                "using project-owned resize fallbacks for conditioning.",
+                utils_path,
+                exc,
+            )
+
+    pair = (_resize_and_crop, _resize_and_padding)
+    _UTILS_CACHE[cache_key] = pair
+    logger.debug(
+        "CatVTON utils unavailable at %s; using project-owned resize fallbacks.",
+        utils_path,
+    )
+    return pair
 
 
 def resize_person_and_mask(

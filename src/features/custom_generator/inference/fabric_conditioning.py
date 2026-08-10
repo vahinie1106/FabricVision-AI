@@ -183,6 +183,16 @@ def build_garment_conditioning_image(
 
     w, h = int(width), int(height)
     fabric_fill = _cover_fabric(fabric_image, w, h)
+    # Mild unsharp on the fabric fill only (not the silhouette edge) to counter
+    # LANCZOS softness before Kontext sees the mockup. Radius kept tiny.
+    try:
+        from PIL import ImageFilter
+
+        fabric_fill = fabric_fill.filter(
+            ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=2)
+        )
+    except Exception:
+        pass
     mask = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask)
     polygon = _polygon_for_garment(garment_type, w, h, sleeve=sleeve)
@@ -193,7 +203,7 @@ def build_garment_conditioning_image(
     canvas.paste(fabric_fill, (0, 0), mask=mask)
 
     logger.info(
-        "Built garment conditioning image: garment=%s sleeve=%s size=%sx%s blur=none",
+        "Built garment conditioning image: garment=%s sleeve=%s size=%sx%s blur=none unsharp=mild",
         garment_type,
         sleeve or "default",
         w,

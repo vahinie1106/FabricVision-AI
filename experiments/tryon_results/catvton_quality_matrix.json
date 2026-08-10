@@ -1,0 +1,201 @@
+{
+  "status": "completed",
+  "person_path": "data\\uploads\\196504529bf94ff8bb9a30e70df52577.jpg",
+  "garment_path": "outputs\\generated_garments\\images\\garment_aca36127.png",
+  "person_assessment": "ok",
+  "automasker_dependencies": {
+    "python": "3.11.9",
+    "catvton_requirements": "models/CatVTON/requirements.txt",
+    "documented_packages": [
+      "fvcore==0.1.5.post20221221",
+      "cloudpickle",
+      "omegaconf",
+      "pycocotools==2.0.8"
+    ],
+    "do_not": "Blindly pip install random detectron2 wheels; match CUDA/torch carefully.",
+    "torch": "2.6.0+cu124",
+    "cuda": "12.4",
+    "gpu": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+    "physical_vram_mb": 6143.5,
+    "fvcore_import": "ok",
+    "cloudpickle_import": "ok",
+    "omegaconf_import": "ok",
+    "vendored_detectron2_path_exists": true,
+    "detectron2_import": "ok",
+    "detectron2_file": "C:\\Users\\E VAHINI\\FabricVision-AI\\models\\CatVTON\\detectron2\\__init__.py",
+    "automasker_ready": true,
+    "action": "Import probe OK. Runtime AutoMasker still needs DensePose/SCHP weights and may need additional detectron2 native ops \u2014 verify with cell B."
+  },
+  "results": [
+    {
+      "id": "A_baseline_grabcut_30",
+      "configuration": {
+        "id": "A_baseline_grabcut_30",
+        "mask_strategy": "grabcut",
+        "steps": 30,
+        "guidance": 2.5,
+        "width": 384,
+        "height": 512,
+        "requires_automasker": false,
+        "decision": "run"
+      },
+      "person_path": "data\\uploads\\196504529bf94ff8bb9a30e70df52577.jpg",
+      "garment_path": "outputs\\generated_garments\\images\\garment_aca36127.png",
+      "garment_type": "dress",
+      "mapping_checklist_pending_manual_review": [
+        "upper_shoulders",
+        "upper_neckline",
+        "upper_sleeves",
+        "upper_collar",
+        "body_torso_alignment",
+        "body_width",
+        "body_length",
+        "body_side_boundaries",
+        "body_hem",
+        "fabric_print",
+        "fabric_color",
+        "fabric_texture",
+        "person_face",
+        "person_skin",
+        "person_hair",
+        "person_proportions",
+        "artifact_doubled_limbs",
+        "artifact_floating_garment",
+        "artifact_hands",
+        "artifact_face_warp",
+        "artifact_background",
+        "artifact_bleed"
+      ],
+      "status": "completed",
+      "inference_time_s": 36.41,
+      "load_time_s": null,
+      "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\virtual_tryon\\images\\catvton_quality_A_baseline_grabcut_30.png",
+      "metadata_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\virtual_tryon\\metadata\\catvton_quality_A_baseline_grabcut_30.json",
+      "mask_strategy": "grabcut",
+      "mask_attempts": [
+        "grabcut:ok"
+      ],
+      "mask_source": "grabcut",
+      "resolution": [
+        384,
+        512
+      ],
+      "steps": 30,
+      "guidance": 2.5,
+      "peak_vram_mb": 2286.36328125,
+      "was_real_catvton_used": true,
+      "was_fallback_used": false,
+      "inference_backend": "catvton_native",
+      "precision": null
+    },
+    {
+      "id": "B_automasker_30",
+      "configuration": {
+        "id": "B_automasker_30",
+        "mask_strategy": "automasker",
+        "steps": 30,
+        "guidance": 2.5,
+        "width": 384,
+        "height": 512,
+        "requires_automasker": true,
+        "decision": "run"
+      },
+      "person_path": "data\\uploads\\196504529bf94ff8bb9a30e70df52577.jpg",
+      "garment_path": "outputs\\generated_garments\\images\\garment_aca36127.png",
+      "garment_type": "dress",
+      "mapping_checklist_pending_manual_review": [
+        "upper_shoulders",
+        "upper_neckline",
+        "upper_sleeves",
+        "upper_collar",
+        "body_torso_alignment",
+        "body_width",
+        "body_length",
+        "body_side_boundaries",
+        "body_hem",
+        "fabric_print",
+        "fabric_color",
+        "fabric_texture",
+        "person_face",
+        "person_skin",
+        "person_hair",
+        "person_proportions",
+        "artifact_doubled_limbs",
+        "artifact_floating_garment",
+        "artifact_hands",
+        "artifact_face_warp",
+        "artifact_background",
+        "artifact_bleed"
+      ],
+      "status": "completed",
+      "inference_time_s": 49.255,
+      "load_time_s": null,
+      "image_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\virtual_tryon\\images\\catvton_quality_B_automasker_30.png",
+      "metadata_path": "C:\\Users\\E VAHINI\\FabricVision-AI\\outputs\\virtual_tryon\\metadata\\catvton_quality_B_automasker_30.json",
+      "mask_strategy": "automasker",
+      "mask_attempts": [
+        "automasker:ok"
+      ],
+      "mask_source": "automasker",
+      "resolution": [
+        384,
+        512
+      ],
+      "steps": 30,
+      "guidance": 2.5,
+      "peak_vram_mb": 2284.23828125,
+      "was_real_catvton_used": true,
+      "was_fallback_used": false,
+      "inference_backend": "catvton_native",
+      "precision": null
+    }
+  ],
+  "mapping_checklist": [
+    "upper_shoulders",
+    "upper_neckline",
+    "upper_sleeves",
+    "upper_collar",
+    "body_torso_alignment",
+    "body_width",
+    "body_length",
+    "body_side_boundaries",
+    "body_hem",
+    "fabric_print",
+    "fabric_color",
+    "fabric_texture",
+    "person_face",
+    "person_skin",
+    "person_hair",
+    "person_proportions",
+    "artifact_doubled_limbs",
+    "artifact_floating_garment",
+    "artifact_hands",
+    "artifact_face_warp",
+    "artifact_background",
+    "artifact_bleed"
+  ],
+  "mapping_observations_manual": {
+    "A_grabcut": {
+      "mask_source": "grabcut",
+      "was_real_catvton_used": true,
+      "notes": [
+        "Real CatVTON completed; no fallback.",
+        "Arms crossed create occlusion; garment length approaches ankle.",
+        "Garment source itself is soft/blurry (prior low-step FLUX), so print fidelity is limited upstream.",
+        "Face/hair largely preserved; watermark persists.",
+        "Do not claim mapping solved \u2014 alignment still imperfect under crossed arms."
+      ]
+    },
+    "B_automasker": {
+      "mask_source": "automasker",
+      "was_real_catvton_used": true,
+      "notes": [
+        "AutoMasker succeeded after installing fvcore+pycocotools (mask_attempts=automasker:ok).",
+        "Mask covers larger area (bbox includes more of torso/legs) than GrabCut.",
+        "Output still soft; head/eyes partially cropped by resize framing.",
+        "Stripe print from garment not crisply recovered \u2014 garment input quality remains a bottleneck.",
+        "Prefer AutoMasker when deps available; still inspect mapping manually."
+      ]
+    }
+  }
+}

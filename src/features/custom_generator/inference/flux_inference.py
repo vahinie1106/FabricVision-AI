@@ -89,12 +89,29 @@ class FLUXInferenceEngine:
         self._clear_cuda()
 
     def _vram_snapshot(self) -> dict[str, float]:
+        """CUDA allocator counters — not the same as dedicated physical VRAM.
+
+        Under model_cpu_offload / Windows shared GPU memory, peak allocated can
+        exceed the card's dedicated MiB. Callers must label these fields as
+        CUDA allocator stats, not "physical VRAM used".
+        """
         if torch is None or not torch.cuda.is_available():
-            return {"allocated_mb": 0.0, "reserved_mb": 0.0, "max_allocated_mb": 0.0}
+            return {
+                "allocated_mb": 0.0,
+                "reserved_mb": 0.0,
+                "max_allocated_mb": 0.0,
+                "max_reserved_mb": 0.0,
+            }
+        max_reserved = 0.0
+        try:
+            max_reserved = round(torch.cuda.max_memory_reserved() / (1024**2), 1)
+        except Exception:
+            max_reserved = round(torch.cuda.memory_reserved() / (1024**2), 1)
         return {
             "allocated_mb": round(torch.cuda.memory_allocated() / (1024**2), 1),
             "reserved_mb": round(torch.cuda.memory_reserved() / (1024**2), 1),
             "max_allocated_mb": round(torch.cuda.max_memory_allocated() / (1024**2), 1),
+            "max_reserved_mb": max_reserved,
         }
 
     def _park_pipeline(self, pipeline: Any) -> None:
@@ -519,17 +536,21 @@ class FLUXInferenceEngine:
                 infer_time = diffusion_s
                 vae_est = decode_s
 
-            vram_after = (
-                torch.cuda.memory_allocated() / (1024**2)
-                if (torch and torch.cuda.is_available())
-                else 0.0
-            )
-            peak_vram = (
-                torch.cuda.max_memory_allocated() / (1024**2)
-                if (torch and torch.cuda.is_available())
-                else 0.0
-            )
+            vram_snap = self._vram_snapshot()
+            vram_after = vram_snap.get("allocated_mb", 0.0)
+            peak_allocated = vram_snap.get("max_allocated_mb", 0.0)
+            peak_reserved = vram_snap.get("max_reserved_mb", 0.0)
+            # Backward-compatible alias: peak CUDA *allocated* (not dedicated physical VRAM).
+            peak_vram = peak_allocated
             ram_after = self._cpu_ram_mb()
+            physical_vram_mb = 0.0
+            try:
+                if torch is not None and torch.cuda.is_available():
+                    physical_vram_mb = round(
+                        torch.cuda.get_device_properties(0).total_memory / (1024**2), 1
+                    )
+            except Exception:
+                physical_vram_mb = 0.0
 
             if profile:
                 step_lines = "\n".join(
@@ -551,9 +572,12 @@ class FLUXInferenceEngine:
                     "\n"
                     "TOTAL: %.3f sec\n"
                     "\n"
-                    "VRAM before: %.1f MB\n"
-                    "Peak VRAM: %.1f MB\n"
-                    "VRAM after: %.1f MB\n"
+                    "CUDA allocated before: %.1f MB\n"
+                    "Peak CUDA allocated: %.1f MB\n"
+                    "Peak CUDA reserved: %.1f MB\n"
+                    "CUDA allocated after: %.1f MB\n"
+                    "Physical GPU VRAM: %.1f MB (allocator peaks may exceed this under "
+                    "CPU offload / Windows shared memory)\n"
                     "CPU RAM: %.1f → %.1f MB\n"
                     "Offload: %s\n"
                     "Quantization: %s\n"
@@ -575,8 +599,10 @@ class FLUXInferenceEngine:
                     vae_est,
                     total_time,
                     vram_before,
-                    peak_vram,
+                    peak_allocated,
+                    peak_reserved,
                     vram_after,
+                    physical_vram_mb,
                     ram_before,
                     ram_after,
                     runtime.get(
@@ -599,6 +625,13 @@ class FLUXInferenceEngine:
                 "vram_before_mb": round(vram_before, 2),
                 "vram_after_mb": round(vram_after, 2),
                 "peak_vram_mb": round(peak_vram, 2),
+                "peak_cuda_allocated_mb": round(peak_allocated, 2),
+                "peak_cuda_reserved_mb": round(peak_reserved, 2),
+                "physical_gpu_vram_mb": physical_vram_mb,
+                "vram_metric_note": (
+                    "peak_vram_mb is torch.cuda.max_memory_allocated (CUDA allocator), "
+                    "not dedicated physical VRAM occupancy under model_cpu_offload."
+                ),
                 "cpu_ram_before_mb": ram_before,
                 "cpu_ram_after_mb": ram_after,
                 "generation_time_s": total_time,

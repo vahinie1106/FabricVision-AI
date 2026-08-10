@@ -355,25 +355,74 @@ def resolve_person_mask(
 
     mask_source values:
       provided | automasker | grabcut | box_fallback
+
+    Strategy via CATVTON_MASK_STRATEGY:
+      auto (default) — provided → automasker (if enabled) → grabcut → box
+      automasker     — AutoMasker only (raises if unavailable)
+      grabcut        — GrabCut then box_fallback
+      provided_only  — require provided_mask
+
+    Attempts are recorded on ``resolve_person_mask.last_attempts`` for metadata.
     """
     blur = int(os.environ.get("CATVTON_MASK_BLUR", "7"))
     catvton_root = Path(catvton_path)
+    strategy = os.environ.get("CATVTON_MASK_STRATEGY", "auto").strip().lower() or "auto"
+    attempts: list[str] = []
 
     if provided_mask is not None:
         mask = ImageOps.fit(provided_mask.convert("L"), target_size, method=Image.Resampling.NEAREST)
+        attempts.append("provided:ok")
+        resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
+        resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
         return mask, "provided"
 
-    am = try_automasker_mask(
-        person_rgb.resize(target_size, Image.Resampling.LANCZOS)
-        if person_rgb.size != target_size
-        else person_rgb,
-        catvton_root=catvton_root,
-        cloth_type=cloth_type,
-    )
-    if am is not None:
-        if am.size != target_size:
-            am = ImageOps.fit(am, target_size, method=Image.Resampling.NEAREST)
-        return am, "automasker"
+    if strategy == "provided_only":
+        raise RuntimeError(
+            "CATVTON_MASK_STRATEGY=provided_only but no person mask was supplied."
+        )
+
+    allow_automasker = strategy in ("auto", "automasker")
+    allow_grabcut = strategy in ("auto", "grabcut")
+    allow_box = strategy in ("auto", "grabcut")
+
+    if allow_automasker:
+        # Explicit strategy=automasker forces the attempt even if the env flag is off.
+        prev_flag = os.environ.get("CATVTON_USE_AUTOMASKER")
+        if strategy == "automasker":
+            os.environ["CATVTON_USE_AUTOMASKER"] = "true"
+
+        try:
+            am = try_automasker_mask(
+                person_rgb.resize(target_size, Image.Resampling.LANCZOS)
+                if person_rgb.size != target_size
+                else person_rgb,
+                catvton_root=catvton_root,
+                cloth_type=cloth_type,
+            )
+        finally:
+            if strategy == "automasker":
+                if prev_flag is None:
+                    os.environ.pop("CATVTON_USE_AUTOMASKER", None)
+                else:
+                    os.environ["CATVTON_USE_AUTOMASKER"] = prev_flag
+
+        if am is not None:
+            if am.size != target_size:
+                am = ImageOps.fit(am, target_size, method=Image.Resampling.NEAREST)
+            attempts.append("automasker:ok")
+            resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
+            resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
+            return am, "automasker"
+        attempts.append("automasker:unavailable_or_failed")
+        if strategy == "automasker":
+            resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
+            resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
+            raise RuntimeError(
+                "CATVTON_MASK_STRATEGY=automasker but AutoMasker/DensePose/detectron2 "
+                "is unavailable or failed. Install detectron2+fvcore and ensure "
+                "models/CatVTON/{model,SCHP,DensePose|densepose} exist, or use "
+                "CATVTON_MASK_STRATEGY=auto|grabcut."
+            )
 
     prefer_grabcut = os.environ.get("CATVTON_USE_GRABCUT", "true").strip().lower() not in (
         "0",
@@ -381,7 +430,7 @@ def resolve_person_mask(
         "no",
         "off",
     )
-    if prefer_grabcut:
+    if allow_grabcut and prefer_grabcut:
         person_fit = (
             ImageOps.fit(person_rgb.convert("RGB"), target_size, method=Image.Resampling.LANCZOS)
             if person_rgb.size != target_size
@@ -393,9 +442,29 @@ def resolve_person_mask(
             cloth_type=cloth_type,
         )
         if gc_mask is not None:
+            attempts.append("grabcut:ok")
+            resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
+            resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
             return gc_mask, "grabcut"
+        attempts.append("grabcut:failed")
 
+    if not allow_box:
+        resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
+        resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
+        raise RuntimeError(
+            f"No usable CatVTON mask under CATVTON_MASK_STRATEGY={strategy} "
+            f"(attempts={attempts})."
+        )
+
+    attempts.append("box_fallback:ok")
+    resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
+    resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
     return (
         build_box_mask(target_size, blur_radius=max(blur, 5), cloth_type=cloth_type),
         "box_fallback",
     )
+
+
+# Defaults for metadata readers when resolve_person_mask has not run yet.
+resolve_person_mask.last_attempts = []  # type: ignore[attr-defined]
+resolve_person_mask.last_strategy = "auto"  # type: ignore[attr-defined]

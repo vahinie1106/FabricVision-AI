@@ -23,19 +23,31 @@ ProgressCallback = Optional[Callable[[str, int], None]]
 
 def normalize_generation_mode(mode: Optional[str]) -> str:
     """
-    Map UI / API mode labels onto canonical keys: preview | standard | production.
+    Map UI / API mode labels onto canonical keys.
 
-    Backward compatible with "Fast Preview" and "High Quality".
+    Low-VRAM path (RTX 3050 6GB): preview | standard | production
+    Quality path (~16GB+): quality_15 | quality_20 | quality_30 | quality_768
     """
     raw = (mode or "").strip().lower().replace("-", " ").replace("_", " ")
     raw = " ".join(raw.split())
-    if raw in ("preview", "fast preview", "fast", "fastpreview"):
+    if raw in ("preview", "fast preview", "fast", "fastpreview", "low vram", "lowvram"):
         return "preview"
     if raw in ("production", "high quality", "hq", "high", "highquality", "prod"):
         return "production"
     if raw in ("standard", "default", "normal", ""):
         return "standard"
-    # Unknown labels default to standard (quality-safe default)
+    # Quality-first presets (do not collapse into production)
+    if raw in ("quality 15", "quality15", "q15", "steps 15"):
+        return "quality_15"
+    if raw in ("quality 20", "quality20", "q20", "steps 20"):
+        return "quality_20"
+    if raw in ("quality 30", "quality30", "q30", "steps 30"):
+        return "quality_30"
+    if raw in ("quality 768", "quality768", "q768", "res 768"):
+        return "quality_768"
+    if raw in ("quality", "quality first", "qualityfirst"):
+        return "quality_20"
+    # Unknown labels default to standard (quality-safe default for low-VRAM)
     return "standard"
 
 
@@ -155,7 +167,11 @@ class GarmentGenerationPipeline:
             "preview": "Preview",
             "standard": "Standard",
             "production": "Production",
-        }.get(mode_key, "Standard")
+            "quality_15": "Quality_15",
+            "quality_20": "Quality_20",
+            "quality_30": "Quality_30",
+            "quality_768": "Quality_768",
+        }.get(mode_key, mode_key.replace("_", " ").title())
 
         mode_cfg = None
         if isinstance(flux_cfg, dict):

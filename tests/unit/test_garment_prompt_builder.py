@@ -26,6 +26,11 @@ def test_normalize_generation_mode_aliases():
     assert normalize_generation_mode("High Quality") == "production"
     assert normalize_generation_mode(None) == "standard"
     assert normalize_generation_mode("") == "standard"
+    assert normalize_generation_mode("quality_15") == "quality_15"
+    assert normalize_generation_mode("Quality 20") == "quality_20"
+    assert normalize_generation_mode("quality") == "quality_20"
+    assert normalize_generation_mode("quality_768") == "quality_768"
+    assert normalize_generation_mode("low_vram") == "preview"
 
 
 def test_kontext_prompt_within_clip_budget():

@@ -293,6 +293,15 @@ class GarmentPromptBuilder:
         elif not sleeve_phrase.endswith("sleeves") and sleeve_phrase != "sleeveless":
             sleeve_phrase = f"{sleeve_phrase} sleeves"
 
+        appearance = str(
+            fabric_metadata.get("fabric_appearance")
+            or fabric_metadata.get("appearance_summary")
+            or ""
+        ).strip()
+        # Keep appearance short enough for CLIP; strip redundant filler words.
+        if len(appearance) > 90:
+            appearance = appearance[:87].rsplit(" ", 1)[0] + "…"
+
         return {
             "gender": gender.replace("_", " "),
             "garment_type": garment_type.replace("_", " "),
@@ -307,27 +316,37 @@ class GarmentPromptBuilder:
             "sleeve_length": sleeve_phrase,
             "size": size,
             "dominant_colors": colors_str,
+            "fabric_appearance": appearance,
         }
 
     def _build_compact_kontext_layers(self, context: Dict[str, str]) -> list[str]:
         """
         Layered prompt fragments ordered by importance.
 
-        Why layers: CLIP truncates at 77 tokens. We keep garment identity + fabric
-        fidelity first, then add optional style cues only if budget remains.
+        Why layers: CLIP truncates at 77 tokens. Garment construction and fabric
+        identity stay first; style is optional and drops under budget pressure.
         """
         primary = (
             f"Edit fabric-filled {context['garment_type']} mockup into wearable "
             f"{context['gender']} {context['garment_type']}: {context['neckline']}, "
             f"{context['sleeve_length']}, {context['fit']}."
         )
-        fabric = (
-            f"Keep exact uploaded print/colors ({context['dominant_colors']}; "
-            f"{context['material']}, {context['pattern']}). Do not recolor."
-        )
+        appearance = (context.get("fabric_appearance") or "").strip()
+        if appearance:
+            fabric = (
+                f"Preserve source fabric look ({appearance}; "
+                f"{context['dominant_colors']}, {context['pattern']}, "
+                f"{context['material']}). Same print scale; do not recolor."
+            )
+        else:
+            fabric = (
+                f"Preserve source fabric print/colors ({context['dominant_colors']}; "
+                f"{context['material']}, {context['pattern']}, {context['texture']}). "
+                f"Same print scale; do not recolor."
+            )
         quality = (
-            "Define neckline, sleeve seams, side seams, hem, drape folds. "
-            "Crisp catalog product photo on white. No model, not a swatch."
+            "Sharp neckline, sleeve seams, hem, clean edges on white. "
+            "No model, not a flat swatch."
         )
         # Avoid "casual casual" when style == occasion
         if context["style"] == context["occasion"]:
@@ -366,14 +385,17 @@ class GarmentPromptBuilder:
         prompt = " ".join(used).strip()
         token_count = self.count_clip_tokens(prompt)
 
-        # If even primary overflows, shorten fabric descriptors without dropping structure.
+        # If primary+fabric overflow, keep a grounded fabric clause (not a vague slogan).
         if token_count > max_tokens and len(layers) >= 2:
             compacted = True
-            short_fabric = layers[1]
-            # Drop parenthetical detail if needed
-            if "(" in short_fabric:
-                short_fabric = "Keep exact fabric print, color, texture."
-            prompt = f"{layers[0]} {short_fabric} {layers[2] if len(layers) > 2 else ''}".strip()
+            short_fabric = (
+                "Preserve source fabric print, colors, and pattern scale; do not recolor."
+            )
+            prompt = f"{layers[0]} {short_fabric}".strip()
+            if len(layers) > 2:
+                with_quality = f"{prompt} {layers[2]}".strip()
+                if self.count_clip_tokens(with_quality) <= max_tokens:
+                    prompt = with_quality
             token_count = self.count_clip_tokens(prompt)
             while token_count > max_tokens and " " in prompt:
                 # Drop trailing words from the last clause only

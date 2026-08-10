@@ -1,6 +1,11 @@
-"""One-shot Day-18 full-dress CatVTON validation (same person + pink dress)."""
+"""One-shot Day-18 full-dress CatVTON validation.
+
+Requires explicit --person and --garment paths. Will refuse fabric sheets or
+geometric placeholders used as the person image.
+"""
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -22,18 +27,44 @@ from src.features.virtual_tryon.models import (  # noqa: E402
     GarmentConditioningInput,
     PersonConditioningInput,
 )
+from src.features.virtual_tryon.person_image_validation import assess_person_image  # noqa: E402
 from src.features.virtual_tryon.tryon_pipeline import TryOnConfig, VirtualTryOnPipeline  # noqa: E402
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Day-18 CatVTON dress validation")
+    parser.add_argument(
+        "--person",
+        required=True,
+        help="Path to a REAL person photograph (not a fabric swatch / placeholder)",
+    )
+    parser.add_argument(
+        "--garment",
+        required=True,
+        help="Path to garment image (e.g. outputs/generated_garments/images/...)",
+    )
+    parser.add_argument("--garment-type", default="dress")
+    args = parser.parse_args()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    person_path = ROOT / "data" / "uploads" / "8dd96489cf1a4262a9eeccfac617fd90.jpg"
-    garment_path = ROOT / "outputs" / "generated_garments" / "images" / "garment_aca36127.png"
+    person_path = Path(args.person)
+    garment_path = Path(args.garment)
     if not person_path.exists() or not garment_path.exists():
-        raise SystemExit(f"Missing inputs person={person_path.exists()} garment={garment_path.exists()}")
+        raise SystemExit(
+            f"Missing inputs person={person_path.exists()} ({person_path}) "
+            f"garment={garment_path.exists()} ({garment_path})"
+        )
+
+    person = Image.open(person_path).convert("RGB")
+    ok, reason = assess_person_image(person)
+    if not ok:
+        raise SystemExit(
+            f"Invalid person image for Day-18 quality validation: {reason}\n"
+            f"Do not use fabric uploads or examples/person/person_01.png."
+        )
 
     config = TryOnConfig(
         height=512,
@@ -47,10 +78,10 @@ def main() -> None:
     )
     pipeline = VirtualTryOnPipeline(config=config)
     result = pipeline.run(
-        person_input=PersonConditioningInput(person_image=Image.open(person_path).convert("RGB")),
+        person_input=PersonConditioningInput(person_image=person),
         garment_input=GarmentConditioningInput(
             garment_image=Image.open(garment_path).convert("RGB"),
-            garment_type="dress",
+            garment_type=args.garment_type,
         ),
         output_filename="tryon_day18_full_dress",
         person_filename=person_path.name,
@@ -60,11 +91,17 @@ def main() -> None:
     if result.metadata_path and Path(result.metadata_path).exists():
         meta = json.loads(Path(result.metadata_path).read_text(encoding="utf-8"))
     summary = {
+        "validation_tier": "quality" if ok else "infrastructure",
         "status": result.status,
         "image_path": result.image_path,
         "metadata_path": result.metadata_path,
+        "person_path": str(person_path),
+        "garment_path": str(garment_path),
+        "person_assessment": reason,
         "cloth_type": meta.get("cloth_type"),
         "mask_source": meta.get("mask_source"),
+        "mask_strategy": meta.get("mask_strategy"),
+        "mask_attempts": meta.get("mask_attempts"),
         "was_real_catvton_used": meta.get("was_real_catvton_used"),
         "was_fallback_used": meta.get("was_fallback_used"),
         "raw_equals_final": meta.get("raw_equals_final"),

@@ -51,11 +51,13 @@ fast_preview:
   measured_runtime_note: "~6-8 min cold (Day-17 class); not <2.5 min"
 
 # Standard (DEFAULT) — Day-17 cold measured ≈ 603.5s @ 512/3
+# guidance 3.0: slightly stronger edit adherence for fabric-print fidelity without
+# adding diffusion steps (steps remain the dominant RTX 3050 cost).
 standard:
   height: 512
   width: 512
   num_inference_steps: 3
-  guidance_scale: 2.5
+  guidance_scale: 3.0
   measured_runtime_s_cold: 603.5
 
 # Production — one extra denoise step; still within measured budget
@@ -72,3 +74,42 @@ high_quality:
   num_inference_steps: 4
   guidance_scale: 2.5
   measured_runtime_note: "alias of production on this GPU"
+
+# =============================================================================
+# QUALITY-FIRST presets for ~16GB+ VRAM GPUs
+# Keep LOW_VRAM modes above unchanged for RTX 3050 6GB compatibility.
+# These presets do NOT auto-disable NF4; use FLUX_QUANTIZATION=full|nf4.
+# =============================================================================
+
+# 15-step quality at 512 (primary step-ladder experiment)
+quality_15:
+  height: 512
+  width: 512
+  num_inference_steps: 15
+  guidance_scale: 3.0
+  measured_runtime_note: "quality ladder; expect multi-minute runtime under offload"
+
+# 20-step quality at 512
+quality_20:
+  height: 512
+  width: 512
+  num_inference_steps: 20
+  guidance_scale: 3.0
+  measured_runtime_note: "quality ladder mid point"
+
+# 30-step quality at 512
+quality_30:
+  height: 512
+  width: 512
+  num_inference_steps: 30
+  guidance_scale: 3.0
+  measured_runtime_note: "quality ladder high steps"
+
+# Higher-resolution quality (square). Prefer over 768x1024 unless portrait
+# garment framing is validated for Kontext.
+quality_768:
+  height: 768
+  width: 768
+  num_inference_steps: 20
+  guidance_scale: 3.0
+  measured_runtime_note: "requires ~16GB class VRAM for full precision; NF4+offload may still OOM"

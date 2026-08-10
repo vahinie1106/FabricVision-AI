@@ -151,6 +151,14 @@ class VirtualTryOnPipeline:
                 f"Person aspect ratio {aspect:.2f} is unsupported; use a full-/half-body portrait."
             )
 
+        # Quality-path guard: reject placeholders / fabric sheets used as "person".
+        # Unit dry-runs with synthetic non-flat images still pass these heuristics.
+        from src.features.virtual_tryon.person_image_validation import assess_person_image
+
+        ok, reason = assess_person_image(person)
+        if not ok:
+            raise ValueError(f"Invalid person image for CatVTON try-on: {reason}")
+
     def run(
         self,
         person_input: PersonConditioningInput,
@@ -198,6 +206,10 @@ class VirtualTryOnPipeline:
         mask_ok, mask_reason = getattr(
             self.person_conditioner, "last_mask_validation", (True, "ok")
         )
+        from src.features.virtual_tryon.person_masker import resolve_person_mask
+
+        mask_attempts = list(getattr(resolve_person_mask, "last_attempts", []) or [])
+        mask_strategy = str(getattr(resolve_person_mask, "last_strategy", "auto") or "auto")
 
         if prep_person.agnostic_mask is None:
             raise ValueError("Person mask is empty after preprocessing.")
@@ -432,6 +444,8 @@ class VirtualTryOnPipeline:
             else None,
             "validation": val_result,
             "mask_source": mask_source,
+            "mask_strategy": mask_strategy,
+            "mask_attempts": mask_attempts,
             "mask_stats": mask_stats,
             "mask_validation": mask_reason,
             "was_fallback_used": was_fallback_used,
