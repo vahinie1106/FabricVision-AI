@@ -5,7 +5,7 @@ __pycache__/
 outputs/
 .gradio/
 datasets/
-models/
+/models/
 
 # Runtime / generated data
 data/uploads/
