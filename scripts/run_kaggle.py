@@ -6,8 +6,11 @@ Architecture:
     ├── /api/v1/* , /docs , /openapi.json , /outputs/*  → FastAPI
     └── /*  → reverse-proxy → Next.js on 127.0.0.1:3000
 
-On Kaggle the public path is derived dynamically from the live Jupyter
-server ``base_url`` (never hard-coded as only ``/proxy/8000``).
+On Kaggle the public path is derived from the live Jupyter ``base_url`` and
+then confirmed by probing the public jupyter-proxy host. Typical result:
+
+  jupyter base_url = /k/<session>/proxy/
+  public_path      = /k/<session>/proxy/proxy/8000
 
 Usage (from repo root):
   python scripts/run_kaggle.py
@@ -91,37 +94,117 @@ def _normalize_jupyter_base_url(jupyter_base_url: str) -> str:
     base = (jupyter_base_url or "/").strip() or "/"
     if not base.startswith("/"):
         base = "/" + base
-    # Collapse accidental double proxy segments in the Jupyter base itself.
-    while "/proxy/proxy/" in base:
-        base = base.replace("/proxy/proxy/", "/proxy/")
     if not base.endswith("/"):
         base += "/"
     return base
 
 
-def _collapse_double_proxy(path: str) -> str:
-    """Prevent `/proxy/proxy/<port>` malformations."""
-    out = path
-    while "/proxy/proxy/" in out:
-        out = out.replace("/proxy/proxy/", "/proxy/")
-    return out
+def _normalize_public_path(path: str) -> str:
+    """Normalize a public path; keep intentional /proxy/proxy/<port> intact."""
+    out = (path or "").strip() or "/"
+    if not out.startswith("/"):
+        out = "/" + out
+    # Collapse accidental triple+ proxy segments only.
+    while "/proxy/proxy/proxy/" in out:
+        out = out.replace("/proxy/proxy/proxy/", "/proxy/proxy/")
+    return out.rstrip("/")
+
+
+def read_jupyter_token() -> Optional[str]:
+    """Return the Jupyter server token if available (helps authenticated public probes)."""
+    try:
+        from jupyter_server.serverapp import list_running_servers
+    except Exception:
+        return None
+    try:
+        servers = list(list_running_servers())
+    except Exception:
+        return None
+    if not servers:
+        return None
+    ranked = sorted(
+        servers,
+        key=lambda s: (
+            0 if "/k/" in str(s.get("base_url") or "") else 1,
+            str(s.get("base_url") or ""),
+        ),
+    )
+    token = str(ranked[0].get("token") or "").strip()
+    return token or None
+
+
+def candidate_public_paths(jupyter_base_url: str, port: int = 8000) -> List[str]:
+    """
+    Ordered public path candidates for a local port behind Kaggle/Jupyter.
+
+    jupyter-server-proxy exposes ports at ``{base_url}proxy/{port}/``.
+    When Kaggle's Jupyter ``base_url`` is already ``/k/<session>/proxy/``, that
+    yields the intentional two-layer path:
+
+      /k/<session>/proxy/proxy/<port>
+
+    Single-layer ``/k/<session>/proxy/<port>`` is also probed in case the edge
+    maps differently. Host-root ``/proxy/<port>`` is last (legacy).
+    """
+    port_s = str(int(port))
+    base = _normalize_jupyter_base_url(jupyter_base_url).rstrip("/")
+    ordered: List[str] = []
+
+    def add(path: str) -> None:
+        norm = _normalize_public_path(path)
+        if norm and norm not in ordered:
+            ordered.append(norm)
+
+    if base.endswith("/proxy") or base == "/proxy":
+        # Primary: jupyter-server-proxy under the Jupyter tunnel prefix.
+        add(f"{base}/proxy/{port_s}")
+        # Fallback previously used (often 404 on current Kaggle).
+        add(f"{base}/{port_s}")
+    else:
+        add(f"{base}/proxy/{port_s}")
+
+    # Session path without the Jupyter /proxy segment: /k/<session>/<port>
+    if base.endswith("/proxy"):
+        session = base[: -len("/proxy")]
+        if session:
+            add(f"{session}/{port_s}")
+
+    add(f"/proxy/{port_s}")
+    add(f"/proxy/proxy/{port_s}")
+    return ordered
+
+
+def _urls_for_public_path(host: str, public_path: str) -> Dict[str, str]:
+    host = host.rstrip("/")
+    path = _normalize_public_path(public_path)
+    return {
+        "public_path": path,
+        "public_url": f"{host}{path}/",
+        "about_url": f"{host}{path}/about",
+        "docs_url": f"{host}{path}/docs",
+        "health_url": f"{host}{path}/api/v1/health",
+        "projects_url": f"{host}{path}/projects",
+        "studio_garment_url": f"{host}{path}/studio/custom-garment",
+        "studio_tryon_url": f"{host}{path}/studio/virtual-tryon",
+        "studio_semantic_url": f"{host}{path}/studio/semantic-analysis",
+    }
 
 
 def build_public_proxy_info(
     jupyter_base_url: str,
     port: int = 8000,
     proxy_host: Optional[str] = None,
+    public_path: Optional[str] = None,
 ) -> Dict[str, str]:
     """
-    Construct the browser-facing path/URL for a port behind Jupyter Server Proxy.
+    Construct browser-facing path/URL for a port behind Jupyter Server Proxy.
 
-    Kaggle Jupyter ``base_url`` already includes the ``/proxy/`` prefix, e.g.:
+    Default (before live probe) prefers jupyter-server-proxy semantics:
 
       base_url    = /k/<session>/proxy/
-      public_path = /k/<session>/proxy/8000
+      public_path = /k/<session>/proxy/proxy/8000
 
-    Do NOT append another ``proxy/`` segment (that produced the broken
-    ``.../proxy/proxy/8000`` URLs).
+    Live discovery may override ``public_path`` after probing the public host.
     """
     host = (
         proxy_host
@@ -129,35 +212,169 @@ def build_public_proxy_info(
         or KAGGLE_PROXY_HOST_DEFAULT
     ).rstrip("/")
 
-    # Explicit override if an operator already knows the correct public path.
     override = (os.environ.get("KAGGLE_PUBLIC_PATH") or "").strip()
-    if override:
-        public_path = "/" + override.strip("/")
+    if public_path:
+        path = _normalize_public_path(public_path)
+    elif override:
+        path = _normalize_public_path("/" + override.strip("/"))
     else:
-        base = _normalize_jupyter_base_url(jupyter_base_url)
-        trimmed = base.rstrip("/")
-        # If Jupyter already ends with /proxy, append only the port number.
-        # NOTE: urljoin('/k/x/proxy/', '8000') wrongly yields '/k/x/8000', so
-        # we join path segments explicitly instead of urljoin for the port.
-        if trimmed.endswith("/proxy") or trimmed == "/proxy":
-            public_path = f"{trimmed}/{int(port)}"
-        else:
-            public_path = f"{trimmed}/proxy/{int(port)}"
+        candidates = candidate_public_paths(jupyter_base_url, port=port)
+        path = candidates[0] if candidates else f"/proxy/{int(port)}"
 
-    public_path = _collapse_double_proxy(public_path).rstrip("/")
-    if not public_path.startswith("/"):
-        public_path = "/" + public_path
+    info = _urls_for_public_path(host, path)
+    info["jupyter_base_url"] = _normalize_jupyter_base_url(jupyter_base_url)
+    info["proxy_host"] = host
+    info["candidates"] = ",".join(candidate_public_paths(jupyter_base_url, port=port))
+    return info
 
-    public_url = f"{host}{public_path}/"
-    return {
-        "jupyter_base_url": _normalize_jupyter_base_url(jupyter_base_url),
-        "public_path": public_path,
-        "public_url": public_url,
-        "proxy_host": host,
-        "docs_url": f"{host}{public_path}/docs",
-        "about_url": f"{host}{public_path}/about",
-        "health_url": f"{host}{public_path}/api/v1/health",
+
+def _is_kaggle_edge_404(status: int, body: str) -> bool:
+    text = (body or "").strip().lower()
+    return status == 404 and ("404 page not found" in text or text == "not found")
+
+
+def _looks_like_app_response(status: int, body: str, content_hint: str = "") -> bool:
+    if status != 200:
+        return False
+    lower = (body or "").lower()
+    hint = (content_hint or "").lower()
+    if "404 page not found" in lower:
+        return False
+    if "application/json" in hint and ("status" in lower or "ok" in lower or "{" in lower):
+        return True
+    if "text/html" in hint or "<!doctype html>" in lower or "<html" in lower:
+        return True
+    if "fastapi" in lower or "swagger" in lower or "fabricvision" in lower:
+        return True
+    # Health JSON without content-type in our thin probe
+    if '"status"' in lower or lower.strip().startswith("{"):
+        return True
+    return False
+
+
+def _http_probe(url: str, timeout: float = 12.0, token: Optional[str] = None) -> Dict[str, Any]:
+    """GET url; return status/body/headers (does not follow forever)."""
+    target = url
+    if token and "token=" not in url:
+        sep = "&" if "?" in url else "?"
+        target = f"{url}{sep}token={token}"
+    out: Dict[str, Any] = {
+        "url": target,
+        "status": 0,
+        "body": "",
+        "content_type": "",
+        "location": None,
+        "error": None,
     }
+    try:
+        req = urllib.request.Request(
+            target,
+            method="GET",
+            headers={"User-Agent": "FabricVision-run_kaggle/1.0", "Accept": "*/*"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            out["status"] = int(getattr(resp, "status", 200))
+            out["content_type"] = resp.headers.get("Content-Type") or ""
+            out["location"] = resp.headers.get("Location")
+            out["body"] = resp.read(500).decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        out["status"] = int(exc.code)
+        out["content_type"] = (exc.headers.get("Content-Type") if exc.headers else "") or ""
+        out["location"] = exc.headers.get("Location") if exc.headers else None
+        try:
+            out["body"] = exc.read(500).decode("utf-8", errors="replace")
+        except Exception:
+            out["body"] = str(exc.reason)
+        out["error"] = f"HTTPError {exc.code}"
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {exc}"
+    return out
+
+
+def discover_working_public_path(
+    jupyter_base_url: str,
+    port: int = 8000,
+    proxy_host: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Probe public candidate URLs and return the first path that reaches our app
+    on /, /about, /docs, and /api/v1/health (all HTTP 200).
+    """
+    host = (
+        proxy_host
+        or os.environ.get("KAGGLE_JUPYTER_PROXY_HOST")
+        or KAGGLE_PROXY_HOST_DEFAULT
+    ).rstrip("/")
+    token = token or read_jupyter_token()
+    suffixes = [
+        ("root", ""),
+        ("about", "about"),
+        ("docs", "docs"),
+        ("health", "api/v1/health"),
+    ]
+    report: List[Dict[str, Any]] = []
+
+    for path in candidate_public_paths(jupyter_base_url, port=port):
+        urls = _urls_for_public_path(host, path)
+        _log(f"PUBLIC probe candidate: {urls['public_url']}")
+        endpoint_status: Dict[str, int] = {}
+        ok_all = True
+        details: Dict[str, Any] = {}
+        for name, suffix in suffixes:
+            base = urls["public_url"] if not suffix else f"{host}{path}/{suffix}"
+            probe = _http_probe(base, timeout=15.0, token=token)
+            endpoint_status[name] = int(probe.get("status") or 0)
+            details[name] = {
+                "status": probe.get("status"),
+                "content_type": probe.get("content_type"),
+                "location": probe.get("location"),
+                "body_preview": (probe.get("body") or "")[:160],
+                "edge_404": _is_kaggle_edge_404(
+                    int(probe.get("status") or 0), probe.get("body") or ""
+                ),
+            }
+            status = int(probe.get("status") or 0)
+            body = probe.get("body") or ""
+            ctype = probe.get("content_type") or ""
+            if status != 200 or _is_kaggle_edge_404(status, body):
+                ok_all = False
+            elif name == "health" and not (
+                _looks_like_app_response(status, body, ctype) or "{" in body
+            ):
+                ok_all = False
+            elif name in {"root", "about", "docs"} and not _looks_like_app_response(
+                status, body, ctype
+            ):
+                # Some Swagger pages are HTML without doctype in first bytes — allow 200 docs.
+                if name != "docs":
+                    ok_all = False
+            _log(
+                f"  {name}: HTTP {status} "
+                f"edge404={details[name]['edge_404']} "
+                f"ctype={ctype!r}"
+            )
+
+        entry = {
+            "path": path,
+            "urls": urls,
+            "endpoint_status": endpoint_status,
+            "ok": ok_all,
+            "details": details,
+        }
+        report.append(entry)
+        if ok_all:
+            _log(f"PUBLIC winner: {path}")
+            return {
+                "public_path": path,
+                "proxy_host": host,
+                "urls": urls,
+                "endpoint_status": endpoint_status,
+                "report": report,
+            }
+
+    _log("No public candidate reached the app on all required endpoints.")
+    return {"public_path": None, "proxy_host": host, "urls": None, "report": report}
 
 
 def detect_deployment(port: int = 8000) -> Dict[str, Any]:
@@ -174,18 +391,42 @@ def detect_deployment(port: int = 8000) -> Dict[str, Any]:
         "about_url": None,
         "health_url": None,
         "proxy_host": None,
+        "candidates": [],
     }
 
     if not info["is_kaggle"]:
         return info
 
+    # Prefer env hints when Jupyter introspection is unavailable.
+    for env_key in (
+        "JUPYTERHUB_BASE_URL",
+        "JUPYTER_BASE_URL",
+        "NB_PREFIX",
+        "KAGGLE_BASE_URL",
+    ):
+        val = (os.environ.get(env_key) or "").strip()
+        if val and "/k/" in val:
+            _log(f"Found env {env_key}={val!r}")
+
     jupyter_base = read_jupyter_base_url()
+    if not jupyter_base:
+        for env_key in ("JUPYTERHUB_BASE_URL", "JUPYTER_BASE_URL", "NB_PREFIX"):
+            val = (os.environ.get(env_key) or "").strip()
+            if val:
+                jupyter_base = _normalize_jupyter_base_url(val)
+                _log(f"Using {env_key} as jupyter base: {jupyter_base!r}")
+                break
+
     if not jupyter_base:
         _log(
             "WARNING: On Kaggle but could not read Jupyter base_url. "
             "Set KAGGLE_PUBLIC_PATH or NEXT_PUBLIC_BASE_PATH manually."
         )
-        env_path = (os.environ.get("NEXT_PUBLIC_BASE_PATH") or os.environ.get("KAGGLE_PUBLIC_PATH") or "").strip()
+        env_path = (
+            os.environ.get("NEXT_PUBLIC_BASE_PATH")
+            or os.environ.get("KAGGLE_PUBLIC_PATH")
+            or ""
+        ).strip()
         if env_path:
             info["base_path"] = "/" + env_path.strip("/")
         return info
@@ -200,9 +441,26 @@ def detect_deployment(port: int = 8000) -> Dict[str, Any]:
             "about_url": public["about_url"],
             "health_url": public["health_url"],
             "proxy_host": public["proxy_host"],
+            "candidates": candidate_public_paths(jupyter_base, port=port),
         }
     )
     return info
+
+
+def apply_public_path(deploy: Dict[str, Any], public_path: str) -> Dict[str, Any]:
+    """Update deploy dict + return new base_path for a discovered public path."""
+    host = (deploy.get("proxy_host") or KAGGLE_PROXY_HOST_DEFAULT).rstrip("/")
+    urls = _urls_for_public_path(host, public_path)
+    deploy["base_path"] = urls["public_path"]
+    deploy["public_url"] = urls["public_url"]
+    deploy["about_url"] = urls["about_url"]
+    deploy["docs_url"] = urls["docs_url"]
+    deploy["health_url"] = urls["health_url"]
+    deploy["projects_url"] = urls["projects_url"]
+    deploy["studio_garment_url"] = urls["studio_garment_url"]
+    deploy["studio_tryon_url"] = urls["studio_tryon_url"]
+    deploy["studio_semantic_url"] = urls["studio_semantic_url"]
+    return deploy
 
 
 def _port_open(host: str, port: int) -> bool:
@@ -410,25 +668,28 @@ def wait_http(url: str, label: str, attempts: int = 60) -> int:
     raise RuntimeError(f"{label} failed validation: {url} ({last_detail})")
 
 
-def assert_html_has_no_stale_proxy_prefix(url: str, forbidden: str = "/proxy/8000") -> None:
-    """Ensure gateway HTML is not still baking the obsolete fixed prefix."""
+def assert_html_has_no_stale_proxy_prefix(url: str) -> None:
+    """Reject builds that hard-code the obsolete host-root /proxy/8000 prefix."""
     code, body = _http_status(url, timeout=10.0)
     if code != 200:
         raise RuntimeError(f"HTML check failed for {url}: HTTP {code}")
-    # Only flag when it appears as a path prefix in asset/API links.
     needles = (
-        f'"{forbidden}/',
-        f"'{forbidden}/",
-        f'href="{forbidden}',
-        f"href='{forbidden}",
-        f'src="{forbidden}',
-        f"src='{forbidden}",
+        'href="/proxy/8000',
+        "href='/proxy/8000",
+        'src="/proxy/8000',
+        "src='/proxy/8000",
+        '"/proxy/8000/',
+        "'/proxy/8000/",
     )
+    # Allow intentional .../proxy/proxy/8000/... on Kaggle.
+    if "/proxy/proxy/8000" in body:
+        _log(f"OK HTML check: {url} uses /proxy/proxy/8000 base (Kaggle jsp path)")
+        return
     if any(n in body for n in needles):
         raise RuntimeError(
-            f"HTML from {url} still contains hard-coded '{forbidden}' asset/API paths"
+            f"HTML from {url} still contains hard-coded host-root '/proxy/8000' paths"
         )
-    _log(f"OK HTML check: {url} has no hard-coded {forbidden} links")
+    _log(f"OK HTML check: {url} has no hard-coded host-root /proxy/8000 links")
 
 
 def print_banner(
@@ -588,57 +849,121 @@ def main() -> int:
         root_code = wait_http("http://127.0.0.1:8000/", "Gateway frontend /")
         wait_http("http://127.0.0.1:8000/about", "Gateway frontend /about")
 
-        # Local gateway builds must not bake the obsolete fixed prefix.
-        if not base_path or base_path != "/proxy/8000":
-            assert_html_has_no_stale_proxy_prefix("http://127.0.0.1:8000/")
+        # Local gateway builds must not bake the obsolete host-root /proxy/8000 prefix.
+        assert_html_has_no_stale_proxy_prefix("http://127.0.0.1:8000/")
 
         next_code, _ = _http_status(
             f"http://127.0.0.1:3000{base_path}/" if base_path else "http://127.0.0.1:3000/"
         )
 
         public_status: Dict[str, int] = {}
-        if deploy.get("public_url"):
-            _log(f"Probing PUBLIC website: {deploy['public_url']}")
-            public_status["root"], _ = _http_status(deploy["public_url"], timeout=20.0)
-            if deploy.get("about_url"):
-                public_status["about"], _ = _http_status(deploy["about_url"], timeout=20.0)
-            if deploy.get("docs_url"):
-                public_status["docs"], _ = _http_status(deploy["docs_url"], timeout=20.0)
-            if deploy.get("health_url"):
-                public_status["health"], _ = _http_status(deploy["health_url"], timeout=20.0)
-
-            # Persist probe result for operators / CI logs.
-            probe_path = ROOT / "experiments" / "generation_results" / "kaggle_public_probe.json"
-            probe_path.parent.mkdir(parents=True, exist_ok=True)
-            probe_path.write_text(
-                json.dumps(
-                    {
-                        "deploy": deploy,
-                        "public_status": public_status,
-                        "local": {
-                            "health": health_code,
-                            "root": root_code,
-                            "next": next_code,
-                        },
-                    },
-                    indent=2,
-                ),
-                encoding="utf-8",
+        discovery_report = None
+        if deploy.get("is_kaggle") and deploy.get("jupyter_base_url") and not args.no_base_path:
+            _log("Discovering working PUBLIC Kaggle proxy route via live probes...")
+            discovery = discover_working_public_path(
+                str(deploy["jupyter_base_url"]),
+                port=args.port,
+                proxy_host=deploy.get("proxy_host"),
             )
+            discovery_report = discovery.get("report") if discovery else None
+            winner = (discovery or {}).get("public_path")
+            if winner:
+                if winner != base_path:
+                    _log(
+                        f"Public winner {winner!r} differs from build base_path "
+                        f"{base_path!r} — rebuilding frontend and restarting."
+                    )
+                    apply_public_path(deploy, winner)
+                    base_path = winner
+                    # Restart Next + FastAPI with the winning base path.
+                    for proc in list(children):
+                        if proc.poll() is None:
+                            proc.terminate()
+                    time.sleep(1.5)
+                    for proc in list(children):
+                        if proc.poll() is None:
+                            proc.kill()
+                    children.clear()
+                    stop_port(3000, "frontend")
+                    stop_port(args.port, "backend")
+                    build_frontend(base_path=base_path)
+                    next_proc = start_next(base_path=base_path)
+                    children.append(next_proc)
+                    next_root = (
+                        f"http://127.0.0.1:3000{base_path}/"
+                        if base_path
+                        else "http://127.0.0.1:3000/"
+                    )
+                    wait_http(next_root, "Next.js root (rebuild)", attempts=90)
+                    api_proc = start_fastapi(base_path=base_path)
+                    children.append(api_proc)
+                    health_code = wait_http(
+                        "http://127.0.0.1:8000/api/v1/health", "API health (rebuild)"
+                    )
+                    root_code = wait_http(
+                        "http://127.0.0.1:8000/", "Gateway frontend / (rebuild)"
+                    )
+                    wait_http("http://127.0.0.1:8000/about", "Gateway /about (rebuild)")
+                    assert_html_has_no_stale_proxy_prefix("http://127.0.0.1:8000/")
+                    next_code, _ = _http_status(next_root)
+                else:
+                    apply_public_path(deploy, winner)
 
-            if public_status.get("root") != 200:
+                # Final verification of the winning public URL (all required endpoints).
+                token = read_jupyter_token()
+                for key, url_key in (
+                    ("root", "public_url"),
+                    ("about", "about_url"),
+                    ("docs", "docs_url"),
+                    ("health", "health_url"),
+                    ("projects", "projects_url"),
+                    ("studio_garment", "studio_garment_url"),
+                    ("studio_tryon", "studio_tryon_url"),
+                    ("studio_semantic", "studio_semantic_url"),
+                ):
+                    url = deploy.get(url_key)
+                    if not url:
+                        continue
+                    probe = _http_probe(url, timeout=20.0, token=token)
+                    public_status[key] = int(probe.get("status") or 0)
+                    _log(f"PUBLIC verify {key}: HTTP {public_status[key]} ({url})")
+
+                required_ok = all(
+                    public_status.get(k) == 200 for k in ("root", "about", "docs", "health")
+                )
+                if not required_ok:
+                    print_banner(
+                        health_code=health_code,
+                        root_code=root_code,
+                        next_code=next_code,
+                        deploy=deploy,
+                        public_status=public_status,
+                    )
+                    _log(
+                        "ERROR: Winning public path failed final verification. "
+                        "Services left running — Ctrl+C to stop."
+                    )
+                    while True:
+                        for proc, name in ((next_proc, "Next.js"), (api_proc, "FastAPI")):
+                            if proc.poll() is not None:
+                                _log(f"{name} exited")
+                                _shutdown()
+                                return 1
+                        time.sleep(1.0)
+            else:
                 print_banner(
                     health_code=health_code,
                     root_code=root_code,
                     next_code=next_code,
                     deploy=deploy,
-                    public_status=public_status,
+                    public_status=public_status or None,
                 )
                 _log(
-                    f"ERROR: PUBLIC website returned HTTP {public_status.get('root')} "
-                    f"for {deploy['public_url']}. Local gateway is healthy; fix the "
-                    f"public path mapping. Services left running — Ctrl+C to stop."
+                    "ERROR: No public Kaggle proxy candidate reached the app. "
+                    "Local gateway is healthy. Services left running — Ctrl+C to stop."
                 )
+                if discovery_report:
+                    _log(json.dumps(discovery_report, indent=2, default=str)[:4000])
                 while True:
                     for proc, name in ((next_proc, "Next.js"), (api_proc, "FastAPI")):
                         if proc.poll() is not None:

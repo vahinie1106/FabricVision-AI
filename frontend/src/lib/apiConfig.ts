@@ -7,9 +7,11 @@
  * SAME-ORIGIN gateway (FastAPI on :8000, including Kaggle Jupyter proxy):
  *   {detectedOrConfiguredBasePath}/api/v1
  *
- * On Kaggle the public prefix is dynamic, e.g.:
- *   /k/<session>/proxy/8000
- * Never bake a hard-coded "/proxy/8000"-only path for Kaggle sessions.
+ * On Kaggle the public prefix is dynamic. jupyter-server-proxy under a Kaggle
+ * Jupyter tunnel typically looks like:
+ *   /k/<session>/proxy/proxy/8000
+ * (first /proxy/ = Kaggle Jupyter tunnel, second = port mapper).
+ * Never bake a hard-coded host-root "/proxy/8000"-only path.
  */
 
 function stripTrailingSlash(value: string): string {
@@ -27,20 +29,22 @@ export function getConfiguredBasePath(): string {
 
 /**
  * Detect the public gateway prefix from the browser location.
- * Supports `/proxy/<port>` and Kaggle `/k/<session>/proxy/<port>`.
- * Rejects malformed `/proxy/proxy/<port>` by collapsing to a single proxy segment.
+ * Prefer `/k/<session>/proxy/proxy/<port>` (intentional two-layer path), then
+ * `/k/<session>/proxy/<port>`, then host-root `/proxy/<port>`.
+ * Do NOT strip a legitimate `/proxy/proxy/<port>` segment.
  */
 export function detectRuntimeBasePath(): string {
   if (typeof window === "undefined") return "";
-  let path = window.location.pathname || "";
-  // Collapse accidental double-proxy segments if an old build leaked them.
-  while (path.includes("/proxy/proxy/")) {
-    path = path.replace("/proxy/proxy/", "/proxy/");
+  const path = window.location.pathname || "";
+
+  const doubleProxy = path.match(/^(.*?\/proxy\/proxy\/\d+)(?:\/|$)/);
+  if (doubleProxy) {
+    return stripTrailingSlash(doubleProxy[1]);
   }
 
-  const match = path.match(/^(.*?\/proxy\/\d+)(?:\/|$)/);
-  if (match) {
-    return stripTrailingSlash(match[1]);
+  const singleProxy = path.match(/^(.*?\/proxy\/\d+)(?:\/|$)/);
+  if (singleProxy) {
+    return stripTrailingSlash(singleProxy[1]);
   }
   return "";
 }
