@@ -8,8 +8,8 @@
  *   {detectedOrConfiguredBasePath}/api/v1
  *
  * On Kaggle the public prefix is dynamic, e.g.:
- *   /k/<kernel>/<token>/proxy/proxy/8000
- * Never assume a hard-coded "/proxy/8000"-only path in the browser.
+ *   /k/<session>/proxy/8000
+ * Never bake a hard-coded "/proxy/8000"-only path for Kaggle sessions.
  */
 
 function stripTrailingSlash(value: string): string {
@@ -27,21 +27,20 @@ export function getConfiguredBasePath(): string {
 
 /**
  * Detect the public gateway prefix from the browser location.
- * Supports classic `/proxy/<port>` and Kaggle `/k/.../proxy/proxy/<port>`.
+ * Supports `/proxy/<port>` and Kaggle `/k/<session>/proxy/<port>`.
+ * Rejects malformed `/proxy/proxy/<port>` by collapsing to a single proxy segment.
  */
 export function detectRuntimeBasePath(): string {
   if (typeof window === "undefined") return "";
-  const path = window.location.pathname || "";
-
-  // Prefer the longest match ending at /proxy[/proxy]/<port>
-  const kaggleOrProxy = path.match(/^(.*?\/proxy(?:\/proxy)?\/\d+)(?:\/|$)/);
-  if (kaggleOrProxy) {
-    return stripTrailingSlash(kaggleOrProxy[1]);
+  let path = window.location.pathname || "";
+  // Collapse accidental double-proxy segments if an old build leaked them.
+  while (path.includes("/proxy/proxy/")) {
+    path = path.replace("/proxy/proxy/", "/proxy/");
   }
 
-  const simple = path.match(/^(\/proxy\/\d+)(?:\/|$)/);
-  if (simple) {
-    return stripTrailingSlash(simple[1]);
+  const match = path.match(/^(.*?\/proxy\/\d+)(?:\/|$)/);
+  if (match) {
+    return stripTrailingSlash(match[1]);
   }
   return "";
 }

@@ -4,7 +4,7 @@ import type { NextConfig } from "next";
  * Optional public path prefix for Jupyter/Kaggle reverse proxies.
  *
  * On Kaggle, scripts/run_kaggle.py sets this dynamically from the live Jupyter
- * server base_url (for example /k/<id>/<token>/proxy/proxy/8000).
+ * server base_url (for example /k/<session>/proxy/8000).
  * Do NOT hard-code /proxy/8000 here.
  *
  * Leave unset for local development (Next on :3000 or gateway without prefix).

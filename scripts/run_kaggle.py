@@ -29,7 +29,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
@@ -87,6 +86,27 @@ def read_jupyter_base_url() -> Optional[str]:
     return base
 
 
+def _normalize_jupyter_base_url(jupyter_base_url: str) -> str:
+    """Normalize Jupyter base_url to an absolute directory path ending with '/'."""
+    base = (jupyter_base_url or "/").strip() or "/"
+    if not base.startswith("/"):
+        base = "/" + base
+    # Collapse accidental double proxy segments in the Jupyter base itself.
+    while "/proxy/proxy/" in base:
+        base = base.replace("/proxy/proxy/", "/proxy/")
+    if not base.endswith("/"):
+        base += "/"
+    return base
+
+
+def _collapse_double_proxy(path: str) -> str:
+    """Prevent `/proxy/proxy/<port>` malformations."""
+    out = path
+    while "/proxy/proxy/" in out:
+        out = out.replace("/proxy/proxy/", "/proxy/")
+    return out
+
+
 def build_public_proxy_info(
     jupyter_base_url: str,
     port: int = 8000,
@@ -95,11 +115,13 @@ def build_public_proxy_info(
     """
     Construct the browser-facing path/URL for a port behind Jupyter Server Proxy.
 
-    Uses urljoin against the live Jupyter ``base_url`` so we do not assume a
-    fixed ``/proxy/8000``-only shape. Typical Kaggle result:
+    Kaggle Jupyter ``base_url`` already includes the ``/proxy/`` prefix, e.g.:
 
-      base_url   = /k/<kernel>/<token>/proxy/
-      public_path = /k/<kernel>/<token>/proxy/proxy/8000
+      base_url    = /k/<session>/proxy/
+      public_path = /k/<session>/proxy/8000
+
+    Do NOT append another ``proxy/`` segment (that produced the broken
+    ``.../proxy/proxy/8000`` URLs).
     """
     host = (
         proxy_host
@@ -110,20 +132,30 @@ def build_public_proxy_info(
     # Explicit override if an operator already knows the correct public path.
     override = (os.environ.get("KAGGLE_PUBLIC_PATH") or "").strip()
     if override:
-        public_path = "/" + override.strip("/") 
+        public_path = "/" + override.strip("/")
     else:
-        # urljoin('/k/x/y/proxy/', 'proxy/8000') → '/k/x/y/proxy/proxy/8000'
-        public_path = urljoin(jupyter_base_url, f"proxy/{port}").rstrip("/")
-        if not public_path.startswith("/"):
-            public_path = "/" + public_path
+        base = _normalize_jupyter_base_url(jupyter_base_url)
+        trimmed = base.rstrip("/")
+        # If Jupyter already ends with /proxy, append only the port number.
+        # NOTE: urljoin('/k/x/proxy/', '8000') wrongly yields '/k/x/8000', so
+        # we join path segments explicitly instead of urljoin for the port.
+        if trimmed.endswith("/proxy") or trimmed == "/proxy":
+            public_path = f"{trimmed}/{int(port)}"
+        else:
+            public_path = f"{trimmed}/proxy/{int(port)}"
+
+    public_path = _collapse_double_proxy(public_path).rstrip("/")
+    if not public_path.startswith("/"):
+        public_path = "/" + public_path
 
     public_url = f"{host}{public_path}/"
     return {
-        "jupyter_base_url": jupyter_base_url,
+        "jupyter_base_url": _normalize_jupyter_base_url(jupyter_base_url),
         "public_path": public_path,
         "public_url": public_url,
         "proxy_host": host,
         "docs_url": f"{host}{public_path}/docs",
+        "about_url": f"{host}{public_path}/about",
         "health_url": f"{host}{public_path}/api/v1/health",
     }
 
@@ -139,6 +171,7 @@ def detect_deployment(port: int = 8000) -> Dict[str, Any]:
         "base_path": "",
         "public_url": None,
         "docs_url": None,
+        "about_url": None,
         "health_url": None,
         "proxy_host": None,
     }
@@ -164,6 +197,7 @@ def detect_deployment(port: int = 8000) -> Dict[str, Any]:
             "base_path": public["public_path"],
             "public_url": public["public_url"],
             "docs_url": public["docs_url"],
+            "about_url": public["about_url"],
             "health_url": public["health_url"],
             "proxy_host": public["proxy_host"],
         }
@@ -427,6 +461,11 @@ def print_banner(
     if public_status and deploy.get("public_url"):
         print(f"    HTTP {public_status.get('root', 'n/a')}", flush=True)
     print("", flush=True)
+    print("PUBLIC ABOUT:", flush=True)
+    print(f"    {deploy.get('about_url') or '(n/a)'}", flush=True)
+    if public_status and deploy.get("about_url"):
+        print(f"    HTTP {public_status.get('about', 'n/a')}", flush=True)
+    print("", flush=True)
     print("PUBLIC SWAGGER:", flush=True)
     print(f"    {deploy.get('docs_url') or '(n/a)'}", flush=True)
     if public_status and deploy.get("docs_url"):
@@ -480,6 +519,7 @@ def main() -> int:
         deploy["base_path"] = base_path
         if deploy.get("proxy_host") and base_path:
             deploy["public_url"] = f"{deploy['proxy_host']}{base_path}/"
+            deploy["about_url"] = f"{deploy['proxy_host']}{base_path}/about"
             deploy["docs_url"] = f"{deploy['proxy_host']}{base_path}/docs"
             deploy["health_url"] = f"{deploy['proxy_host']}{base_path}/api/v1/health"
     else:
@@ -560,6 +600,8 @@ def main() -> int:
         if deploy.get("public_url"):
             _log(f"Probing PUBLIC website: {deploy['public_url']}")
             public_status["root"], _ = _http_status(deploy["public_url"], timeout=20.0)
+            if deploy.get("about_url"):
+                public_status["about"], _ = _http_status(deploy["about_url"], timeout=20.0)
             if deploy.get("docs_url"):
                 public_status["docs"], _ = _http_status(deploy["docs_url"], timeout=20.0)
             if deploy.get("health_url"):
