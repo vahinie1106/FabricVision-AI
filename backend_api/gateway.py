@@ -40,11 +40,44 @@ def frontend_base_path() -> str:
     return (os.environ.get("NEXT_PUBLIC_BASE_PATH") or "").rstrip("/")
 
 
+def frontend_root_url() -> str:
+    """URL of the real Next.js app root (not /health — Next has no /health route)."""
+    base = frontend_base_path()
+    upstream = frontend_upstream()
+    if base:
+        return f"{upstream}{base}/"
+    return f"{upstream}/"
+
+
+async def check_frontend_upstream(*, timeout_s: float = 5.0) -> tuple[bool, str]:
+    """
+    Probe Next.js readiness via GET / (with basePath when configured).
+
+    Returns (ok, detail). A Next.js 404 on /health must never be treated as the
+    frontend health signal — that path is not an app route.
+    """
+    url = frontend_root_url()
+    timeout = httpx.Timeout(timeout_s, connect=min(3.0, timeout_s))
+    try:
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            resp = await client.get(url)
+        if 200 <= resp.status_code < 400:
+            return True, f"{url} → HTTP {resp.status_code}"
+        return False, f"{url} → HTTP {resp.status_code}"
+    except httpx.ConnectError:
+        return False, f"Frontend upstream unreachable at {frontend_upstream()}"
+    except httpx.RequestError as exc:
+        return False, f"Frontend upstream error at {url}: {exc}"
+
+
 def _should_skip_proxy(path: str) -> bool:
     """Paths owned by FastAPI — never forward to Next.js."""
     if path.startswith("/api/"):
         return True
     if path.startswith("/outputs"):
+        return True
+    # /health is FastAPI readiness (probes Next /) — never proxy to Next /health.
+    if path == "/health" or path == "/health/":
         return True
     if path in ("/docs", "/redoc", "/openapi.json") or path.startswith("/docs/") or path.startswith("/redoc/"):
         return True

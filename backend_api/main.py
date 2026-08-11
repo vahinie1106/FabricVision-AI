@@ -55,7 +55,30 @@ app.include_router(generation.router, prefix=settings.API_V1_STR, tags=["Generat
 app.include_router(tryon.router, prefix=settings.API_V1_STR, tags=["Virtual Try-On"])
 app.include_router(semantic.router, prefix=settings.API_V1_STR, tags=["Semantic Analysis"])
 
-# Catch-all → Next.js (must be last so /api, /docs, /outputs keep priority)
+
+@app.get("/health", include_in_schema=False)
+async def gateway_health():
+    """
+    Gateway readiness: API up AND Next.js reachable at its real root (/).
+
+    Must not proxy to Next.js /health (that route does not exist → 404).
+    """
+    from fastapi import Response
+
+    from backend_api.gateway import check_frontend_upstream
+    from backend_api.schemas.response_models import HealthResponse
+
+    ok, detail = await check_frontend_upstream()
+    if not ok:
+        return Response(
+            status_code=502,
+            content=f"Frontend upstream unreachable at {detail}".encode("utf-8"),
+            media_type="text/plain",
+        )
+    return HealthResponse(status="healthy", version=settings.VERSION)
+
+
+# Catch-all → Next.js (must be last so /api, /docs, /outputs, /health keep priority)
 register_frontend_gateway(app)
 
 @app.on_event("startup")

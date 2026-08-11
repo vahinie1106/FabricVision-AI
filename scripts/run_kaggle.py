@@ -1193,6 +1193,8 @@ def main() -> int:
 
     try:
         health_code = wait_http("http://127.0.0.1:8000/api/v1/health", "API health")
+        # Gateway readiness probes Next.js / (never Next /health which 404s).
+        wait_http("http://127.0.0.1:8000/health", "Gateway health")
         wait_http("http://127.0.0.1:8000/docs", "Swagger /docs")
         wait_http("http://127.0.0.1:8000/openapi.json", "OpenAPI JSON")
         wait_http("http://127.0.0.1:8000/api/v1/openapi.json", "OpenAPI JSON (v1)")
@@ -1269,6 +1271,7 @@ def main() -> int:
                     health_code = wait_http(
                         "http://127.0.0.1:8000/api/v1/health", "API health (rebuild)"
                     )
+                    wait_http("http://127.0.0.1:8000/health", "Gateway health (rebuild)")
                     root_code = wait_http(
                         "http://127.0.0.1:8000/", "Gateway frontend / (rebuild)"
                     )
