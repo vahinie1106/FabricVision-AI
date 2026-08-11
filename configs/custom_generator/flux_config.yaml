@@ -60,17 +60,17 @@ standard:
   guidance_scale: 3.0
   measured_runtime_s_cold: 603.5
 
-# Production — one extra denoise step; still within measured budget
+# Production — Kaggle T4-safe square size (1024 OOMs; override via FLUX_GENERATION_RESOLUTION)
 production:
-  height: 512
-  width: 512
+  height: 768
+  width: 768
   num_inference_steps: 4
   guidance_scale: 2.5
-  measured_runtime_note: "~12-20 min depending on thermal/session load"
+  measured_runtime_note: "~12-20 min depending on thermal/session load; 768 for ~16GB T4"
 
 high_quality:
-  height: 512
-  width: 512
+  height: 768
+  width: 768
   num_inference_steps: 4
   guidance_scale: 2.5
   measured_runtime_note: "alias of production on this GPU"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diagnose FLUX.1-Kontext model loading + optional real 1024 smoke inference.
+"""Diagnose FLUX.1-Kontext model loading + optional real smoke inference.
 
 Run inside Kaggle (or locally) from the repo root:
 
@@ -7,9 +7,10 @@ Run inside Kaggle (or locally) from the repo root:
   python scripts/debug_flux_load.py --smoke
   python scripts/debug_flux_load.py --smoke --smoke-steps 1
 
-``--smoke`` always requests an explicit 1024x1024 Kontext generation (never 256
-with silent Diffusers upscaling). It uses the same FLUXInferenceEngine path as
-the Custom Garment Generator (pre-encode, CPU offload, VAE tiling for 1024).
+``--smoke`` runs an explicit square Kontext generation at
+``FLUX_GENERATION_RESOLUTION`` (default 768; never silent Diffusers upscaling
+from 256). Uses the same FLUXInferenceEngine path as the Custom Garment
+Generator (pre-encode, CPU offload, VAE tiling when enabled).
 
 Never prints secrets.
 """
@@ -33,6 +34,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 # Large-res smoke / garment gens need VAE tiling to avoid decode OOM on 16GB.
 os.environ.setdefault("FLUX_VAE_TILING", "true")
 os.environ.setdefault("FLUX_PREENCODE_PROMPT", "true")
+# Kaggle T4 demo default — override with FLUX_GENERATION_RESOLUTION=512|640|768|1024
+os.environ.setdefault("FLUX_GENERATION_RESOLUTION", "768")
 
 
 def _vram_mb() -> dict:
@@ -87,8 +90,8 @@ def _quant_state(mod) -> str:
     return "no_Linear4bit_detected"
 
 
-def _apply_1024_memory_opts(pipe, loader) -> list[str]:
-    """Legitimate Diffusers/accelerate opts for 1024 Kontext on ~16GB."""
+def _apply_smoke_memory_opts(pipe, loader) -> list[str]:
+    """Legitimate Diffusers/accelerate opts for Kontext smoke on ~16GB."""
     applied: list[str] = []
     # Ensure model CPU offload remains active (already set by loader for NF4).
     offload = getattr(loader, "_offload_strategy", None)
@@ -128,22 +131,28 @@ def _apply_1024_memory_opts(pipe, loader) -> list[str]:
 
 def _run_smoke(loader, pipe, steps: int = 1) -> int:
     """
-    Real 1024x1024 Kontext generation via production FLUXInferenceEngine.
+    Real square Kontext generation via production FLUXInferenceEngine.
 
+    Resolution comes from FLUX_GENERATION_RESOLUTION (default 768).
     Returns 0 on success, 1 on failure (including honest OOM).
     """
     from PIL import Image
 
     import torch
 
-    from src.features.custom_generator.inference.flux_inference import FLUXInferenceEngine
+    from src.features.custom_generator.inference.flux_inference import (
+        FLUXInferenceEngine,
+        resolve_flux_generation_resolution,
+    )
 
-    height = width = 1024
+    size = resolve_flux_generation_resolution()
+    height = width = size
+    print(f"FLUX_GENERATION_RESOLUTION={size}", flush=True)
     print(f"SMOKE_RESOLUTION={width}x{height}", flush=True)
     print(f"SMOKE_STEPS={int(steps)}", flush=True)
     print("SMOKE_INFERENCE=START", flush=True)
 
-    applied = _apply_1024_memory_opts(pipe, loader)
+    applied = _apply_smoke_memory_opts(pipe, loader)
     print(f"SMOKE_MEMORY_OPTS={','.join(applied)}", flush=True)
 
     vram_total = _vram_mb()
@@ -164,7 +173,7 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         f"ATTENTION_BACKEND={getattr(loader, '_attention_backend', None)}",
         flush=True,
     )
-    # Detailed SDPA configuration (MATH must be disabled for T4 1024).
+    # Detailed SDPA configuration (MATH must stay disabled for large Kontext).
     try:
         from src.features.custom_generator.inference.flux_attention import (
             configure_memory_efficient_attention,
@@ -197,7 +206,7 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         return 1
     print(f"BNB_4BIT={getattr(loader, '_used_bnb_4bit', None)}", flush=True)
 
-    # Conditioning image must already be 1024 so Diffusers does not resize silently.
+    # Conditioning image matches target size so Diffusers does not resize silently.
     img = Image.new("RGB", (width, height), color=(180, 40, 40))
     engine = FLUXInferenceEngine(loader, allow_fallback=False)
 
@@ -206,6 +215,8 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
     print(f"VRAM_BEFORE_INFERENCE_ALLOC_MB={before['allocated_mb']}", flush=True)
     print(f"VRAM_BEFORE_INFERENCE_RESERVED_MB={before['reserved_mb']}", flush=True)
     print(f"VRAM_BEFORE_INFERENCE_FREE_MB={before['free_mb']}", flush=True)
+
+    out_path = ROOT / "experiments" / "generation_results" / f"smoke_flux_{width}x{height}.png"
 
     try:
         if torch.cuda.is_available():
@@ -224,6 +235,14 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         after = _vram_mb()
         peak = after["max_allocated_mb"]
         out_w, out_h = out.size
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out.save(out_path, format="PNG", compress_level=3)
+            print(f"IMAGE_OUTPUT_PATH={out_path}", flush=True)
+            print("IMAGE_OUTPUT_EXISTS=True", flush=True)
+        except Exception as save_exc:
+            print("IMAGE_OUTPUT_EXISTS=False", flush=True)
+            print(f"IMAGE_SAVE_ERROR={type(save_exc).__name__}: {save_exc}", flush=True)
         print("SMOKE_INFERENCE=SUCCESS", flush=True)
         print(f"OUTPUT_RESOLUTION={out_w}x{out_h}", flush=True)
         print(f"ELAPSED_INFERENCE_S={elapsed}", flush=True)
@@ -244,9 +263,9 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         ):
             if key in stats:
                 print(f"STATS_{key.upper()}={stats[key]}", flush=True)
-        if out_w != 1024 or out_h != 1024:
+        if out_w != width or out_h != height:
             print(
-                "WARNING: output resolution is not 1024x1024 — Diffusers may have resized",
+                f"WARNING: output resolution is not {width}x{height} — Diffusers may have resized",
                 flush=True,
             )
             return 1
@@ -269,11 +288,10 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         print(f"VRAM_AFTER_FAIL_RESERVED_MB={after['reserved_mb']}", flush=True)
         print(f"VRAM_AFTER_FAIL_FREE_MB={after['free_mb']}", flush=True)
         print(
-            "OOM_NOTE=At 1024x1024 FluxKontext must hold NF4 transformer activations, "
-            "latents, and VAE working memory. If PyTorch already holds ~14GiB before the "
-            "next large allocation, the denoise/VAE step fails even with model_cpu_offload. "
-            "Production path uses pre-encode + encoder eviction + VAE tiling; sequential "
-            "CPU offload is NOT used with bitsandbytes NF4 (meta-tensor corruption risk).",
+            f"OOM_NOTE=At {width}x{height} FluxKontext must hold NF4 transformer activations, "
+            "latents, and VAE working memory under model_cpu_offload. "
+            "Set FLUX_GENERATION_RESOLUTION=512 if this size still OOMs on T4. "
+            "Sequential CPU offload is NOT used with bitsandbytes NF4.",
             flush=True,
         )
         traceback.print_exc()
@@ -285,7 +303,8 @@ def main() -> int:
     parser.add_argument(
         "--smoke",
         action="store_true",
-        help="After load, run a REAL explicit 1024x1024 Kontext inference smoke test",
+        help="After load, run a REAL square Kontext inference smoke "
+        "(FLUX_GENERATION_RESOLUTION, default 768)",
     )
     parser.add_argument(
         "--smoke-steps",

@@ -29,6 +29,28 @@ ProgressCallback = Optional[Callable[[str, int], None]]
 # under model_cpu_offload on RTX 3050. 128 preserves full prompt semantics with far less work.
 DEFAULT_MAX_SEQUENCE_LENGTH = 128
 
+# Kaggle T4 (~15GB): real Kontext 1024 OOMs; 768 is the demo default.
+# Override via FLUX_GENERATION_RESOLUTION (FLUX_PRODUCTION_SIZE alias).
+ALLOWED_FLUX_GENERATION_RESOLUTIONS = (512, 640, 768, 1024)
+DEFAULT_FLUX_GENERATION_RESOLUTION = 768
+
+
+def resolve_flux_generation_resolution(default: Optional[int] = None) -> int:
+    """Single square resolution for FLUX Kontext generation / smoke."""
+    fallback = (
+        DEFAULT_FLUX_GENERATION_RESOLUTION if default is None else int(default)
+    )
+    for key in ("FLUX_GENERATION_RESOLUTION", "FLUX_PRODUCTION_SIZE"):
+        raw = os.environ.get(key, "").strip()
+        if not raw.isdigit():
+            continue
+        size = int(raw)
+        if size in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
+            return size
+    if fallback in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
+        return fallback
+    return DEFAULT_FLUX_GENERATION_RESOLUTION
+
 
 class FLUXInferenceEngine:
     """FLUX.1-Kontext inference: fabric conditioning image + garment edit prompt."""
@@ -492,10 +514,10 @@ class FLUXInferenceEngine:
             # Drop kwargs not accepted by this diffusers version
             kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters or k.startswith("_")}
 
-            # Large-resolution memory path (1024²+): VAE tiling/slicing are supported on
+            # Large-resolution memory path (768²+): VAE tiling/slicing are supported on
             # FluxKontextPipeline and materially reduce decode/activation peaks on T4-class GPUs.
             # Keep model_cpu_offload (sequential_cpu_offload is unsafe with bitsandbytes NF4).
-            large_res = int(height) * int(width) >= 1024 * 1024
+            large_res = int(height) * int(width) >= 768 * 768
             force_tile = os.environ.get("FLUX_VAE_TILING", "").strip().lower() in (
                 "1",
                 "true",

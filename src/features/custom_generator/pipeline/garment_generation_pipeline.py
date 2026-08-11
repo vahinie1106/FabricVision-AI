@@ -196,14 +196,22 @@ class GarmentGenerationPipeline:
                 mode_cfg.get("guidance_scale", self.config.guidance_scale)
             )
 
-        # Production size override (only after operator validates VRAM)
+        # Single FLUX Kontext resolution knob (yaml mode defaults + optional env).
+        # FLUX_GENERATION_RESOLUTION preferred; FLUX_PRODUCTION_SIZE kept as alias.
+        from src.features.custom_generator.inference.flux_inference import (
+            resolve_flux_generation_resolution,
+        )
+
+        res_env = (
+            os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip()
+            or os.environ.get("FLUX_PRODUCTION_SIZE", "").strip()
+        )
+        if res_env.isdigit():
+            size = resolve_flux_generation_resolution(default=self.config.height)
+            self.config.height = size
+            self.config.width = size
+
         if mode_key == "production":
-            prod_size = os.environ.get("FLUX_PRODUCTION_SIZE", "").strip()
-            if prod_size.isdigit():
-                size = int(prod_size)
-                if size in (512, 640, 768):
-                    self.config.height = size
-                    self.config.width = size
             prod_steps = os.environ.get("FLUX_PRODUCTION_STEPS", "").strip()
             if prod_steps.isdigit():
                 self.config.num_inference_steps = max(1, int(prod_steps))
