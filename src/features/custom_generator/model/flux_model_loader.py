@@ -60,6 +60,7 @@ class FLUXModelLoader:
         self._offload_strategy = "none"
         self._model_kind = "flux-kontext"
         self._attention_backend = "default"
+        self._attention_diag: dict = {}
         self._torch_compile_enabled = False
         self._init_time_s = 0.0
         self._load_count = 0
@@ -329,55 +330,74 @@ class FLUXModelLoader:
 
     def _configure_attention(self, pipeline: Any) -> str:
         """
-        Select the safest supported attention backend.
+        Prefer memory-efficient SDPA and disable MATH when the installed torch
+        APIs allow it (required for Kontext 1024 on T4-class 16GB GPUs).
 
-        Prefer native PyTorch SDPA on torch 2.x. xFormers/Flash are optional and
-        fall back automatically when unavailable. Stability > micro-benchmarks.
+        ``ATTENTION_BACKEND=sdpa`` alone is insufficient: PyTorch may still pick
+        the MATH kernel and allocate ~6 GiB for the joint Kontext sequence.
+        xFormers / packaged FlashAttention are not installed here (explicitly
+        deferred); this path uses only PyTorch SDPA + optional Diffusers
+        ``transformer.set_attention_backend`` when present.
         """
+        from src.features.custom_generator.inference.flux_attention import (
+            configure_memory_efficient_attention,
+        )
+
         wanted = self._want_attention
         if wanted == "default":
             self._attention_backend = "default"
+            self._attention_diag = {
+                "attention_backend_requested": "default",
+                "attention_config_ok": True,
+            }
             return self._attention_backend
 
-        # xFormers path
-        if wanted in ("auto", "xformers"):
+        # auto / sdpa / flash / memory_efficient → memory-efficient SDPA path.
+        # xformers is intentionally not auto-installed; only use if already present
+        # and explicitly requested (not part of the T4 1024 first fix).
+        if wanted == "xformers":
             try:
                 import xformers  # noqa: F401
 
                 if hasattr(pipeline, "enable_xformers_memory_efficient_attention"):
                     pipeline.enable_xformers_memory_efficient_attention()
                     self._attention_backend = "xformers"
+                    self._attention_diag = {
+                        "attention_backend_requested": "xformers",
+                        "attention_backend_effective": "xformers",
+                        "attention_config_ok": True,
+                    }
                     self.logger.info("[FLUX] Attention backend: xformers")
                     return self._attention_backend
             except Exception as exc:
-                if wanted == "xformers":
-                    self.logger.warning(
-                        "[FLUX] xFormers requested but unavailable (%s); falling back",
-                        exc,
-                    )
+                self.logger.warning(
+                    "[FLUX] xFormers requested but unavailable (%s); "
+                    "falling back to memory-efficient SDPA",
+                    exc,
+                )
 
-        # Flash Attention (rarely packaged; try then fall back)
-        if wanted in ("auto", "flash"):
-            try:
-                if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
-                    # PyTorch SDPA may dispatch to flash kernels when available.
-                    self._attention_backend = "sdpa"
-                    self.logger.info(
-                        "[FLUX] Attention backend: sdpa (flash dispatch if supported by torch)"
-                    )
-                    return self._attention_backend
-            except Exception as exc:
-                if wanted == "flash":
-                    self.logger.warning("[FLUX] Flash attention unavailable (%s)", exc)
-
-        # Native SDPA (torch 2.x default for most diffusers modules)
-        if wanted in ("auto", "sdpa") and torch is not None:
-            if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
-                self._attention_backend = "sdpa"
-                self.logger.info("[FLUX] Attention backend: sdpa")
+        if wanted in ("auto", "sdpa", "flash", "memory_efficient", "mem_efficient"):
+            diag = configure_memory_efficient_attention(pipeline)
+            self._attention_diag = diag
+            if diag.get("attention_config_ok"):
+                self._attention_backend = "memory_efficient_sdpa"
+                self.logger.info(
+                    "[FLUX] Attention backend: memory_efficient_sdpa (%s)",
+                    diag.get("attention_backend_effective"),
+                )
                 return self._attention_backend
+            err = diag.get("error") or "NO_SUPPORTED_EFFICIENT_ATTENTION_BACKEND"
+            self.logger.error("[FLUX] Memory-efficient attention unavailable: %s", err)
+            # Do not silently fall back to MATH-capable generic "sdpa".
+            self._attention_backend = "unavailable"
+            return self._attention_backend
 
         self._attention_backend = "default"
+        self._attention_diag = {
+            "attention_backend_requested": wanted,
+            "attention_config_ok": False,
+            "error": f"unsupported_want={wanted}",
+        }
         self.logger.info("[FLUX] Attention backend: default")
         return self._attention_backend
 
@@ -818,6 +838,7 @@ class FLUXModelLoader:
             ),
             "offload_strategy": self._offload_strategy,
             "attention_backend": self._attention_backend,
+            "attention_diag": dict(getattr(self, "_attention_diag", {}) or {}),
             "torch_compile": self._torch_compile_enabled,
             "init_time_s": self._init_time_s,
             "load_count": self._load_count,

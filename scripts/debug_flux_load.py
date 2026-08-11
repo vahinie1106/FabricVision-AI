@@ -164,6 +164,37 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         f"ATTENTION_BACKEND={getattr(loader, '_attention_backend', None)}",
         flush=True,
     )
+    # Detailed SDPA configuration (MATH must be disabled for T4 1024).
+    try:
+        from src.features.custom_generator.inference.flux_attention import (
+            configure_memory_efficient_attention,
+            format_attention_diag_lines,
+        )
+
+        diag = getattr(loader, "_attention_diag", None) or {}
+        if not diag.get("attention_config_ok"):
+            diag = configure_memory_efficient_attention(pipe)
+            try:
+                loader._attention_diag = diag
+                if diag.get("attention_config_ok"):
+                    loader._attention_backend = "memory_efficient_sdpa"
+            except Exception:
+                pass
+        for line in format_attention_diag_lines(diag):
+            print(line, flush=True)
+        if not diag.get("attention_config_ok"):
+            print(
+                f"ATTENTION_ERROR={diag.get('error') or 'NO_SUPPORTED_EFFICIENT_ATTENTION_BACKEND'}",
+                flush=True,
+            )
+            print("SMOKE_INFERENCE=FAILED", flush=True)
+            print("ERROR=NO_SUPPORTED_EFFICIENT_ATTENTION_BACKEND", flush=True)
+            return 1
+    except Exception as attn_exc:
+        print(f"ATTENTION_DIAG_ERROR={type(attn_exc).__name__}: {attn_exc}", flush=True)
+        print("SMOKE_INFERENCE=FAILED", flush=True)
+        print("ERROR=NO_SUPPORTED_EFFICIENT_ATTENTION_BACKEND", flush=True)
+        return 1
     print(f"BNB_4BIT={getattr(loader, '_used_bnb_4bit', None)}", flush=True)
 
     # Conditioning image must already be 1024 so Diffusers does not resize silently.

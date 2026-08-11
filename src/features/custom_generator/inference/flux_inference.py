@@ -529,7 +529,33 @@ class FLUXInferenceEngine:
             _progress("Generating", 55)
             t_diff_start = time.perf_counter()
             last_step_t = t_diff_start
-            output = pipeline(**kwargs)
+            # Suppress SDPA MATH during denoise: Kontext 1024 joint seq (~8320)
+            # otherwise allocates ~6.19 GiB attention workspace on T4.
+            from src.features.custom_generator.inference.flux_attention import (
+                NoSupportedEfficientAttention,
+                configure_memory_efficient_attention,
+                memory_efficient_attention_context,
+            )
+
+            attn_diag = getattr(self.model_loader, "_attention_diag", None) or {}
+            if not attn_diag.get("attention_config_ok"):
+                # Re-apply / validate on this pipeline (covers reused loaders).
+                attn_diag = configure_memory_efficient_attention(pipeline)
+                if self.model_loader is not None:
+                    try:
+                        self.model_loader._attention_diag = attn_diag
+                        if attn_diag.get("attention_config_ok"):
+                            self.model_loader._attention_backend = "memory_efficient_sdpa"
+                    except Exception:
+                        pass
+            if not attn_diag.get("attention_config_ok"):
+                err = attn_diag.get("error") or "NO_SUPPORTED_EFFICIENT_ATTENTION_BACKEND"
+                raise NoSupportedEfficientAttention(
+                    f"Cannot run FLUX Kontext without memory-efficient SDPA ({err}). "
+                    "MATH attention would OOM at 1024 on 16GB-class GPUs."
+                )
+            with memory_efficient_attention_context():
+                output = pipeline(**kwargs)
             t_diff_end = time.perf_counter()
             diffusion_s = round(t_diff_end - t_diff_start, 3)
 
@@ -682,6 +708,8 @@ class FLUXInferenceEngine:
                     getattr(self.model_loader, "_offload_strategy", None),
                 ),
                 "attention_backend": runtime.get("attention_backend"),
+                "attention_diag": runtime.get("attention_diag")
+                or getattr(self.model_loader, "_attention_diag", None),
                 "torch_compile": runtime.get("torch_compile"),
                 "bnb_4bit": runtime.get("bnb_4bit"),
                 "runtime": runtime,
