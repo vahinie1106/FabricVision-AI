@@ -132,8 +132,8 @@ export default function CustomGarmentGenerator() {
           neckline,
           generationMode,
         },
-        (pct, currentStep) => {
-          progress.update(pct, currentStep);
+        (pct, currentStep, stage) => {
+          progress.update(pct, currentStep, stage);
         }
       );
 
@@ -604,6 +604,8 @@ export default function CustomGarmentGenerator() {
                     }
                   />
                 </div>
+              ) : isGenerating || progress.active ? (
+                <p className="text-xs text-[#767676]">Metadata will appear when generation completes.</p>
               ) : (
                 <p className="text-xs text-[#767676]">No metadata generated.</p>
               )}

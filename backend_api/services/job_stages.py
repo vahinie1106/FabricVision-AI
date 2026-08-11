@@ -45,7 +45,7 @@ def map_step_to_stage(current_step: Optional[str], status: Optional[str] = None)
         (("encoding prompt", "prompt"), "encoding_prompt"),
         (("conditioning",), "preparing_conditioning"),
         (("preparing fabric", "fabric appearance"), "preparing_fabric"),
-        (("reusing", "loading model", "load"), "loading_model"),
+        (("reusing", "loading model", "loading flux"), "loading_model"),
         (("connect", "remote", "initializ", "waiting"), "initializing"),
     )
     for keys, stage in rules:

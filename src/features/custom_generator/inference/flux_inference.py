@@ -252,8 +252,18 @@ class FLUXInferenceEngine:
                 except Exception:
                     pass
 
+        def _flux_mark(label: str, t_seg: float, *, end: bool = False) -> float:
+            now = time.perf_counter()
+            if end:
+                msg = f"[FLUX] {label} END t={now:.2f} elapsed={now - t_seg:.2f}s"
+            else:
+                msg = f"[FLUX] {label} START t={now:.2f}"
+            self.logger.info(msg)
+            print(msg, flush=True)
+            return now
+
         pipeline = getattr(self.model_loader, "pipeline", None)
-        t_model_load_start = time.perf_counter()
+        t_model_load_start = _flux_mark("model load", time.perf_counter())
         model_was_reused = pipeline is not None
         if pipeline is None and hasattr(self.model_loader, "load"):
             _progress("Loading model", 12)
@@ -263,6 +273,7 @@ class FLUXInferenceEngine:
             self.logger.info("[FLUX] Reusing loaded Kontext pipeline")
             if hasattr(self.model_loader, "load"):
                 pipeline = self.model_loader.load()
+        _flux_mark("model load", t_model_load_start, end=True)
         t_model_load_end = time.perf_counter()
         model_load_time = round(t_model_load_end - t_model_load_start, 3)
 
@@ -377,12 +388,12 @@ class FLUXInferenceEngine:
                     num_inference_steps,
                     dur,
                 )
-                pct = 55 + int(30 * (step_index + 1) / max(1, num_inference_steps))
+                pct = 50 + int(35 * (step_index + 1) / max(1, num_inference_steps))
                 _progress(f"Generating (step {step_index + 1}/{num_inference_steps})", pct)
                 return callback_kwargs
 
             _progress("Preparing fabric conditioning", 35)
-            t_resize = time.perf_counter()
+            t_resize = _flux_mark("conditioning resize", time.perf_counter())
             if hasattr(reference_image, "resize"):
                 if reference_image.size != (width, height):
                     cond_image = reference_image.resize((width, height), Image.Resampling.LANCZOS)
@@ -391,6 +402,7 @@ class FLUXInferenceEngine:
             else:
                 cond_image = reference_image
             resize_time = round(time.perf_counter() - t_resize, 3)
+            _flux_mark("conditioning resize", t_resize, end=True)
 
             self.logger.info("=== FLUX KONTEXT CALL PROMPT ===\n%s", prompt)
             if negative_prompt:
@@ -405,6 +417,7 @@ class FLUXInferenceEngine:
             # WHY not always pre-encode: holding T5 on GPU while transformer onloads OOMs 6GB.
             # max_sequence_length=128 alone dropped encode from ~360s → ~50s in measurement.
             _progress("Encoding prompt", 45)
+            t_encode = _flux_mark("prompt encoding", time.perf_counter())
             prompt_embeds = pooled_prompt_embeds = None
             # Default true: measured encode ~50s at seq=128; cache + CPU eviction helps 6GB.
             use_preencode = os.environ.get("FLUX_PREENCODE_PROMPT", "true").strip().lower() in (
@@ -463,6 +476,8 @@ class FLUXInferenceEngine:
                         )
                         prompt_embeds = pooled_prompt_embeds = None
                         encode_s = 0.0
+
+            _flux_mark("prompt encoding", t_encode, end=True)
 
             kwargs: Dict[str, Any] = {
                 "image": cond_image,
@@ -561,8 +576,8 @@ class FLUXInferenceEngine:
             )
 
             self._clear_cuda()
-            _progress("Generating", 55)
-            t_diff_start = time.perf_counter()
+            _progress("Generating", 50)
+            t_diff_start = _flux_mark("inference", time.perf_counter())
             last_step_t = t_diff_start
             # Suppress SDPA MATH on the Flux *transformer only*. Wrapping the whole
             # pipeline(...) breaks VAE encode/decode on T4 (head dims need MATH).
@@ -611,11 +626,13 @@ class FLUXInferenceEngine:
             )
             t_diff_end = time.perf_counter()
             diffusion_s = round(t_diff_end - t_diff_start, 3)
+            _flux_mark("inference", t_diff_start, end=True)
 
             _progress("Decoding image", 88)
-            t_dec = time.perf_counter()
+            t_dec = _flux_mark("decoding", time.perf_counter())
             image = output.images[0]
             decode_s = round(time.perf_counter() - t_dec, 3)
+            _flux_mark("decoding", t_dec, end=True)
 
             # Raw model output before any UI path — for blur root-cause isolation
             if save_raw_path:

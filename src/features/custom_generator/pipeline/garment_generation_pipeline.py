@@ -273,6 +273,19 @@ class GarmentGenerationPipeline:
                 except Exception:
                     pass
 
+        def _mark(label: str, t_seg: float, *, end: bool = False) -> float:
+            now = time.perf_counter()
+            if end:
+                msg = (
+                    f"[GENERATION] {label} END t={now:.2f} "
+                    f"elapsed={now - t_seg:.2f}s"
+                )
+            else:
+                msg = f"[GENERATION] {label} START t={now:.2f}"
+            self.logger.info(msg)
+            print(msg, flush=True)
+            return now
+
         if reference_image is None:
             raise RuntimeError(
                 "Fabric reference image is required for FLUX.1-Kontext garment generation."
@@ -283,8 +296,8 @@ class GarmentGenerationPipeline:
         if hasattr(fabric_image, "convert"):
             fabric_image = fabric_image.convert("RGB")
 
-        _progress("Preparing fabric", 20)
-        t0 = time.perf_counter()
+        _progress("Preparing fabric", 22)
+        t0 = _mark("FABRIC PREPROCESS", time.perf_counter())
         try:
             from src.features.custom_generator.inference.fabric_appearance import (
                 describe_fabric_appearance,
@@ -328,23 +341,13 @@ class GarmentGenerationPipeline:
         except Exception as exc:
             self.logger.warning("Fabric appearance enrichment skipped: %s", exc)
         timings["fabric_appearance_s"] = round(time.perf_counter() - t0, 3)
+        _mark("FABRIC PREPROCESS", t0, end=True)
 
-        _progress("Encoding prompt", 28)
-        t0 = time.perf_counter()
-        positive_prompt, negative_prompt = self.prompt_builder.build_kontext_prompt(
-            fabric_metadata=fabric_metadata,
-            user_customization=user_customization,
-        )
-        timings["prompt_building_s"] = round(time.perf_counter() - t0, 3)
-        prompt_stats = getattr(self.prompt_builder, "last_prompt_stats", {}) or {}
-        self.logger.info("=== FINAL POSITIVE PROMPT ===\n%s", positive_prompt)
-        self.logger.info("=== FINAL NEGATIVE PROMPT ===\n%s", negative_prompt)
-
+        # Prompt text build (token encode happens later inside FLUX inference).
+        _progress("Preparing garment conditioning", 32)
+        t0 = _mark("CONDITIONING", time.perf_counter())
         garment_type = str(user_customization.get("garment_type") or "shirt")
         sleeve = str(user_customization.get("sleeve") or "")
-
-        _progress("Preparing garment conditioning", 35)
-        t0 = time.perf_counter()
         conditioning_image = build_garment_conditioning_image(
             fabric_image=fabric_image,
             garment_type=garment_type,
@@ -353,6 +356,19 @@ class GarmentGenerationPipeline:
             sleeve=sleeve,
         )
         timings["fabric_conditioning_s"] = round(time.perf_counter() - t0, 3)
+        _mark("CONDITIONING", t0, end=True)
+
+        _progress("Encoding prompt", 42)
+        t0 = _mark("PROMPT BUILD", time.perf_counter())
+        positive_prompt, negative_prompt = self.prompt_builder.build_kontext_prompt(
+            fabric_metadata=fabric_metadata,
+            user_customization=user_customization,
+        )
+        timings["prompt_building_s"] = round(time.perf_counter() - t0, 3)
+        prompt_stats = getattr(self.prompt_builder, "last_prompt_stats", {}) or {}
+        self.logger.info("=== FINAL POSITIVE PROMPT ===\n%s", positive_prompt)
+        self.logger.info("=== FINAL NEGATIVE PROMPT ===\n%s", negative_prompt)
+        _mark("PROMPT BUILD", t0, end=True)
 
         # Persist stage images for A/B audits (original already in uploads; save cond)
         debug_dir = Path(self.config.output_root) / "audit_stages"
@@ -416,8 +432,8 @@ class GarmentGenerationPipeline:
             target_color=str(color_val) if color_val else None,
         )
 
-        _progress("Saving result", 92)
-        t0 = time.perf_counter()
+        _progress("Saving result", 94)
+        t0 = _mark("IMAGE SAVE", time.perf_counter())
         output_base = Path(self.config.output_root)
         images_dir = output_base / "images"
         metadata_dir = output_base / "metadata"
@@ -441,6 +457,7 @@ class GarmentGenerationPipeline:
         )
         timings["image_saving_s"] = round(time.perf_counter() - t0, 3)
         timings["total_pipeline_s"] = round(time.perf_counter() - t_total, 3)
+        _mark("IMAGE SAVE", t0, end=True)
 
         if self.config.profile:
             self.logger.info(
@@ -457,6 +474,7 @@ class GarmentGenerationPipeline:
                 timings["total_pipeline_s"],
             )
 
+        t_meta = _mark("METADATA", time.perf_counter())
         metadata = {
             "garment_id": garment_id,
             "positive_prompt": positive_prompt,
@@ -495,6 +513,7 @@ class GarmentGenerationPipeline:
             stats["mode_key"] = self.config.mode_key
             stats["pipeline_timings"] = timings
             stats["prompt_stats"] = prompt_stats
+        _mark("METADATA", t_meta, end=True)
 
         _progress("Completed", 100)
 

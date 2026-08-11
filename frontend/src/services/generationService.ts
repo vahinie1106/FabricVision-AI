@@ -4,7 +4,7 @@ import type { GenerationRequest, GenerationResponse, TryOnRequest, TryOnResponse
 export const GenerationService = {
   async generateCustomGarment(
     req: GenerationRequest,
-    onProgress?: (progress: number, step: string) => void
+    onProgress?: (progress: number, step: string, stage?: string) => void
   ): Promise<GenerationResponse> {
     const formData = new FormData();
     formData.append("fabric_image", req.fabricImage);
@@ -30,7 +30,7 @@ export const GenerationService = {
 
     const finalStatus = await ApiClient.pollJobStatus(initRes.job_id, (status) => {
       if (onProgress) {
-        onProgress(status.progress, status.current_step);
+        onProgress(status.progress, status.current_step || "", status.stage);
       }
     });
 
@@ -54,7 +54,7 @@ export const GenerationService = {
 
   async executeVirtualTryOn(
     req: TryOnRequest,
-    onProgress?: (progress: number, step: string) => void
+    onProgress?: (progress: number, step: string, stage?: string) => void
   ): Promise<TryOnResponse> {
     const formData = new FormData();
     formData.append("garment_image", req.garmentImage);
@@ -70,7 +70,7 @@ export const GenerationService = {
 
     const finalStatus = await ApiClient.pollJobStatus(initRes.job_id, (status) => {
       if (onProgress) {
-        onProgress(status.progress, status.current_step);
+        onProgress(status.progress, status.current_step || "", status.stage);
       }
     });
 

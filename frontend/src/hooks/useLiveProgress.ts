@@ -88,10 +88,10 @@ export function useLiveProgress(kind: WorkflowKind) {
     }
   }, [kind, clearTimers]);
 
-  const update = useCallback((progress: number, currentStep?: string) => {
+  const update = useCallback((progress: number, currentStep?: string, backendStage?: string) => {
     setState((s) => {
       const stages = s.stages.length ? s.stages : getStages(kind);
-      const idx = resolveStageIndex(stages, progress, currentStep);
+      const idx = resolveStageIndex(stages, progress, currentStep, backendStage);
       const stage = stages[idx];
       // Backend progress is authoritative for async jobs. Never invent a higher
       // percent from the stage table (that caused the 94% Saving stall).

@@ -5,13 +5,14 @@ export type ProgressStageDef = {
   percent: number;
 };
 
+/** Stage start percents aligned with backend garment job progress bands. */
 export const GARMENT_STAGES: ProgressStageDef[] = [
   { id: "upload", label: "Uploading Fabric", percent: 5 },
-  { id: "load-model", label: "Loading model", percent: 12 },
+  { id: "load-model", label: "Loading model", percent: 8 },
   { id: "fabric", label: "Preparing fabric", percent: 22 },
-  { id: "conditioning", label: "Preparing garment conditioning", percent: 35 },
-  { id: "prompt", label: "Encoding prompt", percent: 48 },
-  { id: "generate", label: "Generating", percent: 65 },
+  { id: "conditioning", label: "Preparing garment conditioning", percent: 32 },
+  { id: "prompt", label: "Encoding prompt", percent: 42 },
+  { id: "generate", label: "Generating", percent: 50 },
   { id: "decode", label: "Decoding image", percent: 88 },
   { id: "save", label: "Saving result", percent: 94 },
   { id: "done", label: "Completed", percent: 100 },
@@ -37,6 +38,23 @@ export const ANALYSIS_STAGES: ProgressStageDef[] = [
 
 export type WorkflowKind = "garment" | "tryon" | "analysis";
 
+/** Backend JobStatusResponse.stage → frontend GARMENT_STAGES id */
+export const BACKEND_STAGE_TO_UI_ID: Record<string, string> = {
+  queued: "upload",
+  initializing: "upload",
+  loading_model: "load-model",
+  preparing_fabric: "fabric",
+  preparing_conditioning: "conditioning",
+  encoding_prompt: "prompt",
+  generating: "generate",
+  decoding: "decode",
+  validating: "save",
+  saving: "save",
+  completed: "done",
+  failed: "done",
+  processing: "fabric",
+};
+
 export function getStages(kind: WorkflowKind): ProgressStageDef[] {
   switch (kind) {
     case "garment":
@@ -49,26 +67,38 @@ export function getStages(kind: WorkflowKind): ProgressStageDef[] {
 }
 
 /**
- * Maps a backend progress value / step string onto a stage index.
+ * Maps a backend progress value / step / stage onto a stage index.
+ * Prefer authoritative `stage` from GET /status when present.
  */
 export function resolveStageIndex(
   stages: ProgressStageDef[],
   progress: number,
-  currentStep?: string
+  currentStep?: string,
+  backendStage?: string
 ): number {
   if (progress >= 100) return stages.length - 1;
 
+  if (backendStage) {
+    const uiId = BACKEND_STAGE_TO_UI_ID[backendStage];
+    if (uiId) {
+      const idx = stages.findIndex((s) => s.id === uiId);
+      if (idx >= 0) return idx;
+    }
+  }
+
   if (currentStep) {
     const lower = currentStep.toLowerCase();
+    // Ordered specific → general. Never use bare "load" (matches "uploading").
     const keywordMap: Array<{ keys: string[]; id: string }> = [
-      { keys: ["reusing", "loading model", "load"], id: "load-model" },
+      { keys: ["reusing", "loading model", "connecting to remote"], id: "load-model" },
       { keys: ["preparing fabric", "fabric appearance"], id: "fabric" },
-      { keys: ["conditioning", "garment conditioning"], id: "conditioning" },
-      { keys: ["encoding prompt", "prompt"], id: "prompt" },
+      { keys: ["garment conditioning", "conditioning"], id: "conditioning" },
+      { keys: ["encoding prompt"], id: "prompt" },
       { keys: ["generating", "diffusion", "step "], id: "generate" },
       { keys: ["decoding"], id: "decode" },
       { keys: ["saving"], id: "save" },
       { keys: ["completed"], id: "done" },
+      { keys: ["waiting for worker", "upload"], id: "upload" },
     ];
     for (const entry of keywordMap) {
       if (entry.keys.some((k) => lower.includes(k))) {
@@ -76,12 +106,6 @@ export function resolveStageIndex(
         if (idx >= 0) return idx;
       }
     }
-    const byLabel = stages.findIndex(
-      (s) =>
-        s.id !== "done" &&
-        (lower.includes(s.id) || lower.includes(s.label.toLowerCase().split(" ")[0]))
-    );
-    if (byLabel >= 0) return byLabel;
   }
 
   let idx = 0;
