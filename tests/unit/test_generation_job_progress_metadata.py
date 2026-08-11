@@ -67,10 +67,12 @@ def test_process_generation_offloads_blocking_work(monkeypatch, tmp_path: Path):
     import threading
 
     from backend_api.services import generation_service as gs
+    import backend_api.services.flux_warmup as warm
 
-    # Isolate job store
+    # Isolate job store + warmup module state (other tests may leave state=failed).
     jm = JobManager()
     monkeypatch.setattr(gs, "job_manager", jm)
+    warm.reset_warmup_state()
 
     fabric = tmp_path / "fabric.png"
     Image.new("RGB", (64, 64), (200, 100, 50)).save(fabric)
@@ -197,6 +199,8 @@ def test_process_generation_offloads_blocking_work(monkeypatch, tmp_path: Path):
         assert job_mid.progress >= 5
         assert job_mid.stage == "loading_model"
         assert "Initializing FLUX" in (job_mid.current_step or "") or "Loading" in (
+            job_mid.current_step or ""
+        ) or "API-process" in (job_mid.current_step or "") or "FLUX" in (
             job_mid.current_step or ""
         )
 

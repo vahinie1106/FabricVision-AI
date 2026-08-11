@@ -958,12 +958,17 @@ def configure_kaggle_flux_runtime() -> None:
 
 
 def prefetch_flux_weights() -> None:
-    """Download FLUX weights at startup so first Generate is not a multi-GB cold download.
+    """Ensure FLUX weights exist on disk for the FastAPI child process.
 
-    Loads once to verify the package, then unloads so the FastAPI child process
-    can initialize CUDA cleanly (parent must not keep a resident pipeline).
+    IMPORTANT: This runs in the run_kaggle PARENT process. Loading a full
+    FluxKontextPipeline here does NOT share memory with uvicorn. We therefore
+    only resolve/download the package to disk, then leave GPU init to the API
+    child's ``flux_warmup`` (the only in-memory load Generate can reuse).
     """
-    _log("Prefetching FLUX.1-Kontext weights (CACHE HIT/MISS logged by loader)...")
+    _log(
+        "Prefetching FLUX weights to disk only "
+        "(API child will load into memory — parent pipeline is not shared)..."
+    )
     t0 = time.perf_counter()
     try:
         if str(ROOT) not in sys.path:
@@ -979,44 +984,62 @@ def prefetch_flux_weights() -> None:
             )
             hf_id = (flux_yaml.get("hf_model_id") or "").strip() or None
 
-        def _cb(step: str, pct: int) -> None:
-            _log(f"prefetch {pct}% {step}")
-
         loader = FLUXModelLoader(
             model_path=ROOT / "models" / "flux-kontext",
             allow_fallback=False,
             hf_model_id=hf_id,
         )
-        loader.set_progress_callback(_cb)
-        pipe = loader.load()
-        if pipe is None:
-            raise RuntimeError("FLUX prefetch returned no pipeline")
-        info = loader.get_runtime_info()
-        # Free VRAM before spawning FastAPI (separate process will reload from disk).
-        try:
-            loader.park_on_cpu()
-        except Exception:
-            pass
-        loader._pipeline = None
-        try:
-            import gc
-
-            import torch
-
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
+        print(
+            f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=prefetch_parent "
+            f"pipeline_load_start (disk resolve only)",
+            flush=True,
+        )
+        pipeline_root, transformer_root = loader._resolve_model_source()
+        print(
+            f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=prefetch_parent "
+            f"pipeline_load_end model_reused=false "
+            f"cache_state={getattr(loader, '_cache_status', None)} "
+            f"pipeline_root={pipeline_root} transformer_root={transformer_root}",
+            flush=True,
+        )
         _log(
-            f"FLUX prefetch done in {time.perf_counter() - t0:.1f}s "
-            f"cache={info.get('cache_status')} init_s={info.get('init_time_s')} "
-            f"download_s={info.get('download_time_s')} offload={info.get('offload_strategy')} "
-            f"(pipeline unloaded for API child)"
+            f"FLUX disk prefetch done in {time.perf_counter() - t0:.1f}s "
+            f"cache={getattr(loader, '_cache_status', None)} "
+            f"path={pipeline_root} "
+            f"(no parent GPU residency — API warmup owns in-memory load)"
         )
     except Exception as exc:
         _log(f"ERROR: FLUX prefetch failed: {type(exc).__name__}: {exc}")
         raise
+
+
+def wait_api_flux_ready(*, timeout_s: float = 900.0) -> Dict[str, Any]:
+    """Poll /api/v1/flux-status until the API child has FLUX in memory."""
+    url = "http://127.0.0.1:8000/api/v1/flux-status"
+    deadline = time.perf_counter() + timeout_s
+    last: Dict[str, Any] = {}
+    while time.perf_counter() < deadline:
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                body = resp.read(64_000).decode("utf-8", errors="replace")
+                last = json.loads(body)
+        except Exception as exc:
+            last = {"error": str(exc), "ready": False}
+        if last.get("ready") or last.get("in_memory"):
+            _log(
+                f"API FLUX ready pid={last.get('api_pid') or last.get('pid')} "
+                f"state={last.get('state')} cache={((last.get('result') or {}).get('cache_status'))}"
+            )
+            return last
+        state = last.get("state")
+        _log(f"Waiting for API-process FLUX warmup... state={state}")
+        if state == "failed":
+            raise RuntimeError(last.get("error") or "API FLUX warmup failed")
+        time.sleep(2.0)
+    raise TimeoutError(
+        f"API FLUX warmup not ready within {timeout_s:.0f}s last={last}"
+    )
 
 
 def main() -> int:
@@ -1173,6 +1196,23 @@ def main() -> int:
         wait_http("http://127.0.0.1:8000/docs", "Swagger /docs")
         wait_http("http://127.0.0.1:8000/openapi.json", "OpenAPI JSON")
         wait_http("http://127.0.0.1:8000/api/v1/openapi.json", "OpenAPI JSON (v1)")
+        # Parent prefetch only fills disk. Block until THIS API process has FLUX
+        # resident so Generate does not sit 10+ minutes at 14% reloading.
+        if os.environ.get("FLUX_WARMUP_ON_STARTUP", "true").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        ):
+            try:
+                wait_api_flux_ready(
+                    timeout_s=float(os.environ.get("FLUX_WARMUP_WAIT_S", "900"))
+                )
+            except Exception as flux_ready_exc:
+                _log(
+                    f"WARNING: API FLUX warmup not confirmed: {flux_ready_exc} "
+                    "(Generate may cold-load in the API process)"
+                )
         root_code = wait_http("http://127.0.0.1:8000/", "Gateway frontend /")
         wait_http("http://127.0.0.1:8000/about", "Gateway frontend /about")
 

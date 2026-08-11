@@ -541,6 +541,13 @@ class FLUXModelLoader:
                 self._reuse_count,
             )
             print(
+                f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=loader "
+                f"loader_instance={id(self)} "
+                f"cache_state={self._cache_status} pipeline_exists=true "
+                f"pipeline_load_end model_reused=true",
+                flush=True,
+            )
+            print(
                 f"[FLUX] REUSE pipeline resident=True reuse_count={self._reuse_count}",
                 flush=True,
             )
@@ -551,6 +558,13 @@ class FLUXModelLoader:
             self.logger.info("Pytest environment detected; skipping Kontext weight load.")
             return None
 
+        print(
+            f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=loader "
+            f"loader_instance={id(self)} cache_state=pending "
+            f"pipeline_exists=false pipeline_load_start model_reused=false",
+            flush=True,
+        )
+
         import threading
 
         t0 = self._mark("MODEL_INIT", time.perf_counter())
@@ -559,7 +573,8 @@ class FLUXModelLoader:
         vram_before = self._gpu_vram_mb()
         print(
             f"[FLUX] START pipeline initialization device={target_device} "
-            f"gpu_vram_mb={vram_before:.0f} cuda={bool(torch and torch.cuda.is_available())}",
+            f"gpu_vram_mb={vram_before:.0f} cuda={bool(torch and torch.cuda.is_available())} "
+            f"pid={os.getpid()}",
             flush=True,
         )
 
@@ -581,9 +596,18 @@ class FLUXModelLoader:
         hb.start()
 
         try:
-            return self._load_after_heartbeat_start(
+            result = self._load_after_heartbeat_start(
                 t0=t0, target_device=target_device
             )
+            print(
+                f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=loader "
+                f"loader_instance={id(self)} "
+                f"cache_state={self._cache_status} "
+                f"pipeline_exists={result is not None} "
+                f"pipeline_load_end model_reused=false",
+                flush=True,
+            )
+            return result
         finally:
             stop_hb.set()
             hb.join(timeout=2.0)

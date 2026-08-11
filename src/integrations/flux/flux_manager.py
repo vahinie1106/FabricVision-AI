@@ -36,11 +36,24 @@ class FluxManager:
 
     def load(self, progress_callback: ProgressCallback = None) -> Any | None:
         """Load FLUX.1-Kontext weights into memory (reuses resident pipeline)."""
+        import os
+
         cb = progress_callback if progress_callback is not None else self.progress_callback
         with self._load_lock:
-            if self.loader is not None and getattr(self.loader, "pipeline", None) is not None:
+            pipe_exists = (
+                self.loader is not None
+                and getattr(self.loader, "pipeline", None) is not None
+            )
+            print(
+                f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=flux_manager "
+                f"loader_instance={id(self.loader) if self.loader else None} "
+                f"cache_state={'in_memory' if pipe_exists else 'need_from_pretrained'} "
+                f"pipeline_exists={pipe_exists} "
+                f"{'pipeline_load_end model_reused=true' if pipe_exists else 'pipeline_load_start model_reused=false'}",
+                flush=True,
+            )
+            if pipe_exists:
                 self.logger.info("[FLUX] Reusing loaded Kontext pipeline via FluxManager")
-                # Touch loader.load() so reuse counters / logs stay consistent
                 return self.loader.load(progress_callback=cb)
 
             self.logger.info(
@@ -58,6 +71,14 @@ class FluxManager:
             )
             self.logger.info("FLUX model ID: %s", self.loader.hf_model_id)
             pipeline = self.loader.load(progress_callback=cb)
+            print(
+                f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=flux_manager "
+                f"loader_instance={id(self.loader)} "
+                f"cache_state={getattr(self.loader, '_cache_status', None)} "
+                f"pipeline_exists={pipeline is not None} "
+                f"pipeline_load_end model_reused=false",
+                flush=True,
+            )
             if pipeline is not None:
                 self.logger.info("[FLUX] Model initialization completed via FluxManager")
             return pipeline

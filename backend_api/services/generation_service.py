@@ -101,6 +101,11 @@ def _process_generation_sync(
         )
 
         if already_loaded:
+            print(
+                f"[FLUX GENERATE] pid={os.getpid()} waiting_for_warmup=false "
+                f"warmup_state=ready model_reused=true",
+                flush=True,
+            )
             job_manager.update_job(
                 job_id,
                 status="processing",
@@ -112,12 +117,119 @@ def _process_generation_sync(
             except Exception:
                 pass
         else:
+            # Parent-process prefetch does NOT populate this process. Wait for
+            # API-process warmup (or let Generate become the single loader).
             job_manager.update_job(
                 job_id,
                 status="processing",
                 progress=8,
-                current_step="Initializing FLUX (cache check / dependencies)",
+                current_step="Checking API-process FLUX residency",
             )
+            try:
+                from backend_api.services.flux_warmup import (
+                    get_warmup_status,
+                    wait_until_flux_ready,
+                    warm_flux_in_api_process,
+                )
+
+                warm_status = get_warmup_status()
+                print(
+                    f"[FLUX GENERATE] pid={os.getpid()} waiting_for_warmup=true "
+                    f"warmup_state={warm_status.get('state')} model_reused=false",
+                    flush=True,
+                )
+                print(
+                    f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id={job_id} "
+                    f"loader_instance={id(getattr(model_manager.flux_manager, 'loader', None))} "
+                    f"cache_state=pending_api_load pipeline_exists=false "
+                    f"pipeline_load_start model_reused=false",
+                    flush=True,
+                )
+                # Kick warmup only when idle (not when already failed — surface that).
+                if warm_status.get("state") == "idle" and os.environ.get(
+                    "FLUX_WARMUP_ON_STARTUP", "true"
+                ).strip().lower() not in ("0", "false", "no", "off"):
+                    threading.Thread(
+                        target=lambda: warm_flux_in_api_process(),
+                        name="flux-warmup-kick",
+                        daemon=True,
+                    ).start()
+
+                def _wait_progress(step: str, pct: int) -> None:
+                    job_manager.update_job(
+                        job_id,
+                        status="processing",
+                        progress=max(5, min(17, int(pct))),
+                        current_step=step,
+                    )
+
+                warm_status = wait_until_flux_ready(
+                    timeout_s=float(os.environ.get("FLUX_WARMUP_WAIT_S", "900")),
+                    progress_callback=_wait_progress,
+                )
+                already_loaded = (
+                    model_manager.flux_manager.loader is not None
+                    and getattr(model_manager.flux_manager.loader, "pipeline", None)
+                    is not None
+                    and model_manager.active_model == "flux"
+                )
+                print(
+                    f"[FLUX GENERATE] pid={os.getpid()} waiting_for_warmup=false "
+                    f"warmup_state={warm_status.get('state')} "
+                    f"model_reused={already_loaded}",
+                    flush=True,
+                )
+                if warm_status.get("state") == "failed" and not already_loaded:
+                    err = warm_status.get("error") or "unknown warmup failure"
+                    # Surface the failure in the live step, clear sticky FAILED, then
+                    # allow Generate to become the sole on-demand loader (lock-serialized).
+                    # This avoids a forever-stuck 14% wait on a dead warmup, and avoids
+                    # leaving the job failed without a retry path.
+                    job_manager.update_job(
+                        job_id,
+                        status="processing",
+                        progress=8,
+                        current_step=(
+                            f"API warmup failed ({err}); loading FLUX on demand"
+                        ),
+                    )
+                    print(
+                        f"[FLUX GENERATE] pid={os.getpid()} waiting_for_warmup=false "
+                        f"warmup_state=failed model_reused=false "
+                        f"action=on_demand_load error={err}",
+                        flush=True,
+                    )
+                    from backend_api.services.flux_warmup import reset_warmup_state
+
+                    reset_warmup_state()
+                elif already_loaded:
+                    job_manager.update_job(
+                        job_id,
+                        status="processing",
+                        progress=12,
+                        current_step="FLUX READY (API warmup) — skipping reload",
+                    )
+                else:
+                    # Warmup skipped/disabled — Generate becomes the sole loader.
+                    job_manager.update_job(
+                        job_id,
+                        status="processing",
+                        progress=8,
+                        current_step="Initializing FLUX (cache check / dependencies)",
+                    )
+            except Exception as wait_exc:
+                print(
+                    f"[FLUX GENERATE] pid={os.getpid()} waiting_for_warmup=error "
+                    f"warmup_state=unknown model_reused=false "
+                    f"error={type(wait_exc).__name__}: {wait_exc}",
+                    flush=True,
+                )
+                job_manager.update_job(
+                    job_id,
+                    status="processing",
+                    progress=8,
+                    current_step="Initializing FLUX (cache check / dependencies)",
+                )
 
         exec_mode = os.environ.get("FLUX_EXECUTION_MODE", "local").strip().lower()
         t_model = _stage_log("MODEL LOAD", t_job)
@@ -171,6 +283,14 @@ def _process_generation_sync(
             model_manager.flux_manager.progress_callback = on_progress
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
+            print(
+                f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id={job_id} "
+                f"loader_instance={id(getattr(model_manager.flux_manager, 'loader', None))} "
+                f"cache_state=switch_to_flux "
+                f"pipeline_exists={bool(getattr(getattr(model_manager.flux_manager, 'loader', None), 'pipeline', None))} "
+                f"pipeline_load_start model_reused={already_loaded}",
+                flush=True,
+            )
             try:
                 model_manager.switch_to("flux")
             except Exception as load_exc:
@@ -179,6 +299,20 @@ def _process_generation_sync(
                 ) from load_exc
 
             loader = model_manager.flux_manager.loader
+            reused = already_loaded or bool(getattr(loader, "_reuse_count", 0))
+            print(
+                f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id={job_id} "
+                f"loader_instance={id(loader) if loader else None} "
+                f"cache_state={getattr(loader, '_cache_status', None)} "
+                f"pipeline_exists={bool(getattr(loader, 'pipeline', None))} "
+                f"pipeline_load_end model_reused={reused}",
+                flush=True,
+            )
+            print(
+                f"[FLUX GENERATE] pid={os.getpid()} waiting_for_warmup=false "
+                f"warmup_state=done model_reused={reused}",
+                flush=True,
+            )
             if loader is None or getattr(loader, "pipeline", None) is None:
                 raise RuntimeError(
                     "MODEL_LOAD_ERROR: FLUX.1-Kontext pipeline is not initialized after load. "

@@ -46,6 +46,7 @@ def map_step_to_stage(current_step: Optional[str], status: Optional[str] = None)
         (("conditioning",), "preparing_conditioning"),
         (("preparing fabric", "fabric appearance"), "preparing_fabric"),
         # Model-load substages must win over bare "initializ" (e.g. "Initializing FLUX").
+        (("api warmup failed", "loading flux on demand"), "loading_model"),
         (
             (
                 "reusing",
@@ -60,6 +61,10 @@ def map_step_to_stage(current_step: Optional[str], status: Optional[str] = None)
                 "cache",
                 "initializing flux",
                 "in-memory",
+                "api-process flux",
+                "api warmup",
+                "checking api-process",
+                "waiting for api-process",
             ),
             "loading_model",
         ),
