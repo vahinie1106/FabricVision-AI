@@ -29,10 +29,10 @@ ProgressCallback = Optional[Callable[[str, int], None]]
 # under model_cpu_offload on RTX 3050. 128 preserves full prompt semantics with far less work.
 DEFAULT_MAX_SEQUENCE_LENGTH = 128
 
-# Kaggle T4 (~15GB): real Kontext 1024 OOMs; 768 is the demo default.
-# Override via FLUX_GENERATION_RESOLUTION (FLUX_PRODUCTION_SIZE alias).
-ALLOWED_FLUX_GENERATION_RESOLUTIONS = (512, 640, 768, 1024)
-DEFAULT_FLUX_GENERATION_RESOLUTION = 768
+# Safe completion-first default. 768 is opt-in via FLUX_GENERATION_RESOLUTION /
+# FLUX_ALLOW_HIGH_RES when free headroom is measured.
+ALLOWED_FLUX_GENERATION_RESOLUTIONS = (384, 512, 640, 768, 1024)
+DEFAULT_FLUX_GENERATION_RESOLUTION = 512
 
 
 def resolve_flux_generation_resolution(default: Optional[int] = None) -> int:
@@ -576,6 +576,12 @@ class FLUXInferenceEngine:
             )
 
             self._clear_cuda()
+            from src.features.custom_generator.inference.flux_vram_policy import (
+                log_vram,
+                recommend_oom_fallback,
+            )
+
+            log_vram("before generation")
             _progress("Generating", 50)
             t_diff_start = _flux_mark("inference", time.perf_counter())
             last_step_t = t_diff_start
@@ -607,8 +613,93 @@ class FLUXInferenceEngine:
                     f"Cannot run FLUX Kontext without memory-efficient SDPA ({err}). "
                     "MATH attention would OOM at 1024 on 16GB-class GPUs."
                 )
-            with transformer_only_memory_efficient_attention(pipeline) as attn_runtime:
-                output = pipeline(**kwargs)
+
+            def _run_pipeline_once(pipe_kwargs: Dict[str, Any]):
+                log_vram("before transformer inference")
+                with transformer_only_memory_efficient_attention(pipeline) as attn_runtime:
+                    out = pipeline(**pipe_kwargs)
+                return out, attn_runtime
+
+            try:
+                output, attn_runtime = _run_pipeline_once(kwargs)
+            except Exception as denoise_exc:
+                if not self._is_cuda_oom(denoise_exc):
+                    raise
+                fallback = recommend_oom_fallback(
+                    height=int(height),
+                    width=int(width),
+                    num_inference_steps=int(num_inference_steps),
+                )
+                self.logger.error(
+                    "[VRAM] OOM during transformer/diffusion at %sx%s steps=%s: %s",
+                    width,
+                    height,
+                    num_inference_steps,
+                    denoise_exc,
+                )
+                log_vram("after OOM before cleanup")
+                self._park_pipeline(pipeline)
+                log_vram("after cleanup")
+                if fallback is None:
+                    raise
+                self.logger.warning(
+                    "[VRAM] Retrying generation once at safer settings %sx%s steps=%s "
+                    "(was %sx%s steps=%s)",
+                    fallback["width"],
+                    fallback["height"],
+                    fallback["num_inference_steps"],
+                    width,
+                    height,
+                    num_inference_steps,
+                )
+                height = int(fallback["height"])
+                width = int(fallback["width"])
+                num_inference_steps = int(fallback["num_inference_steps"])
+                kwargs["height"] = height
+                kwargs["width"] = width
+                kwargs["num_inference_steps"] = num_inference_steps
+                if "max_area" in kwargs:
+                    kwargs["max_area"] = int(height) * int(width)
+                # Rebuild step callback bounds for the safer step count.
+                def step_callback_retry(pipe, step_index, timestep, callback_kwargs):
+                    nonlocal last_step_t
+                    now = time.perf_counter()
+                    step_dt = now - last_step_t
+                    last_step_t = now
+                    self.logger.info(
+                        "[FLUX] Diffusion step %s/%s (%.2fs)",
+                        step_index + 1,
+                        num_inference_steps,
+                        step_dt,
+                    )
+                    pct = 50 + int(35 * (step_index + 1) / max(1, num_inference_steps))
+                    _progress(
+                        f"Generating (retry {step_index + 1}/{num_inference_steps})",
+                        pct,
+                    )
+                    return callback_kwargs
+
+                if "callback_on_step_end" in kwargs:
+                    kwargs["callback_on_step_end"] = step_callback_retry
+                _progress(
+                    f"Retrying after CUDA OOM at {width}x{height}",
+                    48,
+                )
+                self._clear_cuda()
+                log_vram("before generation retry")
+                try:
+                    output, attn_runtime = _run_pipeline_once(kwargs)
+                except Exception as retry_exc:
+                    self._park_pipeline(pipeline)
+                    log_vram("after retry cleanup")
+                    if self._is_cuda_oom(retry_exc):
+                        raise RuntimeError(
+                            f"CUDA out of memory during FLUX transformer inference "
+                            f"even after fallback to {width}x{height} "
+                            f"steps={num_inference_steps}: {retry_exc}"
+                        ) from retry_exc
+                    raise
+
             attn_diag = merge_runtime_attention_state(attn_diag, attn_runtime)
             if self.model_loader is not None:
                 try:
@@ -628,11 +719,22 @@ class FLUXInferenceEngine:
             diffusion_s = round(t_diff_end - t_diff_start, 3)
             _flux_mark("inference", t_diff_start, end=True)
 
+            log_vram("before VAE decode")
             _progress("Decoding image", 88)
             t_dec = _flux_mark("decoding", time.perf_counter())
-            image = output.images[0]
+            try:
+                image = output.images[0]
+            except Exception as dec_exc:
+                if self._is_cuda_oom(dec_exc):
+                    log_vram("OOM during VAE decode")
+                    self._park_pipeline(pipeline)
+                    raise RuntimeError(
+                        f"CUDA out of memory during FLUX VAE decode: {dec_exc}"
+                    ) from dec_exc
+                raise
             decode_s = round(time.perf_counter() - t_dec, 3)
             _flux_mark("decoding", t_dec, end=True)
+            log_vram("after VAE decode")
 
             # Raw model output before any UI path — for blur root-cause isolation
             if save_raw_path:

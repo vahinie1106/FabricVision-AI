@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from src.common.models.model_manager import ModelManager
 # Shared VRAM-aware model orchestrator (same instance used by try-on / semantic services)
 model_manager = ModelManager()
 logger = logging.getLogger("fabricvision.api.generation")
+
+# Single-flight GPU generation — concurrent jobs on one T4 cause immediate OOM.
+_generation_lock = threading.Lock()
 
 
 def _stage_log(label: str, t0: float, *, end: bool = False, extra: str = "") -> float:
@@ -56,6 +60,23 @@ def _process_generation_sync(
     t_job = time.perf_counter()
     _stage_log("GENERATION START", t_job, extra=f"job_id={job_id}")
     loader = None
+    acquired = _generation_lock.acquire(blocking=False)
+    if not acquired:
+        job_manager.update_job(
+            job_id,
+            status="processing",
+            progress=5,
+            current_step="Waiting for GPU (another generation is running)",
+        )
+        _stage_log("GPU LOCK WAIT", t_job, extra=f"job_id={job_id}")
+        _generation_lock.acquire(blocking=True)
+        acquired = True
+    try:
+        from src.features.custom_generator.inference.flux_vram_policy import log_vram
+
+        log_vram("before generation job")
+    except Exception:
+        pass
     try:
         from src.features.custom_generator.pipeline.garment_generation_pipeline import (
             GarmentGenerationConfig,
@@ -371,6 +392,15 @@ def _process_generation_sync(
                 "error_class": type(e).__name__,
             },
         )
+    finally:
+        try:
+            from src.features.custom_generator.inference.flux_vram_policy import log_vram
+
+            log_vram("after generation job cleanup")
+        except Exception:
+            pass
+        if acquired:
+            _generation_lock.release()
 
 
 async def process_generation(

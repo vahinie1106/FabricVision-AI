@@ -743,7 +743,12 @@ def print_banner(
 
 
 def configure_kaggle_flux_runtime() -> None:
-    """Set T4-friendly FLUX env defaults and optionally warm CUDA on the main thread."""
+    """Set completion-first FLUX env defaults and warm CUDA on the main thread.
+
+    Do NOT force 768×12 GPU-resident — that path OOMs on T4-class cards when
+    NF4 + Kontext activations exceed free headroom. Prefer measured policy:
+    512 Standard + VAE tiling; opt into 768 only via FLUX_ALLOW_HIGH_RES.
+    """
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     try:
@@ -757,19 +762,55 @@ def configure_kaggle_flux_runtime() -> None:
         props = torch.cuda.get_device_properties(0)
         vram_mb = props.total_memory / (1024**2)
         name = torch.cuda.get_device_name(0)
-        _log(f"GPU={name} VRAM={vram_mb:.0f}MB torch={torch.__version__}")
+        allocated = torch.cuda.memory_allocated() / (1024**2)
+        reserved = torch.cuda.memory_reserved() / (1024**2)
+        free = max(0.0, vram_mb - reserved)
+        _log(
+            f"GPU={name} total_mb={vram_mb:.0f} alloc_mb={allocated:.0f} "
+            f"reserved_mb={reserved:.0f} free_mb={free:.0f} torch={torch.__version__}"
+        )
         if vram_mb >= 14000:
-            os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "false")
-            os.environ.setdefault("FLUX_GENERATION_RESOLUTION", "768")
-            os.environ.setdefault("FLUX_STANDARD_STEPS", "12")
+            # Completion-first defaults. Operators may set FLUX_ALLOW_HIGH_RES=true
+            # and/or FLUX_GENERATION_RESOLUTION=768 after a successful smoke.
             os.environ.setdefault("FLUX_VAE_TILING", "true")
+            os.environ.setdefault("FLUX_GENERATION_RESOLUTION", "512")
+            os.environ.setdefault("FLUX_STANDARD_STEPS", "8")
+            # Demote the previous unsafe notebook default (768 + GPU-resident) unless
+            # the operator explicitly opts into high-res.
+            allow_hi = os.environ.get("FLUX_ALLOW_HIGH_RES", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if (
+                not allow_hi
+                and os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip() == "768"
+            ):
+                os.environ["FLUX_GENERATION_RESOLUTION"] = "512"
+                _log(
+                    "Demoted legacy FLUX_GENERATION_RESOLUTION=768 → 512 "
+                    "(set FLUX_ALLOW_HIGH_RES=true to keep 768)"
+                )
+            if (
+                not allow_hi
+                and os.environ.get("FLUX_STANDARD_STEPS", "").strip() == "12"
+                and os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip() in ("", "512")
+            ):
+                # 12 steps @ 512 is fine; leave it. Only demote when paired with 768 intent.
+                pass
+            # Leave FLUX_MODEL_CPU_OFFLOAD unset → loader auto (GPU-resident on
+            # ≥14GB for speed) while generation stays at 512 unless headroom allows 768.
             _log(
-                "T4/16GB+ defaults: FLUX_MODEL_CPU_OFFLOAD=false "
-                "FLUX_GENERATION_RESOLUTION=768 FLUX_STANDARD_STEPS=12"
+                "High-VRAM completion-first defaults: "
+                f"FLUX_GENERATION_RESOLUTION={os.environ.get('FLUX_GENERATION_RESOLUTION')} "
+                f"FLUX_STANDARD_STEPS={os.environ.get('FLUX_STANDARD_STEPS')} "
+                "FLUX_VAE_TILING=true (768 gated behind free headroom / FLUX_ALLOW_HIGH_RES)"
             )
         else:
             os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")
-            _log("Low-VRAM defaults: FLUX_MODEL_CPU_OFFLOAD=true")
+            os.environ.setdefault("FLUX_VAE_TILING", "true")
+            _log("Low-VRAM defaults: FLUX_MODEL_CPU_OFFLOAD=true FLUX_VAE_TILING=true")
     except Exception as exc:
         _log(f"GPU runtime probe skipped: {exc}")
 

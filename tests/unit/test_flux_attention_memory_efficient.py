@@ -305,7 +305,7 @@ def test_classify_attention_kernel_unavailable():
     assert err_type2 in ("OUT_OF_MEMORY", "CUDA_OOM")
 
 
-def test_default_generation_resolution_remains_768():
+def test_default_generation_resolution_is_512():
     from src.features.custom_generator.inference.flux_inference import (
         DEFAULT_FLUX_GENERATION_RESOLUTION,
         resolve_flux_generation_resolution,
@@ -314,8 +314,8 @@ def test_default_generation_resolution_remains_768():
 
     os.environ.pop("FLUX_GENERATION_RESOLUTION", None)
     os.environ.pop("FLUX_PRODUCTION_SIZE", None)
-    assert DEFAULT_FLUX_GENERATION_RESOLUTION == 768
-    assert resolve_flux_generation_resolution() == 768
+    assert DEFAULT_FLUX_GENERATION_RESOLUTION == 512
+    assert resolve_flux_generation_resolution() == 512
 
 
 def test_production_pipeline_wires_flux_inference_engine():

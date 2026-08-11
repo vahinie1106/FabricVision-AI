@@ -44,6 +44,7 @@ def test_high_vram_standard_defaults(monkeypatch):
         GarmentGenerationConfig,
         GarmentGenerationPipeline,
     )
+    from src.features.custom_generator.inference import flux_vram_policy as pol
 
     cfg = GarmentGenerationConfig(
         height=512,
@@ -61,11 +62,27 @@ def test_high_vram_standard_defaults(monkeypatch):
     monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_SIZE", raising=False)
     monkeypatch.delenv("FLUX_STANDARD_STEPS", raising=False)
+    monkeypatch.delenv("FLUX_ALLOW_HIGH_RES", raising=False)
+    monkeypatch.setattr(
+        pol,
+        "collect_vram_diagnostics",
+        lambda: pol.VramDiagnostics(
+            gpu_name="Tesla T4",
+            physical_total_mb=15109.0,
+            allocated_mb=11000.0,
+            reserved_mb=12000.0,
+            free_mb=3109.0,
+            max_allocated_mb=11000.0,
+            max_reserved_mb=12000.0,
+            cuda_available=True,
+        ),
+    )
 
     pipe._apply_high_vram_standard_defaults("standard")
-    assert pipe.config.height == 768
-    assert pipe.config.width == 768
-    assert pipe.config.num_inference_steps == 12
+    # Completion-first: do NOT auto-upgrade to 768 when free headroom is low.
+    assert pipe.config.height == 512
+    assert pipe.config.width == 512
+    assert pipe.config.num_inference_steps == 8
     assert pipe.config.guidance_scale == 3.0
 
 
@@ -74,6 +91,7 @@ def test_low_vram_keeps_standard_preset(monkeypatch):
         GarmentGenerationConfig,
         GarmentGenerationPipeline,
     )
+    from src.features.custom_generator.inference import flux_vram_policy as pol
 
     cfg = GarmentGenerationConfig(
         height=512,
@@ -87,6 +105,22 @@ def test_low_vram_keeps_standard_preset(monkeypatch):
     pipe.config = cfg
     pipe.logger = MagicMock()
     monkeypatch.setattr(pipe, "_gpu_vram_mb", lambda: 6144.0)
+    monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
+    monkeypatch.delenv("FLUX_STANDARD_STEPS", raising=False)
+    monkeypatch.setattr(
+        pol,
+        "collect_vram_diagnostics",
+        lambda: pol.VramDiagnostics(
+            gpu_name="NVIDIA GeForce RTX 3050",
+            physical_total_mb=6144.0,
+            allocated_mb=2000.0,
+            reserved_mb=2500.0,
+            free_mb=3644.0,
+            max_allocated_mb=2000.0,
+            max_reserved_mb=2500.0,
+            cuda_available=True,
+        ),
+    )
 
     pipe._apply_high_vram_standard_defaults("standard")
     assert pipe.config.height == 512

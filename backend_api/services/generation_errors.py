@@ -31,9 +31,13 @@ def classify_generation_error(exc: BaseException) -> Tuple[str, str, str]:
     if "outofmemory" in name.lower() or (
         "cuda" in lower and ("out of memory" in lower or "oom" in lower)
     ):
-        stage = "preencode" if any(k in lower for k in ("encode", "t5", "clip", "prompt")) else "diffusion"
-        if "vae" in lower or "decode" in lower:
+        stage = "diffusion"
+        if any(k in lower for k in ("encode", "t5", "clip", "prompt encoding", "prompt")):
+            stage = "preencode"
+        if any(k in lower for k in ("vae", "decode")):
             stage = "vae"
+        if "transformer inference" in lower:
+            stage = "diffusion"
         return "OUT_OF_MEMORY", stage, combined
 
     if any(k in lower for k in ("401", "403", "unauthorized", "gated", "access to model", "auth")):

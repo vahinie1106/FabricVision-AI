@@ -790,7 +790,9 @@ class FLUXModelLoader:
                 # Offload policy:
                 # - FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB path)
                 # - FLUX_MODEL_CPU_OFFLOAD=false → GPU-resident
-                # - auto: offload on <14GB; GPU-resident on T4/16GB+ (NF4 or full)
+                # - auto: offload on <14GB; GPU-resident on ≥14GB for load speed.
+                #   Generation resolution is gated separately by flux_vram_policy
+                #   (completion-first; 768 is NOT assumed safe on T4).
                 offload_env = os.environ.get("FLUX_MODEL_CPU_OFFLOAD", "").strip().lower()
                 physical_mb = self._gpu_vram_mb()
                 prefer_offload = True
@@ -799,8 +801,6 @@ class FLUXModelLoader:
                 elif offload_env in ("1", "true", "yes", "on"):
                     prefer_offload = True
                 else:
-                    # Auto: T4 15GB / 16GB+ should keep NF4 resident - CPU offload
-                    # thrash was measured at multi-minute per diffusion step on 6GB.
                     prefer_offload = physical_mb < 14000
 
                 self._progress("Configuring device / offload", 16)

@@ -270,47 +270,61 @@ class GarmentGenerationPipeline:
 
     def _apply_high_vram_standard_defaults(self, mode_key: str) -> None:
         """
-        On Tesla T4 / 16GB+ GPUs, Standard must not inherit the RTX 3050
-        soft 512×3 preset. Env overrides always win.
+        Completion-first Standard policy from measured VRAM headroom.
+
+        Do NOT assume T4 ≡ 768×768 GPU-resident. That path OOMs when NF4 +
+        Kontext activations exceed free headroom. Env overrides still win.
         """
         if mode_key != "standard":
             return
-        vram = self._gpu_vram_mb()
-        if vram < 14000:
-            self.logger.info(
-                "[FLUX] Standard low-VRAM path (%.0f MB): %sx%s steps=%s",
-                vram,
-                self.config.width,
-                self.config.height,
-                self.config.num_inference_steps,
-            )
-            return
 
-        res_forced = bool(
-            os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip()
-            or os.environ.get("FLUX_PRODUCTION_SIZE", "").strip()
+        from src.features.custom_generator.inference.flux_vram_policy import (
+            log_vram,
+            select_standard_generation_policy,
         )
-        steps_forced = bool(os.environ.get("FLUX_STANDARD_STEPS", "").strip())
 
-        if not res_forced:
-            self.config.height = 768
-            self.config.width = 768
-        if not steps_forced:
-            # 12 steps: quality leap vs 3 without the 20–30 step ladder cost.
-            self.config.num_inference_steps = max(self.config.num_inference_steps, 12)
-        if self.config.guidance_scale < 3.0:
-            self.config.guidance_scale = 3.0
+        diag = log_vram("before_standard_policy")
+        offload = None
+        loader = getattr(self, "model_loader", None) or getattr(
+            getattr(self, "inference_engine", None), "model_loader", None
+        )
+        if loader is not None:
+            offload = getattr(loader, "_offload_strategy", None)
+
+        policy = select_standard_generation_policy(
+            physical_mb=diag.physical_total_mb or self._gpu_vram_mb(),
+            free_mb=diag.free_mb,
+            offload_strategy=offload,
+        )
+
+        self.config.height = int(policy.height)
+        self.config.width = int(policy.width)
+        self.config.num_inference_steps = int(policy.num_inference_steps)
+        if self.config.guidance_scale < float(policy.guidance_scale):
+            self.config.guidance_scale = float(policy.guidance_scale)
+
+        if policy.enable_vae_tiling:
+            os.environ.setdefault("FLUX_VAE_TILING", "true")
 
         self.logger.info(
-            "[FLUX] Standard high-VRAM path (%.0f MB): %sx%s steps=%s guidance=%s "
-            "(T4-quality defaults; override via FLUX_GENERATION_RESOLUTION / "
-            "FLUX_STANDARD_STEPS)",
-            vram,
+            "[FLUX] Standard policy profile=%s %sx%s steps=%s guidance=%s "
+            "prefer_offload=%s reason=%s gpu=%s",
+            policy.profile,
             self.config.width,
             self.config.height,
             self.config.num_inference_steps,
             self.config.guidance_scale,
+            policy.prefer_model_cpu_offload,
+            policy.reason,
+            diag.gpu_name,
         )
+        try:
+            self._vram_policy = {
+                **policy.__dict__,
+                "diagnostics": diag.as_dict(),
+            }
+        except Exception:
+            self._vram_policy = {"profile": policy.profile, "reason": policy.reason}
 
     def run(
         self,
@@ -348,6 +362,14 @@ class GarmentGenerationPipeline:
             raise RuntimeError(
                 "Fabric reference image is required for FLUX.1-Kontext garment generation."
             )
+
+        # Re-evaluate Standard settings with live free VRAM after model residency.
+        try:
+            mode_key = normalize_generation_mode(self.config.generation_mode)
+            if mode_key == "standard":
+                self._apply_high_vram_standard_defaults("standard")
+        except Exception as pol_exc:
+            self.logger.warning("Runtime VRAM policy refresh skipped: %s", pol_exc)
 
         # Keep fabric in memory — avoid re-reading from disk during conditioning.
         fabric_image = reference_image
@@ -551,6 +573,7 @@ class GarmentGenerationPipeline:
             "image_path": str(image_path),
             "raw_image_path": str(raw_path),
             "pipeline_timings": timings,
+            "vram_policy": getattr(self, "_vram_policy", None),
         }
         serialize_json(metadata, metadata_dir / f"{garment_id}.json")
 

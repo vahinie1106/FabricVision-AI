@@ -61,13 +61,14 @@ standard:
   measured_runtime_s_cold: 603.5
   note: "low-VRAM default; high-VRAM auto-upgrade applies on T4"
 
-# Explicit T4 Standard (also selected automatically when VRAM>=14GB)
+# Explicit T4 Standard (opt-in via FLUX_ALLOW_HIGH_RES / measured free headroom).
+# Default completion-first Standard on ~15GB is 512×8 — see flux_vram_policy.py.
 standard_t4:
   height: 768
   width: 768
   num_inference_steps: 12
   guidance_scale: 3.0
-  measured_runtime_note: "Tesla T4 15GB NF4 GPU-resident target"
+  measured_runtime_note: "opt-in only; GPU-resident 768 OOM'd without free headroom"
 
 # Production — Kaggle T4-safe square size (1024 OOMs; override via FLUX_GENERATION_RESOLUTION)
 production:
