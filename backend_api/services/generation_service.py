@@ -84,7 +84,7 @@ def _process_generation_sync(
                 job_id,
                 status="processing",
                 progress=12,
-                current_step="Reusing loaded FLUX.1-Kontext pipeline",
+                current_step="FLUX READY (in-memory hit) — skipping reload",
             )
             try:
                 model_manager.flux_manager.recover_after_oom()
@@ -95,7 +95,7 @@ def _process_generation_sync(
                 job_id,
                 status="processing",
                 progress=8,
-                current_step="Loading model",
+                current_step="Initializing FLUX (cache check / dependencies)",
             )
 
         exec_mode = os.environ.get("FLUX_EXECUTION_MODE", "local").strip().lower()
@@ -188,13 +188,13 @@ def _process_generation_sync(
                 job_manager.update_job(
                     job_id,
                     progress=15,
-                    current_step="Reusing loaded FLUX.1-Kontext pipeline",
+                    current_step="FLUX READY (in-memory hit) — generating",
                 )
             else:
                 job_manager.update_job(
                     job_id,
                     progress=18,
-                    current_step="FLUX READY",
+                    current_step="FLUX READY (in-memory) — starting fabric prep",
                 )
 
         config = GarmentGenerationConfig(

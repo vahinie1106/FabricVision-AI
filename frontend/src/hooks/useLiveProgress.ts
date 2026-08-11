@@ -101,12 +101,21 @@ export function useLiveProgress(kind: WorkflowKind) {
         kind === "analysis"
           ? Math.max(s.percent, Math.min(99, backendPct || stage.percent))
           : Math.max(s.percent, Math.min(99, backendPct > 0 ? backendPct : s.percent));
+      // Prefer the real backend step always. Truncating/discarding long steps
+      // previously forced the UI back to the generic stage label ("Loading model")
+      // while FLUX was still downloading / assembling for several minutes.
+      const label =
+        currentStep && currentStep.trim()
+          ? currentStep.trim().length > 96
+            ? `${currentStep.trim().slice(0, 93)}...`
+            : currentStep.trim()
+          : stage.label;
       return {
         ...s,
         active: true,
         stages,
         stageIndex: idx,
-        stageLabel: currentStep && currentStep.length < 60 ? currentStep : stage.label,
+        stageLabel: label,
         percent: nextPercent,
       };
     });

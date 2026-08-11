@@ -14,6 +14,16 @@ def test_download_step_maps_to_loading_model():
         "loading_model"
     )
     assert map_step_to_stage("FLUX READY", "processing") == "loading_model"
+    assert map_step_to_stage(
+        "Initializing FLUX (cache check / dependencies)", "processing"
+    ) == "loading_model"
+    assert map_step_to_stage(
+        "Loading FluxKontextPipeline (T5/CLIP/VAE) - may take several minutes",
+        "processing",
+    ) == "loading_model"
+    assert map_step_to_stage(
+        "FLUX READY (in-memory hit) — skipping reload", "processing"
+    ) == "loading_model"
 
 
 def test_loader_reuses_pipeline_without_reload(tmp_path: Path):

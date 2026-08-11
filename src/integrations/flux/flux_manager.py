@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -29,46 +30,51 @@ class FluxManager:
         self.device_manager = DeviceManager()
         self.loader: Optional[Any] = None
         self.progress_callback: ProgressCallback = None
+        # Prevent warmup + Generate (or duplicate requests) from racing into
+        # multiple concurrent from_pretrained() calls.
+        self._load_lock = threading.Lock()
 
     def load(self, progress_callback: ProgressCallback = None) -> Any | None:
         """Load FLUX.1-Kontext weights into memory (reuses resident pipeline)."""
         cb = progress_callback if progress_callback is not None else self.progress_callback
-        if self.loader is not None and getattr(self.loader, "pipeline", None) is not None:
-            self.logger.info("[FLUX] Reusing loaded Kontext pipeline via FluxManager")
-            # Touch loader.load() so reuse counters / logs stay consistent
-            return self.loader.load(progress_callback=cb)
+        with self._load_lock:
+            if self.loader is not None and getattr(self.loader, "pipeline", None) is not None:
+                self.logger.info("[FLUX] Reusing loaded Kontext pipeline via FluxManager")
+                # Touch loader.load() so reuse counters / logs stay consistent
+                return self.loader.load(progress_callback=cb)
 
-        self.logger.info(
-            "[FLUX] Model initialization started via FluxManager from %s",
-            self.model_path,
-        )
-        from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
+            self.logger.info(
+                "[FLUX] Model initialization started via FluxManager from %s",
+                self.model_path,
+            )
+            from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
 
-        self.loader = FLUXModelLoader(
-            model_path=self.model_path,
-            device=self.device,
-            precision=self.precision,
-            allow_fallback=self.allow_fallback,
-            hf_model_id=self.hf_model_id,
-        )
-        self.logger.info("FLUX model ID: %s", self.loader.hf_model_id)
-        pipeline = self.loader.load(progress_callback=cb)
-        if pipeline is not None:
-            self.logger.info("[FLUX] Model initialization completed via FluxManager")
-        return pipeline
+            self.loader = FLUXModelLoader(
+                model_path=self.model_path,
+                device=self.device,
+                precision=self.precision,
+                allow_fallback=self.allow_fallback,
+                hf_model_id=self.hf_model_id,
+            )
+            self.logger.info("FLUX model ID: %s", self.loader.hf_model_id)
+            pipeline = self.loader.load(progress_callback=cb)
+            if pipeline is not None:
+                self.logger.info("[FLUX] Model initialization completed via FluxManager")
+            return pipeline
 
     def unload(self) -> None:
         """Unload FLUX pipeline and free GPU memory."""
-        if self.loader is not None:
-            self.logger.info("Unloading FLUX.1-Kontext pipeline...")
-            if hasattr(self.loader, "park_on_cpu"):
-                try:
-                    self.loader.park_on_cpu()
-                except Exception as exc:
-                    self.logger.warning("park_on_cpu during unload failed: %s", exc)
-            self.loader._pipeline = None
-            self.loader = None
-            self.device_manager.clear_vram()
+        with self._load_lock:
+            if self.loader is not None:
+                self.logger.info("Unloading FLUX.1-Kontext pipeline...")
+                if hasattr(self.loader, "park_on_cpu"):
+                    try:
+                        self.loader.park_on_cpu()
+                    except Exception as exc:
+                        self.logger.warning("park_on_cpu during unload failed: %s", exc)
+                self.loader._pipeline = None
+                self.loader = None
+                self.device_manager.clear_vram()
 
     def recover_after_oom(self) -> None:
         """Park resident FLUX modules on CPU so the next job can start cleanly."""

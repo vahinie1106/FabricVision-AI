@@ -42,11 +42,28 @@ def map_step_to_stage(current_step: Optional[str], status: Optional[str] = None)
         (("validat",), "validating"),
         (("decoding", "decode"), "decoding"),
         (("generating", "diffusion", "step "), "generating"),
-        (("encoding prompt", "prompt"), "encoding_prompt"),
+        (("encoding prompt",), "encoding_prompt"),
         (("conditioning",), "preparing_conditioning"),
         (("preparing fabric", "fabric appearance"), "preparing_fabric"),
-        (("reusing", "loading model", "loading flux", "flux ready", "download"), "loading_model"),
-        (("connect", "remote", "initializ", "waiting"), "initializing"),
+        # Model-load substages must win over bare "initializ" (e.g. "Initializing FLUX").
+        (
+            (
+                "reusing",
+                "loading model",
+                "loading flux",
+                "flux ready",
+                "download",
+                "downloading",
+                "transformer",
+                "pipeline",
+                "offload",
+                "cache",
+                "initializing flux",
+                "in-memory",
+            ),
+            "loading_model",
+        ),
+        (("connect", "remote", "waiting for worker", "queued"), "initializing"),
     )
     for keys, stage in rules:
         if any(k in lower for k in keys):

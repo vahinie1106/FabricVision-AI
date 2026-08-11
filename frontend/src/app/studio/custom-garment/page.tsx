@@ -547,6 +547,7 @@ export default function CustomGarmentGenerator() {
           <div className="p-5 flex-1 flex flex-col space-y-6">
             {(isGenerating || isDone || progress.failed) && (
               <LiveProgress
+                compact
                 stages={progress.stages}
                 stageIndex={progress.stageIndex}
                 stageLabel={progress.stageLabel}

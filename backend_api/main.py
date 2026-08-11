@@ -60,7 +60,38 @@ register_frontend_gateway(app)
 
 @app.on_event("startup")
 async def startup_event():
+    import asyncio
     import logging
+
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     logger.info(f"Started {settings.PROJECT_NAME} v{settings.VERSION}")
+
+    # Warm FLUX in THIS process in the background so /health stays responsive while
+    # weights initialize. Parent-process prefetch only fills the disk cache; the API
+    # child still needs an in-memory pipeline. FluxManager._load_lock serializes
+    # warmup vs first Generate so from_pretrained cannot run twice concurrently.
+    warmup_flag = os.environ.get("FLUX_WARMUP_ON_STARTUP", "true").strip().lower()
+    if warmup_flag not in ("0", "false", "no", "off"):
+        from backend_api.services.flux_warmup import warm_flux_in_api_process
+
+        loop = asyncio.get_running_loop()
+
+        async def _bg_flux_warmup() -> None:
+            try:
+                result = await loop.run_in_executor(None, warm_flux_in_api_process)
+                logger.info("FLUX warmup result: %s", result)
+                print(f"[startup] FLUX warmup result: {result}", flush=True)
+            except Exception as exc:
+                # Do not crash the API — Generate will surface MODEL_LOAD_ERROR.
+                logger.exception("FLUX warmup failed: %s", exc)
+                print(
+                    f"[startup] FLUX warmup FAILED: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+
+        asyncio.create_task(_bg_flux_warmup())
+        logger.info("FLUX warmup scheduled in background")
+        print("[startup] FLUX warmup scheduled in background", flush=True)
+    else:
+        logger.info("FLUX warmup disabled via FLUX_WARMUP_ON_STARTUP")

@@ -34,6 +34,9 @@ class ModelManager:
                 if loader is None or getattr(loader, "pipeline", None) is None:
                     needs_reload = True
                 else:
+                    # In-memory hit: still touch load() for reuse counters / progress.
+                    cb = getattr(self.flux_manager, "progress_callback", None)
+                    self.flux_manager.load(progress_callback=cb)
                     return
             elif model_name == "catvton":
                 loader = getattr(self.catvton_manager, "loader", None)

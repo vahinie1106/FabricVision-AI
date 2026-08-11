@@ -196,7 +196,9 @@ def test_process_generation_offloads_blocking_work(monkeypatch, tmp_path: Path):
         assert job_mid.status == "processing"
         assert job_mid.progress >= 5
         assert job_mid.stage == "loading_model"
-        assert "Loading model" in (job_mid.current_step or "")
+        assert "Initializing FLUX" in (job_mid.current_step or "") or "Loading" in (
+            job_mid.current_step or ""
+        )
 
         load_release.set()
         await asyncio.wait_for(task, timeout=10)

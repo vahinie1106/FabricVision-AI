@@ -8,7 +8,7 @@ export type ProgressStageDef = {
 /** Stage start percents aligned with backend garment job progress bands. */
 export const GARMENT_STAGES: ProgressStageDef[] = [
   { id: "upload", label: "Uploading Fabric", percent: 5 },
-  { id: "load-model", label: "Loading model", percent: 8 },
+  { id: "load-model", label: "Loading / preparing FLUX", percent: 8 },
   { id: "fabric", label: "Preparing fabric", percent: 22 },
   { id: "conditioning", label: "Preparing garment conditioning", percent: 32 },
   { id: "prompt", label: "Encoding prompt", percent: 42 },
@@ -90,7 +90,25 @@ export function resolveStageIndex(
     const lower = currentStep.toLowerCase();
     // Ordered specific → general. Never use bare "load" (matches "uploading").
     const keywordMap: Array<{ keys: string[]; id: string }> = [
-      { keys: ["reusing", "loading model", "connecting to remote", "downloading flux", "flux ready"], id: "load-model" },
+      {
+        keys: [
+          "reusing",
+          "loading model",
+          "loading flux",
+          "initializing flux",
+          "connecting to remote",
+          "downloading flux",
+          "downloading",
+          "flux ready",
+          "transformer",
+          "pipeline",
+          "offload",
+          "cache hit",
+          "cache miss",
+          "in-memory",
+        ],
+        id: "load-model",
+      },
       { keys: ["preparing fabric", "fabric appearance"], id: "fabric" },
       { keys: ["garment conditioning", "conditioning"], id: "conditioning" },
       { keys: ["encoding prompt"], id: "prompt" },

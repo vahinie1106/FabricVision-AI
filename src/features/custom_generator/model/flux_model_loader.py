@@ -72,6 +72,8 @@ class FLUXModelLoader:
         self._load_count = 0
         self._reuse_count = 0
         self._progress_callback: ProgressCallback = None
+        self._load_phase: str = "idle"
+        self._load_phase_pct: int = 0
         # Quantization profile: nf4 (default / low-VRAM) | full (bf16/fp16, quality path)
         quant_env = os.environ.get("FLUX_QUANTIZATION", "").strip().lower()
         disable_nf4 = os.environ.get("FLUX_DISABLE_NF4", "").strip().lower() in (
@@ -107,21 +109,26 @@ class FLUXModelLoader:
         self._progress_callback = callback
 
     def _progress(self, step: str, pct: int) -> None:
-        msg = f"[FLUX] {step}"
+        self._load_phase = step
+        self._load_phase_pct = int(pct)
+        msg = f"[FLUX] {step} ({pct}%)"
         self.logger.info(msg)
         print(msg, flush=True)
         if self._progress_callback is not None:
             try:
                 self._progress_callback(step, int(pct))
-            except Exception:
-                pass
+            except Exception as exc:
+                self.logger.warning("progress_callback failed: %s", exc)
 
     def _mark(self, label: str, t_seg: float, *, end: bool = False, extra: str = "") -> float:
         now = time.perf_counter()
         if end:
-            line = f"[FLUX] {label} END t={now:.2f} elapsed={now - t_seg:.2f}s"
+            line = (
+                f"[FLUX TIMING] {label}_END t={now:.2f} "
+                f"duration={now - t_seg:.2f}s"
+            )
         else:
-            line = f"[FLUX] {label} START t={now:.2f}"
+            line = f"[FLUX TIMING] {label}_START t={now:.2f}"
         if extra:
             line = f"{line} {extra}"
         self.logger.info(line)
@@ -286,7 +293,7 @@ class FLUXModelLoader:
         token = (
             os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
         )
-        t_dl = self._mark("weight download", time.perf_counter())
+        t_dl = self._mark("MODEL_DOWNLOAD", time.perf_counter())
         stop_hb = threading.Event()
 
         def _heartbeat() -> None:
@@ -331,7 +338,7 @@ class FLUXModelLoader:
             hb.join(timeout=2.0)
 
         self._download_time_s = round(time.perf_counter() - t_dl, 2)
-        self._mark("weight download", t_dl, end=True)
+        self._mark("MODEL_DOWNLOAD", t_dl, end=True)
 
         if not (
             self._is_complete_local_dir(download_root) and self._local_t5_ready(download_root)
@@ -544,8 +551,10 @@ class FLUXModelLoader:
             self.logger.info("Pytest environment detected; skipping Kontext weight load.")
             return None
 
-        t0 = self._mark("pipeline initialization", time.perf_counter())
-        self._progress("Loading model - resolving FLUX weights", 8)
+        import threading
+
+        t0 = self._mark("MODEL_INIT", time.perf_counter())
+        self._progress("Initializing FLUX (cache check / dependencies)", 8)
         target_device = self.device_manager.resolve_device(self.device_setting)
         vram_before = self._gpu_vram_mb()
         print(
@@ -554,14 +563,40 @@ class FLUXModelLoader:
             flush=True,
         )
 
+        stop_hb = threading.Event()
+
+        def _load_heartbeat() -> None:
+            started = time.perf_counter()
+            while not stop_hb.wait(15.0):
+                elapsed = int(time.perf_counter() - started)
+                phase = self._load_phase or "Loading FLUX"
+                pct = max(8, min(17, int(self._load_phase_pct or 8)))
+                # Keep /status polls alive during multi-minute from_pretrained gaps.
+                try:
+                    self._progress(f"{phase} ({elapsed}s elapsed)", pct)
+                except Exception:
+                    pass
+
+        hb = threading.Thread(target=_load_heartbeat, name="flux-load-hb", daemon=True)
+        hb.start()
+
+        try:
+            return self._load_after_heartbeat_start(
+                t0=t0, target_device=target_device
+            )
+        finally:
+            stop_hb.set()
+            hb.join(timeout=2.0)
+
+    def _load_after_heartbeat_start(self, *, t0: float, target_device: str) -> Any | None:
         # NF4 Diffusers packages require bitsandbytes + valid package metadata.
         if bool(getattr(self, "_want_nf4", True)):
             try:
                 from src.common.utils.ensure_bitsandbytes import ensure_bitsandbytes
 
-                t_bnb = self._mark("bitsandbytes check", time.perf_counter())
+                t_bnb = self._mark("BITSANDBYTES_CHECK", time.perf_counter())
                 bnb_ver = ensure_bitsandbytes(auto_install=True)
-                self._mark("bitsandbytes check", t_bnb, end=True, extra=f"ver={bnb_ver}")
+                self._mark("BITSANDBYTES_CHECK", t_bnb, end=True, extra=f"ver={bnb_ver}")
             except Exception as exc:
                 msg = str(exc) or f"{type(exc).__name__}"
                 self.logger.error("%s", msg)
@@ -587,7 +622,7 @@ class FLUXModelLoader:
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
         try:
-            self._progress("Resolving FLUX model source", 8)
+            self._progress("Resolving FLUX model source (disk cache vs download)", 10)
             pipeline_root, transformer_root = self._resolve_model_source()
         except Exception as exc:
             self.logger.error("%s", exc)
@@ -618,8 +653,8 @@ class FLUXModelLoader:
                 self._cache_status,
             )
             if transformer_root is not None:
-                self._progress("Loading FLUX transformer", 13)
-                t_tr = self._mark("transformer load", time.perf_counter())
+                self._progress("Loading FLUX transformer weights", 13)
+                t_tr = self._mark("TRANSFORMER_LOAD", time.perf_counter())
                 self.logger.info(
                     "Loading Kontext transformer from %s (shared root %s)",
                     transformer_root,
@@ -666,10 +701,13 @@ class FLUXModelLoader:
                         low_cpu_mem_usage=use_low_cpu_mem,
                     )
                     used_bnb_4bit = False
-                self._mark("transformer load", t_tr, end=True)
+                self._mark("TRANSFORMER_LOAD", t_tr, end=True)
 
-            self._progress("Loading FluxKontextPipeline (T5/CLIP/VAE)", 14)
-            t_pipe = self._mark("pipeline assembly", time.perf_counter())
+            self._progress(
+                "Loading FluxKontextPipeline (T5/CLIP/VAE) - may take several minutes",
+                14,
+            )
+            t_pipe = self._mark("PIPELINE_LOAD", time.perf_counter())
             self.logger.info("Loading FluxKontextPipeline from %s ...", pipeline_root)
             kwargs = {
                 "torch_dtype": dtype,
@@ -738,7 +776,7 @@ class FLUXModelLoader:
                     f"Unable to construct FluxKontextPipeline from {pipeline_root}"
                 )
             self._pipeline_assemble_time_s = round(time.perf_counter() - t_pipe, 2)
-            self._mark("pipeline assembly", t_pipe, end=True)
+            self._mark("PIPELINE_LOAD", t_pipe, end=True)
 
             self._used_bnb_4bit = used_bnb_4bit
 
@@ -766,7 +804,7 @@ class FLUXModelLoader:
                     prefer_offload = physical_mb < 14000
 
                 self._progress("Configuring device / offload", 16)
-                t_off = self._mark("offload configuration", time.perf_counter())
+                t_off = self._mark("OFFLOAD", time.perf_counter())
                 # WHY model_cpu_offload (not sequential): sequential + bnb NF4 previously
                 # raised "Cannot copy out of meta tensor; no data!" on this stack.
                 if prefer_offload and hasattr(pipeline, "enable_model_cpu_offload"):
@@ -824,7 +862,7 @@ class FLUXModelLoader:
                     except Exception:
                         pass
                 self._offload_config_time_s = round(time.perf_counter() - t_off, 2)
-                self._mark("offload configuration", t_off, end=True)
+                self._mark("OFFLOAD", t_off, end=True)
             elif hasattr(pipeline, "to"):
                 pipeline.to(target_device)
                 self._offload_strategy = "none"
@@ -838,7 +876,7 @@ class FLUXModelLoader:
             alloc_after = 0.0
             if torch is not None and torch.cuda.is_available():
                 alloc_after = round(torch.cuda.memory_allocated() / (1024**2), 1)
-            self._mark("pipeline initialization", t0, end=True)
+            self._mark("MODEL_INIT", t0, end=True)
             print(
                 f"[FLUX] FLUX READY elapsed={self._init_time_s}s "
                 f"cache={self._cache_status} download_s={self._download_time_s} "
@@ -847,7 +885,7 @@ class FLUXModelLoader:
                 f"vram_alloc_mb={alloc_after}",
                 flush=True,
             )
-            self._progress("FLUX READY", 18)
+            self._progress("FLUX READY (in-memory)", 18)
             self.logger.info(
                 "[FLUX] Model initialization completed (%.2fs, bnb4bit=%s offload=%s "
                 "attention=%s compile=%s cache=%s)",
