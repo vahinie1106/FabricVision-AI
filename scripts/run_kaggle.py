@@ -793,6 +793,19 @@ def main() -> int:
         f"base_path={base_path!r}"
     )
 
+    # FLUX NF4 (eramth/flux-kontext-4bit) needs bitsandbytes before any load.
+    # Fresh Kaggle images often ship without it → PackageNotFoundError in Diffusers.
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from src.common.utils.ensure_bitsandbytes import ensure_bitsandbytes
+
+        bnb_ver = ensure_bitsandbytes(auto_install=True)
+        _log(f"bitsandbytes verified: {bnb_ver}")
+    except Exception as exc:
+        _log(f"ERROR: bitsandbytes prerequisite failed: {exc}")
+        return 1
+
     stop_port(3000, "frontend")
     stop_port(args.port, "backend")
 

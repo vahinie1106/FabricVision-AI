@@ -9,3 +9,6 @@ scikit-image
 httpx
 fastapi
 uvicorn
+# Required for Diffusers NF4 FLUX Kontext (eramth/flux-kontext-4bit) on Kaggle T4 / local GPU.
+# PyPI wheels select CUDA backend from the installed torch runtime (do not pin CUDA suffix).
+bitsandbytes>=0.45.0

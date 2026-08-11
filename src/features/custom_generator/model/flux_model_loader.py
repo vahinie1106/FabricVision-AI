@@ -446,6 +446,20 @@ class FLUXModelLoader:
         target_device = self.device_manager.resolve_device(self.device_setting)
         self.logger.info("Loading FLUX.1-Kontext model...")
 
+        # NF4 Diffusers packages require bitsandbytes + valid package metadata.
+        if bool(getattr(self, "_want_nf4", True)):
+            try:
+                from src.common.utils.ensure_bitsandbytes import ensure_bitsandbytes
+
+                bnb_ver = ensure_bitsandbytes(auto_install=True)
+                self.logger.info("[FLUX] bitsandbytes ready: %s", bnb_ver)
+            except Exception as exc:
+                msg = str(exc) or f"{type(exc).__name__}"
+                self.logger.error("%s", msg)
+                if not self.allow_fallback:
+                    raise RuntimeError(msg) from exc
+                return None
+
         try:
             from diffusers import FluxKontextPipeline, FluxTransformer2DModel
         except ImportError as exc:
