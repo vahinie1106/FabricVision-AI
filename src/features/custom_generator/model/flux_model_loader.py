@@ -971,13 +971,7 @@ class FLUXModelLoader:
                 raise
             return None
 
-        dtype = None
-        if torch is not None:
-            dtype = (
-                torch.bfloat16
-                if (self.precision == "bfloat16" and torch.cuda.is_available())
-                else torch.float16
-            )
+        dtype = self._resolve_torch_dtype()
 
         use_low_cpu_mem = False if os.environ.get("PYTEST_CURRENT_TEST") else True
         pipeline = None
@@ -1189,7 +1183,9 @@ class FLUXModelLoader:
                 # Offload policy:
                 # - FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB path)
                 # - FLUX_MODEL_CPU_OFFLOAD=false → GPU-resident
-                # - auto: offload on <14GB; GPU-resident on ≥14GB for load speed.
+                # - auto: offload on <14GB OR pre-Ampere (Tesla T4 sm_75).
+                #   GPU-resident NF4 on T4 parks VAE to CPU then fails during
+                #   Kontext image encode / denoise with deferred CUDA errors.
                 #   Generation resolution is gated separately by flux_vram_policy
                 #   (completion-first; 768 is NOT assumed safe on T4).
                 offload_env = os.environ.get("FLUX_MODEL_CPU_OFFLOAD", "").strip().lower()
@@ -1200,7 +1196,7 @@ class FLUXModelLoader:
                 elif offload_env in ("1", "true", "yes", "on"):
                     prefer_offload = True
                 else:
-                    prefer_offload = physical_mb < 14000
+                    prefer_offload = physical_mb < 14000 or self._is_pre_ampere_gpu()
 
                 self._progress("Configuring device / offload", 16)
                 t_dev = self._mark("PIPELINE_DEVICE_SETUP", time.perf_counter())
@@ -1312,6 +1308,96 @@ class FLUXModelLoader:
     def pipeline(self) -> Any | None:
         return self._pipeline
 
+    def _is_pre_ampere_gpu(self) -> bool:
+        """True for Turing/Volta (e.g. Tesla T4 sm_75) where BF16 kernels are weak."""
+        if torch is None or not torch.cuda.is_available():
+            return False
+        try:
+            major, _minor = torch.cuda.get_device_capability(0)
+            return int(major) < 8
+        except Exception:
+            return False
+
+    def _resolve_torch_dtype(self) -> Any:
+        """Pick pipeline / bnb compute dtype. Prefer FP16 on pre-Ampere (T4)."""
+        if torch is None:
+            return None
+        forced = os.environ.get("FLUX_TORCH_DTYPE", "").strip().lower()
+        if forced in ("fp16", "float16", "half"):
+            return torch.float16
+        if forced in ("bf16", "bfloat16"):
+            return torch.bfloat16
+        if not torch.cuda.is_available():
+            return torch.float32
+        # Tesla T4 (sm_75): native FP16; BF16 is emulated and breaks efficient
+        # SDPA / some bitsandbytes compute paths → CUDA_ERROR during denoise.
+        if self._is_pre_ampere_gpu():
+            self.logger.info(
+                "[FLUX] Using float16 compute dtype (pre-Ampere GPU; BF16 unsafe)"
+            )
+            return torch.float16
+        if self.precision == "bfloat16":
+            return torch.bfloat16
+        return torch.float16
+
+    def ensure_generation_devices(self) -> dict[str, Any]:
+        """
+        Restore modules required for Kontext generation after ``park_on_cpu``.
+
+        GPU-resident NF4 parks VAE/encoders to CPU to free allocator headroom, but
+        FluxKontext image conditioning + VAE decode require the VAE on CUDA.
+        Leaving VAE on CPU after park caused deferred CUDA failures at ~50%
+        (right as ``pipeline()`` starts conditioning encode / first denoise).
+        """
+        info: dict[str, Any] = {
+            "offload_strategy": self._offload_strategy,
+            "vae_device": None,
+            "transformer_device": None,
+            "restored": [],
+        }
+        pipe = self._pipeline
+        if pipe is None or torch is None or not torch.cuda.is_available():
+            return info
+        if self._offload_strategy == "model_cpu_offload":
+            # Accelerate hooks move modules on demand — do not fight them.
+            return info
+
+        target = torch.device("cuda")
+        for name in ("vae",):
+            mod = getattr(pipe, name, None)
+            if mod is None or not hasattr(mod, "to"):
+                continue
+            try:
+                before = None
+                try:
+                    before = next(mod.parameters()).device
+                except Exception:
+                    before = None
+                mod.to(target)
+                info["restored"].append(name)
+                info[f"{name}_device_before"] = str(before)
+                try:
+                    info[f"{name}_device"] = str(next(mod.parameters()).device)
+                except Exception:
+                    info[f"{name}_device"] = "cuda"
+                self.logger.info(
+                    "[FLUX GENERATION] Restored %s → CUDA (was %s, strategy=%s)",
+                    name,
+                    before,
+                    self._offload_strategy,
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "[FLUX GENERATION] Failed to restore %s to CUDA: %s", name, exc
+                )
+        try:
+            tr = getattr(pipe, "transformer", None)
+            if tr is not None:
+                info["transformer_device"] = str(next(tr.parameters()).device)
+        except Exception:
+            pass
+        return info
+
     def park_on_cpu(self) -> dict[str, float]:
         """
         Free GPU residency after / before FLUX jobs without breaking NF4 state.
@@ -1322,6 +1408,8 @@ class FLUXModelLoader:
         - Do not call ``enable_model_cpu_offload()`` again here: ``maybe_free_model_hooks``
           already re-applies it. Double-enabling stacks hooks and breaks step 2+.
         - Prefer accelerate's ``maybe_free_model_hooks()`` as the sole offload reset.
+        - For gpu_resident: parking VAE is OK for allocator cleanup, but callers MUST
+          call ``ensure_generation_devices()`` before the next ``pipeline()`` call.
         """
         before = 0.0
         reserved_before = 0.0

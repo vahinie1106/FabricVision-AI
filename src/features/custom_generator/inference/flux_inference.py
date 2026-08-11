@@ -151,6 +151,94 @@ class FLUXInferenceEngine:
                 pass
         self._clear_cuda()
 
+    def _log_generation_stage(self, stage: str, **extra: Any) -> None:
+        """Structured stage markers for Kaggle CUDA diagnosis."""
+        snap = self._vram_snapshot()
+        gpu_name = None
+        total_mb = None
+        if torch is not None and torch.cuda.is_available():
+            try:
+                gpu_name = torch.cuda.get_device_name(0)
+                total_mb = round(
+                    torch.cuda.get_device_properties(0).total_memory / (1024**2), 1
+                )
+            except Exception:
+                pass
+        bits = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
+        line = (
+            f"[FLUX GENERATION] {stage} "
+            f"alloc_mb={snap['allocated_mb']} reserved_mb={snap['reserved_mb']} "
+            f"max_alloc_mb={snap['max_allocated_mb']} "
+            f"gpu={gpu_name} total_mb={total_mb}"
+        )
+        if bits:
+            line = f"{line} {bits}"
+        self.logger.info(line)
+        print(line, flush=True)
+
+    def _log_component_dtypes(self, pipeline: Any) -> None:
+        """Log device/dtype of FLUX components (no full-model conversion)."""
+        if torch is None:
+            return
+        for name in ("transformer", "vae", "text_encoder", "text_encoder_2"):
+            mod = getattr(pipeline, name, None)
+            if mod is None:
+                continue
+            try:
+                p = next(mod.parameters())
+                self.logger.info(
+                    "[FLUX GENERATION] component=%s device=%s dtype=%s",
+                    name,
+                    p.device,
+                    p.dtype,
+                )
+            except Exception as exc:
+                self.logger.info(
+                    "[FLUX GENERATION] component=%s inspect_failed=%s", name, exc
+                )
+
+    def _maybe_cuda_sync(self, label: str) -> None:
+        """Optional synchronous CUDA for diagnosis only (FLUX_CUDA_SYNC_DEBUG=1)."""
+        if os.environ.get("FLUX_CUDA_SYNC_DEBUG", "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return
+        if torch is None or not torch.cuda.is_available():
+            return
+        try:
+            torch.cuda.synchronize()
+            self.logger.info("[FLUX GENERATION] CUDA_SYNC ok after %s", label)
+        except Exception as exc:
+            self.logger.error(
+                "[FLUX GENERATION] CUDA_SYNC FAILED after %s: %s", label, exc
+            )
+            raise
+
+    def _ensure_generation_devices(self, pipeline: Any) -> None:
+        loader = self.model_loader
+        if loader is not None and hasattr(loader, "ensure_generation_devices"):
+            info = loader.ensure_generation_devices()
+            self._log_generation_stage(
+                "DEVICES_READY",
+                restored=info.get("restored"),
+                vae_device=info.get("vae_device"),
+                transformer_device=info.get("transformer_device"),
+                offload=info.get("offload_strategy"),
+            )
+            return
+        # Fallback: if VAE was parked to CPU without accelerate hooks, put it back.
+        if torch is None or not torch.cuda.is_available():
+            return
+        vae = getattr(pipeline, "vae", None)
+        if vae is not None and hasattr(vae, "to"):
+            try:
+                vae.to("cuda")
+            except Exception as exc:
+                self.logger.warning("VAE → CUDA restore skipped: %s", exc)
+
     @staticmethod
     def _is_cuda_oom(exc: BaseException) -> bool:
         name = type(exc).__name__.lower()
@@ -388,6 +476,12 @@ class FLUXInferenceEngine:
                     num_inference_steps,
                     dur,
                 )
+                self._log_generation_stage(
+                    "DENOISING_STEP",
+                    step=step_index + 1,
+                    steps=num_inference_steps,
+                    step_s=dur,
+                )
                 pct = 50 + int(35 * (step_index + 1) / max(1, num_inference_steps))
                 _progress(f"Generating (step {step_index + 1}/{num_inference_steps})", pct)
                 return callback_kwargs
@@ -582,7 +676,12 @@ class FLUXInferenceEngine:
             )
 
             log_vram("before generation")
+            self._log_generation_stage("START")
+            self._ensure_generation_devices(pipeline)
+            self._log_component_dtypes(pipeline)
+            self._maybe_cuda_sync("DEVICES_READY")
             _progress("Generating", 50)
+            self._log_generation_stage("PIPELINE_READY")
             t_diff_start = _flux_mark("inference", time.perf_counter())
             last_step_t = t_diff_start
             # Suppress SDPA MATH on the Flux *transformer only*. Wrapping the whole
@@ -615,9 +714,22 @@ class FLUXInferenceEngine:
                 )
 
             def _run_pipeline_once(pipe_kwargs: Dict[str, Any]):
+                self._log_generation_stage("INPUT_PREPARED")
+                self._maybe_cuda_sync("INPUT_PREPARED")
                 log_vram("before transformer inference")
-                with transformer_only_memory_efficient_attention(pipeline) as attn_runtime:
-                    out = pipeline(**pipe_kwargs)
+                self._log_generation_stage("DENOISING_START")
+                try:
+                    with transformer_only_memory_efficient_attention(pipeline) as attn_runtime:
+                        out = pipeline(**pipe_kwargs)
+                except Exception as pipe_exc:
+                    self._log_generation_stage(
+                        "FAILED",
+                        stage_hint="DENOISING_OR_VAE_ENCODE",
+                        error=f"{type(pipe_exc).__name__}: {pipe_exc}",
+                    )
+                    raise
+                self._log_generation_stage("DENOISING_COMPLETE")
+                self._maybe_cuda_sync("DENOISING_COMPLETE")
                 return out, attn_runtime
 
             try:
@@ -672,6 +784,12 @@ class FLUXInferenceEngine:
                         num_inference_steps,
                         step_dt,
                     )
+                    self._log_generation_stage(
+                        "DENOISING_STEP",
+                        step=step_index + 1,
+                        steps=num_inference_steps,
+                        step_s=round(step_dt, 2),
+                    )
                     pct = 50 + int(35 * (step_index + 1) / max(1, num_inference_steps))
                     _progress(
                         f"Generating (retry {step_index + 1}/{num_inference_steps})",
@@ -686,6 +804,7 @@ class FLUXInferenceEngine:
                     48,
                 )
                 self._clear_cuda()
+                self._ensure_generation_devices(pipeline)
                 log_vram("before generation retry")
                 try:
                     output, attn_runtime = _run_pipeline_once(kwargs)
@@ -720,11 +839,17 @@ class FLUXInferenceEngine:
             _flux_mark("inference", t_diff_start, end=True)
 
             log_vram("before VAE decode")
+            self._log_generation_stage("VAE_DECODE_START")
             _progress("Decoding image", 88)
             t_dec = _flux_mark("decoding", time.perf_counter())
             try:
                 image = output.images[0]
             except Exception as dec_exc:
+                self._log_generation_stage(
+                    "FAILED",
+                    stage_hint="VAE_DECODE",
+                    error=f"{type(dec_exc).__name__}: {dec_exc}",
+                )
                 if self._is_cuda_oom(dec_exc):
                     log_vram("OOM during VAE decode")
                     self._park_pipeline(pipeline)
@@ -734,6 +859,7 @@ class FLUXInferenceEngine:
                 raise
             decode_s = round(time.perf_counter() - t_dec, 3)
             _flux_mark("decoding", t_dec, end=True)
+            self._log_generation_stage("VAE_DECODE_COMPLETE")
             log_vram("after VAE decode")
 
             # Raw model output before any UI path — for blur root-cause isolation
@@ -743,11 +869,13 @@ class FLUXInferenceEngine:
 
                     raw_p = Path(save_raw_path)
                     raw_p.parent.mkdir(parents=True, exist_ok=True)
+                    self._log_generation_stage("SAVE_START", path=str(raw_p))
                     image.save(raw_p, format="PNG", compress_level=3)
                     self.logger.info("[FLUX] Saved raw model output → %s (%sx%s)", raw_p, image.size[0], image.size[1])
                 except Exception as raw_exc:
                     self.logger.warning("Raw output save failed: %s", raw_exc)
 
+            self._log_generation_stage("COMPLETE")
             total_time = round(time.perf_counter() - t_start, 3)
 
             # If explicit encode was used, diffusion_s includes only denoise+vae inside pipeline;

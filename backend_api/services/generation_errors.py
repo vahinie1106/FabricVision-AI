@@ -125,8 +125,14 @@ def classify_generation_error(exc: BaseException) -> Tuple[str, str, str]:
     if any(k in lower for k in ("encode_prompt", "prompt encoding", "tokenizer", "t5", "clip")):
         return "ENCODING_ERROR", "preencode", combined
 
-    if any(k in lower for k in ("vae", "decode", "decoder")):
+    if any(k in lower for k in ("vae", "decode", "decoder", "vae_decode")):
         return "VAE_ERROR", "vae", combined
+
+    # Prefer structured stage hint from [FLUX GENERATION] FAILED logs.
+    if "stage_hint=vae" in lower or "stage_hint=vae_decode" in lower:
+        return "VAE_ERROR", "vae", combined
+    if "stage_hint=denoising" in lower or "denoising_or_vae_encode" in lower:
+        return "CUDA_ERROR" if "cuda" in lower else "DIFFUSION_ERROR", "diffusion", combined
 
     if any(k in lower for k in ("save", "permission", "disk", "no space")):
         return "IMAGE_SAVE_ERROR", "save", combined

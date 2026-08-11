@@ -1042,6 +1042,19 @@ def configure_kaggle_flux_runtime() -> None:
             os.environ.setdefault("FLUX_VAE_TILING", "true")
             os.environ.setdefault("FLUX_GENERATION_RESOLUTION", "512")
             os.environ.setdefault("FLUX_STANDARD_STEPS", "8")
+            # Tesla T4 (sm_75): prefer model_cpu_offload + FP16. GPU-resident NF4
+            # + park_on_cpu left the VAE on CPU and triggered CUDA_ERROR at ~50%.
+            try:
+                major, _ = torch.cuda.get_device_capability(0)
+            except Exception:
+                major = 8
+            if int(major) < 8:
+                os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")
+                os.environ.setdefault("FLUX_TORCH_DTYPE", "float16")
+                _log(
+                    "Pre-Ampere T4-class defaults: FLUX_MODEL_CPU_OFFLOAD=true "
+                    "FLUX_TORCH_DTYPE=float16 (VAE restore still applied if resident)"
+                )
             # Demote the previous unsafe notebook default (768 + GPU-resident) unless
             # the operator explicitly opts into high-res.
             allow_hi = os.environ.get("FLUX_ALLOW_HIGH_RES", "").strip().lower() in (
@@ -1066,12 +1079,11 @@ def configure_kaggle_flux_runtime() -> None:
             ):
                 # 12 steps @ 512 is fine; leave it. Only demote when paired with 768 intent.
                 pass
-            # Leave FLUX_MODEL_CPU_OFFLOAD unset → loader auto (GPU-resident on
-            # ≥14GB for speed) while generation stays at 512 unless headroom allows 768.
             _log(
                 "High-VRAM completion-first defaults: "
                 f"FLUX_GENERATION_RESOLUTION={os.environ.get('FLUX_GENERATION_RESOLUTION')} "
                 f"FLUX_STANDARD_STEPS={os.environ.get('FLUX_STANDARD_STEPS')} "
+                f"FLUX_MODEL_CPU_OFFLOAD={os.environ.get('FLUX_MODEL_CPU_OFFLOAD', 'auto')} "
                 "FLUX_VAE_TILING=true (768 gated behind free headroom / FLUX_ALLOW_HIGH_RES)"
             )
         else:
