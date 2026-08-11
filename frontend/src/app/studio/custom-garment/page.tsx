@@ -13,6 +13,7 @@ import { HistorySidebar } from "@/components/studio/HistorySidebar";
 import { useToast } from "@/hooks/useToast";
 import { useLiveProgress, formatElapsed } from "@/hooks/useLiveProgress";
 import { useGenerationHistory, type HistoryItem } from "@/hooks/useGenerationHistory";
+import { useFluxWarmupStatus } from "@/hooks/useFluxWarmupStatus";
 import { toFriendlyError, type FriendlyError as FriendlyErrorType } from "@/lib/friendlyErrors";
 import { resolveMediaUrl } from "@/lib/resolveMediaUrl";
 import {
@@ -29,6 +30,7 @@ export default function CustomGarmentGenerator() {
   const toast = useToast();
   const progress = useLiveProgress("garment");
   const { items: history, addItem, removeItem } = useGenerationHistory("custom-garment");
+  const fluxWarmup = useFluxWarmupStatus(2000);
 
   const [fabricImage, setFabricImage] = useState<File | null>(null);
   const [fabricPreview, setFabricPreview] = useState<string | null>(null);
@@ -278,6 +280,29 @@ export default function CustomGarmentGenerator() {
           <p className="text-xs text-[#767676] mt-1">
             Upload → Customize → Generate → Download
           </p>
+          {fluxWarmup.warming && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+              <p className="font-semibold">AI engine is warming up…</p>
+              <p className="mt-1 text-amber-900/90">
+                FLUX initialization: {Math.max(0, Math.min(100, fluxWarmup.progress))}%
+                {fluxWarmup.currentStep ? ` — ${fluxWarmup.currentStep}` : ""}
+              </p>
+              {typeof fluxWarmup.loadDurationS === "number" && (
+                <p className="mt-1 text-amber-800/80">
+                  Elapsed {Math.round(fluxWarmup.loadDurationS)}s (real API warmup)
+                </p>
+              )}
+            </div>
+          )}
+          {fluxWarmup.ready && !fluxWarmup.failed && (
+            <p className="mt-3 text-xs font-medium text-emerald-800">AI engine ready</p>
+          )}
+          {fluxWarmup.failed && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-950">
+              <p className="font-semibold">AI engine failed to initialize</p>
+              <p className="mt-1">{fluxWarmup.error || "FLUX warmup failed"}</p>
+            </div>
+          )}
         </div>
 
         <div className="p-5 sm:p-6 flex-1 space-y-8 overflow-y-auto">
@@ -406,10 +431,23 @@ export default function CustomGarmentGenerator() {
           <Button
             className="w-full py-4 text-sm uppercase tracking-wide"
             onClick={handleGenerate}
-            disabled={!fabricImage || isGenerating}
+            disabled={
+              !fabricImage ||
+              isGenerating ||
+              fluxWarmup.warming ||
+              fluxWarmup.failed
+            }
             isLoading={isGenerating}
           >
-            {isGenerating ? "Generating..." : isDone ? "Generate Again" : "Generate Garment"}
+            {fluxWarmup.warming
+              ? "Waiting for AI engine…"
+              : fluxWarmup.failed
+                ? "AI engine unavailable"
+                : isGenerating
+                  ? "Generating..."
+                  : isDone
+                    ? "Generate Again"
+                    : "Generate Garment"}
           </Button>
         </div>
       </div>

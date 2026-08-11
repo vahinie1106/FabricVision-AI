@@ -122,17 +122,20 @@ class FLUXModelLoader:
 
     def _mark(self, label: str, t_seg: float, *, end: bool = False, extra: str = "") -> float:
         now = time.perf_counter()
-        if end:
-            line = (
-                f"[FLUX TIMING] {label}_END t={now:.2f} "
-                f"duration={now - t_seg:.2f}s"
-            )
-        else:
-            line = f"[FLUX TIMING] {label}_START t={now:.2f}"
+        pipe_exists = self._pipeline is not None
+        cache = getattr(self, "_cache_status", None) or "unknown"
+        base = (
+            f"[FLUX TIMING] {label}_{'END' if end else 'START'} t={now:.2f}"
+            + (f" duration={now - t_seg:.2f}s" if end else "")
+            + f" process_id={os.getpid()}"
+            + f" elapsed_seconds={now - t_seg:.2f}"
+            + f" cache_state={cache}"
+            + f" pipeline_exists={pipe_exists}"
+        )
         if extra:
-            line = f"{line} {extra}"
-        self.logger.info(line)
-        print(line, flush=True)
+            base = f"{base} {extra}"
+        self.logger.info(base)
+        print(base, flush=True)
         return now
 
     def _is_complete_local_dir(self, path: Path) -> bool:
@@ -647,7 +650,30 @@ class FLUXModelLoader:
 
         try:
             self._progress("Resolving FLUX model source (disk cache vs download)", 10)
+            t_src = self._mark("MODEL_SOURCE_RESOLVE", time.perf_counter())
+            print(
+                f"[FLUX] HF_HOME={os.environ.get('HF_HOME')!r} "
+                f"HUGGINGFACE_HUB_CACHE={os.environ.get('HUGGINGFACE_HUB_CACHE')!r} "
+                f"TRANSFORMERS_CACHE={os.environ.get('TRANSFORMERS_CACHE')!r} "
+                f"model_path={self.model_path}",
+                flush=True,
+            )
             pipeline_root, transformer_root = self._resolve_model_source()
+            self._mark(
+                "MODEL_SOURCE_RESOLVE",
+                t_src,
+                end=True,
+                extra=(
+                    f"disk_cache={self._cache_status} "
+                    f"pipeline_root={pipeline_root} transformer_root={transformer_root}"
+                ),
+            )
+            print(
+                f"[FLUX] DISK_CACHE={'HIT' if self._cache_status in ('hit', 'hybrid') else 'MISS'} "
+                f"cache_status={self._cache_status} "
+                f"(FluxManager 'need_from_pretrained' means in-memory empty, not disk miss)",
+                flush=True,
+            )
         except Exception as exc:
             self.logger.error("%s", exc)
             if not self.allow_fallback:
@@ -677,8 +703,13 @@ class FLUXModelLoader:
                 self._cache_status,
             )
             if transformer_root is not None:
-                self._progress("Loading FLUX transformer weights", 13)
+                self._progress("Loading FLUX transformer weights (from_pretrained)", 13)
                 t_tr = self._mark("TRANSFORMER_LOAD", time.perf_counter())
+                t_fp = self._mark(
+                    "FROM_PRETRAINED",
+                    time.perf_counter(),
+                    extra="component=transformer",
+                )
                 self.logger.info(
                     "Loading Kontext transformer from %s (shared root %s)",
                     transformer_root,
@@ -725,13 +756,24 @@ class FLUXModelLoader:
                         low_cpu_mem_usage=use_low_cpu_mem,
                     )
                     used_bnb_4bit = False
+                self._mark(
+                    "FROM_PRETRAINED",
+                    t_fp,
+                    end=True,
+                    extra="component=transformer",
+                )
                 self._mark("TRANSFORMER_LOAD", t_tr, end=True)
 
             self._progress(
-                "Loading FluxKontextPipeline (T5/CLIP/VAE) - may take several minutes",
+                "Loading FluxKontextPipeline (T5/CLIP/VAE) via from_pretrained",
                 14,
             )
             t_pipe = self._mark("PIPELINE_LOAD", time.perf_counter())
+            t_fp_pipe = self._mark(
+                "FROM_PRETRAINED",
+                time.perf_counter(),
+                extra="component=FluxKontextPipeline",
+            )
             self.logger.info("Loading FluxKontextPipeline from %s ...", pipeline_root)
             kwargs = {
                 "torch_dtype": dtype,
@@ -800,6 +842,12 @@ class FLUXModelLoader:
                     f"Unable to construct FluxKontextPipeline from {pipeline_root}"
                 )
             self._pipeline_assemble_time_s = round(time.perf_counter() - t_pipe, 2)
+            self._mark(
+                "FROM_PRETRAINED",
+                t_fp_pipe,
+                end=True,
+                extra="component=FluxKontextPipeline",
+            )
             self._mark("PIPELINE_LOAD", t_pipe, end=True)
 
             self._used_bnb_4bit = used_bnb_4bit
@@ -828,7 +876,8 @@ class FLUXModelLoader:
                     prefer_offload = physical_mb < 14000
 
                 self._progress("Configuring device / offload", 16)
-                t_off = self._mark("OFFLOAD", time.perf_counter())
+                t_dev = self._mark("PIPELINE_DEVICE_SETUP", time.perf_counter())
+                t_off = self._mark("OFFLOAD_SETUP", time.perf_counter())
                 # WHY model_cpu_offload (not sequential): sequential + bnb NF4 previously
                 # raised "Cannot copy out of meta tensor; no data!" on this stack.
                 if prefer_offload and hasattr(pipeline, "enable_model_cpu_offload"):
@@ -886,7 +935,8 @@ class FLUXModelLoader:
                     except Exception:
                         pass
                 self._offload_config_time_s = round(time.perf_counter() - t_off, 2)
-                self._mark("OFFLOAD", t_off, end=True)
+                self._mark("OFFLOAD_SETUP", t_off, end=True)
+                self._mark("PIPELINE_DEVICE_SETUP", t_dev, end=True)
             elif hasattr(pipeline, "to"):
                 pipeline.to(target_device)
                 self._offload_strategy = "none"

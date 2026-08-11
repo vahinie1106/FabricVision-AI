@@ -1,0 +1,283 @@
+"""End-to-end readiness-gate validation for Kaggle startup semantics."""
+
+from __future__ import annotations
+
+import inspect
+import io
+import json
+from contextlib import redirect_stdout
+from unittest.mock import patch
+
+import pytest
+
+
+def test_banner_application_ready_only_when_flag_true():
+    """Health 200 alone must NOT print APPLICATION READY ✓."""
+    import scripts.run_kaggle as rk
+
+    deploy = {
+        "jupyter_base_url": None,
+        "public_url": None,
+        "about_url": None,
+        "docs_url": None,
+        "health_url": None,
+        "base_path": "",
+    }
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rk.print_banner(
+            health_code=200,
+            root_code=200,
+            next_code=200,
+            deploy=deploy,
+            flux_status={
+                "state": "STARTING",
+                "ready": False,
+                "pipeline_exists": False,
+                "in_memory": False,
+                "progress": 8,
+            },
+            application_ready=False,
+        )
+    text = buf.getvalue()
+    assert "APPLICATION READY ✓" not in text
+    assert "APPLICATION NOT READY" in text
+    assert "state=STARTING" in text
+
+
+def test_banner_application_ready_requires_flux_ready_payload():
+    import scripts.run_kaggle as rk
+
+    deploy = {
+        "jupyter_base_url": None,
+        "public_url": "https://example/proxy/",
+        "about_url": None,
+        "docs_url": None,
+        "health_url": None,
+        "base_path": "/proxy",
+    }
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rk.print_banner(
+            health_code=200,
+            root_code=200,
+            next_code=200,
+            deploy=deploy,
+            flux_status={
+                "state": "READY",
+                "ready": True,
+                "pipeline_exists": True,
+                "in_memory": True,
+                "api_pid": 988,
+                "load_duration_s": 36.0,
+            },
+            application_ready=True,
+        )
+    text = buf.getvalue()
+    assert "APPLICATION READY ✓" in text
+    assert "state=READY" in text
+    assert "pipeline_exists=True" in text
+
+
+def test_wait_logs_progress_while_starting(monkeypatch):
+    import scripts.run_kaggle as rk
+
+    calls = {"n": 0}
+    logs: list[str] = []
+    payloads = [
+        {
+            "state": "STARTING",
+            "ready": False,
+            "in_memory": False,
+            "pipeline_exists": False,
+            "progress": 14,
+            "current_step": "Loading FluxKontextPipeline (T5/CLIP/VAE)",
+            "load_duration_s": 20,
+        },
+        {
+            "state": "READY",
+            "ready": True,
+            "in_memory": True,
+            "pipeline_exists": True,
+            "api_pid": 988,
+            "cache_status": "hybrid",
+            "load_duration_s": 36,
+        },
+    ]
+
+    class _Resp:
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n):
+            return self._body
+
+    def _open(*_a, **_k):
+        idx = min(calls["n"], len(payloads) - 1)
+        calls["n"] += 1
+        return _Resp(json.dumps(payloads[idx]).encode("utf-8"))
+
+    monkeypatch.setattr(rk.urllib.request, "urlopen", _open)
+    monkeypatch.setattr(rk.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(rk, "_log", lambda msg: logs.append(str(msg)))
+
+    out = rk.wait_api_flux_ready(timeout_s=5.0)
+    assert out["state"] == "READY"
+    assert out["ready"] is True
+    assert out["pipeline_exists"] is True
+    assert out["in_memory"] is True
+    assert any("STARTING" in m and "14%" in m for m in logs)
+    assert any("Loading FluxKontextPipeline" in m for m in logs)
+    assert any("API FLUX READY" in m for m in logs)
+
+
+def test_failed_flux_raises_before_application_ready(monkeypatch):
+    import scripts.run_kaggle as rk
+
+    payload = {
+        "state": "FAILED",
+        "ready": False,
+        "in_memory": False,
+        "pipeline_exists": False,
+        "error": "RuntimeError: boom",
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, _n):
+            return json.dumps(payload).encode("utf-8")
+
+    logs: list[str] = []
+    monkeypatch.setattr(rk.urllib.request, "urlopen", lambda *a, **k: _Resp())
+    monkeypatch.setattr(rk, "_log", lambda msg: logs.append(str(msg)))
+    with pytest.raises(RuntimeError, match="boom"):
+        rk.require_api_flux_ready(timeout_s=2.0)
+    assert any("FLUX WARMUP FAILED" in m for m in logs)
+
+
+def test_main_source_requires_flux_ready_on_initial_and_rebuild_paths():
+    """Static invariant: rebuild path must also call require_api_flux_ready."""
+    import scripts.run_kaggle as rk
+
+    src = inspect.getsource(rk.main)
+    assert src.count("require_api_flux_ready(") >= 2
+    assert "APPLICATION READY" in inspect.getsource(rk.print_banner)
+    # Final success banner must pass application_ready=True
+    assert "application_ready=True" in src
+    # Failure/public-error banners must not claim ready
+    assert src.count("application_ready=False") >= 2
+
+
+def test_health_liveness_does_not_imply_flux_ready(monkeypatch):
+    """ /api/v1/health stays 200 even when FLUX is STARTING. """
+    monkeypatch.setenv("FLUX_WARMUP_ON_STARTUP", "false")
+    import backend_api.services.flux_warmup as warm
+
+    warm.reset_warmup_state()
+    with warm._lock:
+        warm._state.update(
+            {
+                "state": "loading",
+                "progress": 8,
+                "current_step": "Initializing FLUX",
+                "started_at": 1.0,
+            }
+        )
+        warm._ready.clear()
+
+    from fastapi.testclient import TestClient
+    from backend_api.main import app
+
+    client = TestClient(app)
+    h = client.get("/api/v1/health")
+    assert h.status_code == 200
+    assert h.json()["status"] == "healthy"
+
+    fs = client.get("/api/v1/flux-status")
+    assert fs.status_code == 200
+    body = fs.json()
+    assert body["state"] == "STARTING"
+    assert body["ready"] is False
+
+
+def test_generate_reuses_resident_pipeline_no_second_from_pretrained(monkeypatch):
+    """After warmup READY, FluxManager.load must reuse (no second from_pretrained)."""
+    from src.integrations.flux.flux_manager import FluxManager
+
+    mgr = FluxManager(model_path="models/flux-kontext", allow_fallback=True)
+    fake_loader = type(
+        "L",
+        (),
+        {
+            "pipeline": object(),
+            "_cache_status": "hybrid",
+            "load": lambda self, progress_callback=None: self.pipeline,
+            "hf_model_id": "test",
+        },
+    )()
+    mgr.loader = fake_loader
+    loads = {"n": 0}
+
+    def _boom(*_a, **_k):
+        loads["n"] += 1
+        raise AssertionError("from_pretrained must not run on reuse")
+
+    with patch(
+        "src.features.custom_generator.model.flux_model_loader.FLUXModelLoader",
+        side_effect=_boom,
+    ):
+        out = mgr.load()
+    assert out is fake_loader.pipeline
+    assert loads["n"] == 0
+
+
+def test_vram_policy_unchanged_t4_safe():
+    from src.features.custom_generator.inference.flux_vram_policy import (
+        select_standard_generation_policy,
+    )
+    import os
+
+    for k in (
+        "FLUX_GENERATION_RESOLUTION",
+        "FLUX_PRODUCTION_SIZE",
+        "FLUX_STANDARD_STEPS",
+        "FLUX_ALLOW_HIGH_RES",
+        "FLUX_MODEL_CPU_OFFLOAD",
+    ):
+        os.environ.pop(k, None)
+    p = select_standard_generation_policy(
+        physical_mb=15109.0,
+        free_mb=2500.0,
+        offload_strategy="gpu_resident",
+    )
+    assert p.profile == "standard_t4_safe"
+    assert p.height == 512 and p.width == 512
+    assert p.num_inference_steps == 8
+    assert p.guidance_scale == 3.0
+    assert p.enable_vae_tiling is True
+
+
+def test_custom_garment_page_gates_generate_on_flux_warmup():
+    from pathlib import Path
+
+    page = Path("frontend/src/app/studio/custom-garment/page.tsx").read_text(
+        encoding="utf-8"
+    )
+    assert "useFluxWarmupStatus" in page
+    assert "fluxWarmup.warming" in page
+    assert "AI engine is warming up" in page
+    assert "AI engine ready" in page
+    assert "AI engine failed to initialize" in page
+    assert "Waiting for AI engine" in page
+    assert "fluxWarmup.failed" in page

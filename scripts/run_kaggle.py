@@ -831,14 +831,30 @@ def print_banner(
     next_code: int,
     deploy: Dict[str, Any],
     public_status: Optional[Dict[str, int]] = None,
+    flux_status: Optional[Dict[str, Any]] = None,
+    application_ready: bool = False,
 ) -> None:
     print("", flush=True)
     print("=" * 60, flush=True)
     print("FABRICVISION-AI KAGGLE DEPLOYMENT", flush=True)
     print("=" * 60, flush=True)
     print("", flush=True)
-    print("Backend:", flush=True)
+    print("Backend (API liveness — does NOT wait for FLUX):", flush=True)
     print(f"    http://127.0.0.1:8000/api/v1/health → {health_code}", flush=True)
+    print("", flush=True)
+    print("FLUX (API-process residency):", flush=True)
+    if flux_status:
+        print(
+            f"    state={flux_status.get('state')} "
+            f"ready={flux_status.get('ready')} "
+            f"pipeline_exists={flux_status.get('pipeline_exists')} "
+            f"pid={flux_status.get('api_pid') or flux_status.get('pid')} "
+            f"duration_s={flux_status.get('load_duration_s')}",
+            flush=True,
+        )
+        print("    http://127.0.0.1:8000/api/v1/flux-status", flush=True)
+    else:
+        print("    (not confirmed)", flush=True)
     print("", flush=True)
     print("Gateway:", flush=True)
     print(f"    http://127.0.0.1:8000/ → {root_code}", flush=True)
@@ -880,6 +896,19 @@ def print_banner(
         print(f"    HTTP {public_status.get('health', 'n/a')}", flush=True)
     print("", flush=True)
     print(f"Next/FastAPI base_path in use: {deploy.get('base_path') or '(none)'}", flush=True)
+    print("", flush=True)
+    if application_ready:
+        print("APPLICATION READY ✓", flush=True)
+        print(
+            "    Next.js + FastAPI liveness + FLUX residency confirmed.",
+            flush=True,
+        )
+    else:
+        print("APPLICATION NOT READY", flush=True)
+        print(
+            "    Do not treat API /health 200 as FLUX-ready.",
+            flush=True,
+        )
     print("=" * 60, flush=True)
     print("", flush=True)
 
@@ -1014,7 +1043,11 @@ def prefetch_flux_weights() -> None:
 
 
 def wait_api_flux_ready(*, timeout_s: float = 900.0) -> Dict[str, Any]:
-    """Poll /api/v1/flux-status until the API child has FLUX in memory."""
+    """Poll /api/v1/flux-status until the API child has FLUX in memory.
+
+    Raises on FAILED or timeout — callers must NOT declare APPLICATION READY
+    while FLUX is still STARTING.
+    """
     url = "http://127.0.0.1:8000/api/v1/flux-status"
     deadline = time.perf_counter() + timeout_s
     last: Dict[str, Any] = {}
@@ -1025,21 +1058,46 @@ def wait_api_flux_ready(*, timeout_s: float = 900.0) -> Dict[str, Any]:
                 body = resp.read(64_000).decode("utf-8", errors="replace")
                 last = json.loads(body)
         except Exception as exc:
-            last = {"error": str(exc), "ready": False}
-        if last.get("ready") or last.get("in_memory"):
+            last = {"error": str(exc), "ready": False, "state": "UNKNOWN"}
+        state = str(last.get("state") or "").upper()
+        if last.get("ready") or last.get("in_memory") or state == "READY":
             _log(
-                f"API FLUX ready pid={last.get('api_pid') or last.get('pid')} "
-                f"state={last.get('state')} cache={((last.get('result') or {}).get('cache_status'))}"
+                f"API FLUX READY pid={last.get('api_pid') or last.get('pid')} "
+                f"state={state} disk_cache={last.get('cache_status') or ((last.get('result') or {}).get('cache_status'))} "
+                f"duration_s={last.get('load_duration_s')} "
+                f"pipeline_exists={last.get('pipeline_exists')}"
             )
             return last
-        state = last.get("state")
-        _log(f"Waiting for API-process FLUX warmup... state={state}")
-        if state == "failed":
-            raise RuntimeError(last.get("error") or "API FLUX warmup failed")
+        if state == "FAILED":
+            err = last.get("error") or "API FLUX warmup failed"
+            _log(f"❌ FLUX WARMUP FAILED: {err}")
+            raise RuntimeError(err)
+        if state == "SKIPPED":
+            _log(
+                "API FLUX warmup SKIPPED "
+                f"(reason={(last.get('result') or {}).get('reason')}) — "
+                "Generate may cold-load"
+            )
+            return last
+        step = last.get("current_step") or last.get("stage") or "warming"
+        _log(
+            f"Waiting for API-process FLUX... state={state} "
+            f"progress={last.get('progress')}% step={step!r} "
+            f"elapsed_s={last.get('load_duration_s')}"
+        )
         time.sleep(2.0)
     raise TimeoutError(
         f"API FLUX warmup not ready within {timeout_s:.0f}s last={last}"
     )
+
+
+def require_api_flux_ready(*, timeout_s: float = 900.0) -> Dict[str, Any]:
+    """Hard gate: FLUX must be READY (or intentionally SKIPPED) before app READY."""
+    status = wait_api_flux_ready(timeout_s=timeout_s)
+    state = str(status.get("state") or "").upper()
+    if state == "FAILED":
+        raise RuntimeError(status.get("error") or "FLUX warmup failed")
+    return status
 
 
 def main() -> int:
@@ -1199,22 +1257,21 @@ def main() -> int:
         wait_http("http://127.0.0.1:8000/openapi.json", "OpenAPI JSON")
         wait_http("http://127.0.0.1:8000/api/v1/openapi.json", "OpenAPI JSON (v1)")
         # Parent prefetch only fills disk. Block until THIS API process has FLUX
-        # resident so Generate does not sit 10+ minutes at 14% reloading.
+        # resident — never declare APPLICATION READY while FLUX is STARTING.
+        flux_status: Optional[Dict[str, Any]] = None
         if os.environ.get("FLUX_WARMUP_ON_STARTUP", "true").strip().lower() not in (
             "0",
             "false",
             "no",
             "off",
         ):
-            try:
-                wait_api_flux_ready(
-                    timeout_s=float(os.environ.get("FLUX_WARMUP_WAIT_S", "900"))
-                )
-            except Exception as flux_ready_exc:
-                _log(
-                    f"WARNING: API FLUX warmup not confirmed: {flux_ready_exc} "
-                    "(Generate may cold-load in the API process)"
-                )
+            flux_status = require_api_flux_ready(
+                timeout_s=float(os.environ.get("FLUX_WARMUP_WAIT_S", "900"))
+            )
+        else:
+            _log("FLUX_WARMUP_ON_STARTUP disabled — skipping FLUX readiness gate")
+            flux_status = {"state": "SKIPPED", "ready": False}
+
         root_code = wait_http("http://127.0.0.1:8000/", "Gateway frontend /")
         wait_http("http://127.0.0.1:8000/about", "Gateway frontend /about")
 
@@ -1272,6 +1329,15 @@ def main() -> int:
                         "http://127.0.0.1:8000/api/v1/health", "API health (rebuild)"
                     )
                     wait_http("http://127.0.0.1:8000/health", "Gateway health (rebuild)")
+                    if os.environ.get("FLUX_WARMUP_ON_STARTUP", "true").strip().lower() not in (
+                        "0",
+                        "false",
+                        "no",
+                        "off",
+                    ):
+                        flux_status = require_api_flux_ready(
+                            timeout_s=float(os.environ.get("FLUX_WARMUP_WAIT_S", "900"))
+                        )
                     root_code = wait_http(
                         "http://127.0.0.1:8000/", "Gateway frontend / (rebuild)"
                     )
@@ -1313,6 +1379,8 @@ def main() -> int:
                         next_code=next_code,
                         deploy=deploy,
                         public_status=public_status,
+                        flux_status=flux_status,
+                        application_ready=False,
                     )
                     _log(
                         "ERROR: Winning public path failed final verification. "
@@ -1345,6 +1413,8 @@ def main() -> int:
                             next_code=next_code,
                             deploy=deploy,
                             public_status=public_status,
+                            flux_status=flux_status,
+                            application_ready=False,
                         )
                         _log(
                             f"ERROR: Public /_next static verification failed: {asset_exc}"
@@ -1369,6 +1439,8 @@ def main() -> int:
                     next_code=next_code,
                     deploy=deploy,
                     public_status=public_status or None,
+                    flux_status=flux_status,
+                    application_ready=False,
                 )
                 _log(
                     "ERROR: No public Kaggle proxy candidate reached the app. "
@@ -1390,8 +1462,10 @@ def main() -> int:
             next_code=next_code,
             deploy=deploy,
             public_status=public_status or None,
+            flux_status=flux_status,
+            application_ready=True,
         )
-        _log("Press Ctrl+C to stop.")
+        _log("APPLICATION READY — Press Ctrl+C to stop.")
 
         while True:
             for proc, name in ((next_proc, "Next.js"), (api_proc, "FastAPI")):

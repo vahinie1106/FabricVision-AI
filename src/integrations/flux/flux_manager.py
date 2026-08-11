@@ -47,9 +47,12 @@ class FluxManager:
             print(
                 f"[FLUX LOAD TRACE] process_id={os.getpid()} request_id=flux_manager "
                 f"loader_instance={id(self.loader) if self.loader else None} "
-                f"cache_state={'in_memory' if pipe_exists else 'need_from_pretrained'} "
+                f"in_memory={'hit' if pipe_exists else 'miss'} "
+                f"disk_cache=n/a "
                 f"pipeline_exists={pipe_exists} "
-                f"{'pipeline_load_end model_reused=true' if pipe_exists else 'pipeline_load_start model_reused=false'}",
+                f"{'pipeline_load_end model_reused=true' if pipe_exists else 'pipeline_load_start model_reused=false'} "
+                f"(in_memory miss means from_pretrained will run in THIS process; "
+                f"not the same as HF disk CACHE MISS)",
                 flush=True,
             )
             if pipe_exists:

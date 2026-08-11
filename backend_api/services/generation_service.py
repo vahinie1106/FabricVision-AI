@@ -146,7 +146,8 @@ def _process_generation_sync(
                     flush=True,
                 )
                 # Kick warmup only when idle (not when already failed — surface that).
-                if warm_status.get("state") == "idle" and os.environ.get(
+                _ws = str(warm_status.get("state") or warm_status.get("state_raw") or "").upper()
+                if _ws in ("IDLE",) and os.environ.get(
                     "FLUX_WARMUP_ON_STARTUP", "true"
                 ).strip().lower() not in ("0", "false", "no", "off"):
                     threading.Thread(
@@ -179,7 +180,8 @@ def _process_generation_sync(
                     f"model_reused={already_loaded}",
                     flush=True,
                 )
-                if warm_status.get("state") == "failed" and not already_loaded:
+                _ws2 = str(warm_status.get("state") or warm_status.get("state_raw") or "").upper()
+                if _ws2 == "FAILED" and not already_loaded:
                     err = warm_status.get("error") or "unknown warmup failure"
                     # Surface the failure in the live step, clear sticky FAILED, then
                     # allow Generate to become the sole on-demand loader (lock-serialized).

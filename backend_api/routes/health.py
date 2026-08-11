@@ -18,7 +18,8 @@ async def flux_status():
     """
     API-process FLUX residency (not the run_kaggle parent prefetch).
 
-    Generate should only proceed when ready/in_memory is true in THIS process.
+    Distinct from /api/v1/health (liveness) and /health (Next.js reachable).
+    Generate and Kaggle APPLICATION READY must use this endpoint.
     """
     from backend_api.services.flux_warmup import get_warmup_status
     import os
