@@ -142,6 +142,21 @@ class FLUXModelLoader:
         print(base, flush=True)
         return now
 
+    REQUIRED_COMPONENT_DIRS = (
+        "transformer",
+        "vae",
+        "text_encoder",
+        "text_encoder_2",
+        "tokenizer",
+        "tokenizer_2",
+        "scheduler",
+    )
+    TRANSFORMER_WEIGHT_CANDIDATES = (
+        "diffusion_pytorch_model.safetensors",
+        "diffusion_pytorch_model.bin",
+        "diffusion_pytorch_model.sft",
+    )
+
     @staticmethod
     def _is_lfs_pointer_file(path: Path) -> bool:
         """True when ``path`` is a git-LFS pointer, not real weight bytes."""
@@ -189,31 +204,34 @@ class FLUXModelLoader:
             for weight in component_dir.glob(pattern):
                 if not weight.is_file() or self._is_lfs_pointer_file(weight):
                     continue
-                # Skip tiny sidecar JSON-like names already filtered by glob.
                 total += weight.stat().st_size
         return total
 
-    def _has_transformer_weights(self, path: Path) -> bool:
-        """True only when transformer/ has real Diffusers weight tensors."""
+    def _find_transformer_weight_file(self, path: Path) -> Optional[Path]:
+        """Return the canonical transformer weight file, or None if missing/invalid."""
         trans = path / "transformer"
         if not trans.is_dir():
-            return False
-        # Prefer the canonical Diffusers filenames when present.
-        for name in (
-            "diffusion_pytorch_model.safetensors",
-            "diffusion_pytorch_model.bin",
-            "diffusion_pytorch_model.sft",
-        ):
+            return None
+        for name in self.TRANSFORMER_WEIGHT_CANDIDATES:
             candidate = trans / name
-            if (
-                candidate.is_file()
-                and not self._is_lfs_pointer_file(candidate)
-                and candidate.stat().st_size >= self._MIN_TRANSFORMER_WEIGHT_BYTES
-            ):
-                return True
-        return (
+            if not candidate.is_file():
+                continue
+            if self._is_lfs_pointer_file(candidate):
+                continue
+            if candidate.stat().st_size < self._MIN_TRANSFORMER_WEIGHT_BYTES:
+                continue
+            return candidate
+        # Sharded Diffusers layout.
+        index = trans / "diffusion_pytorch_model.safetensors.index.json"
+        if index.exists() and (
             self._component_weight_bytes(trans) >= self._MIN_TRANSFORMER_WEIGHT_BYTES
-        )
+        ):
+            return index
+        return None
+
+    def _has_transformer_weights(self, path: Path) -> bool:
+        """True only when transformer/ has real Diffusers weight tensors."""
+        return self._find_transformer_weight_file(path) is not None
 
     def _local_t5_ready(self, path: Path) -> bool:
         te2 = path / "text_encoder_2"
@@ -225,22 +243,30 @@ class FLUXModelLoader:
             >= self._MIN_COMPONENT_WEIGHT_BYTES
         )
 
+    def _structure_missing(self, path: Path) -> list[str]:
+        missing: list[str] = []
+        if not (path / "model_index.json").exists():
+            missing.append("model_index.json")
+        for name in self.REQUIRED_COMPONENT_DIRS:
+            if not (path / name).is_dir():
+                missing.append(f"{name}/")
+        return missing
+
     def _is_complete_local_dir(self, path: Path) -> bool:
         """
         Structural + weight completeness for a Diffusers FLUX Kontext tree.
 
         IMPORTANT: A directory with only ``model_index.json`` and a couple of
-        small/partial weight files must NOT be treated as loadable. Incomplete
-        Kaggle trees previously passed a weak ``>= 2 weight files`` check and
-        then crashed inside ``from_pretrained`` looking for transformer weights.
+        small/partial weight files must NOT be treated as loadable.
         """
         if not path.exists() or not (path / "model_index.json").exists():
+            return False
+        if self._structure_missing(path):
             return False
         if not self._has_transformer_weights(path):
             return False
         if not self._local_vae_ready(path):
             return False
-        # CLIP text encoder is required for FluxKontextPipeline.
         if self._component_weight_bytes(path / "text_encoder") < self._MIN_COMPONENT_WEIGHT_BYTES:
             return False
         return True
@@ -253,6 +279,15 @@ class FLUXModelLoader:
             and self._local_t5_ready(path)
         )
 
+    def _is_hub_repo_id(self, value: str) -> bool:
+        text = (value or "").strip().replace("\\", "/")
+        if not text or text.startswith("/") or text.startswith("."):
+            return False
+        # Local Windows/Unix paths are not hub IDs.
+        if ":" in text[:3] or text.startswith("models/") or "/models/" in text:
+            return False
+        return "/" in text and not Path(text).exists()
+
     def preflight_validate_package(
         self, path: Optional[Path] = None, *, source: Optional[str] = None
     ) -> dict[str, Any]:
@@ -263,51 +298,126 @@ class FLUXModelLoader:
         """
         root = Path(path) if path is not None else Path(self.model_path)
         src = source or self.hf_model_id or "(local)"
-        transformer_bytes = self._component_weight_bytes(root / "transformer")
-        t5_bytes = self._component_weight_bytes(root / "text_encoder_2")
-        vae_bytes = self._component_weight_bytes(root / "vae")
-        clip_bytes = self._component_weight_bytes(root / "text_encoder")
+        missing_structure = self._structure_missing(root) if root.exists() else ["(directory missing)"]
+        transformer_file = self._find_transformer_weight_file(root) if root.exists() else None
+        transformer_path = root / "transformer" / "diffusion_pytorch_model.safetensors"
+        transformer_lfs = (
+            transformer_path.is_file() and self._is_lfs_pointer_file(transformer_path)
+        )
+        transformer_bytes = self._component_weight_bytes(root / "transformer") if root.exists() else 0
+        t5_bytes = self._component_weight_bytes(root / "text_encoder_2") if root.exists() else 0
+        vae_bytes = self._component_weight_bytes(root / "vae") if root.exists() else 0
+        clip_bytes = self._component_weight_bytes(root / "text_encoder") if root.exists() else 0
         has_index = (root / "model_index.json").exists()
-        transformer_ok = self._has_transformer_weights(root)
-        t5_ok = self._local_t5_ready(root)
-        vae_ok = self._local_vae_ready(root)
+        transformer_ok = transformer_file is not None
+        t5_ok = self._local_t5_ready(root) if root.exists() else False
+        vae_ok = self._local_vae_ready(root) if root.exists() else False
         clip_ok = clip_bytes >= self._MIN_COMPONENT_WEIGHT_BYTES
-        ready = self._package_ready_for_pipeline(root)
+        ready = self._package_ready_for_pipeline(root) if root.exists() else False
+        missing_components: list[str] = []
+        if missing_structure:
+            missing_components.extend(missing_structure)
+        if not transformer_ok:
+            if transformer_lfs:
+                missing_components.append(
+                    "transformer/diffusion_pytorch_model.safetensors (git-LFS pointer only)"
+                )
+            elif transformer_path.exists() and transformer_path.stat().st_size < self._MIN_TRANSFORMER_WEIGHT_BYTES:
+                missing_components.append(
+                    f"transformer/diffusion_pytorch_model.safetensors "
+                    f"(too small: {transformer_path.stat().st_size} bytes)"
+                )
+            else:
+                missing_components.append(
+                    "transformer/diffusion_pytorch_model.safetensors (or .bin/.sft)"
+                )
+        if not vae_ok:
+            missing_components.append("vae weights")
+        if not clip_ok:
+            missing_components.append("text_encoder weights")
+        if not t5_ok:
+            missing_components.append("text_encoder_2 weights")
 
         report = {
             "path": str(root),
             "model_source": src,
             "model_index": has_index,
             "transformer_weights": transformer_ok,
+            "transformer_file": str(transformer_file) if transformer_file else None,
             "transformer_bytes": transformer_bytes,
+            "transformer_lfs_pointer": transformer_lfs,
             "text_encoder_2_weights": t5_ok,
             "text_encoder_2_bytes": t5_bytes,
             "vae_weights": vae_ok,
             "vae_bytes": vae_bytes,
             "text_encoder_weights": clip_ok,
             "text_encoder_bytes": clip_bytes,
+            "missing": missing_components,
             "ready": ready,
         }
 
-        print(f"[FLUX PREFLIGHT] model directory path={root} exists={root.exists()}", flush=True)
+        print(
+            f"[FLUX PREFLIGHT] model directory path={root} exists={root.exists()}",
+            flush=True,
+        )
         print(
             f"[FLUX PREFLIGHT] transformer weights ok={transformer_ok} "
-            f"bytes={transformer_bytes} "
-            f"min={self._MIN_TRANSFORMER_WEIGHT_BYTES}",
+            f"file={report['transformer_file']} bytes={transformer_bytes} "
+            f"lfs_pointer={transformer_lfs}",
             flush=True,
         )
         print(
             f"[FLUX PREFLIGHT] required components "
-            f"model_index={has_index} vae={vae_ok} clip={clip_ok} t5={t5_ok}",
+            f"model_index={has_index} vae={vae_ok} clip={clip_ok} t5={t5_ok} "
+            f"structure_missing={missing_structure or 'none'}",
             flush=True,
         )
         print(f"[FLUX PREFLIGHT] model source={src}", flush=True)
+        if missing_components and not ready:
+            print(
+                f"[FLUX PREFLIGHT] missing={missing_components}",
+                flush=True,
+            )
         print(
             f"[FLUX PREFLIGHT] validation {'PASS' if ready else 'FAIL'}",
             flush=True,
         )
         self.logger.info("[FLUX PREFLIGHT] %s", report)
         return report
+
+    def _assert_local_package_loadable(self, pipeline_root: str, *, source: str) -> None:
+        """Hard gate: never call from_pretrained on an invalid local package."""
+        if self._is_hub_repo_id(pipeline_root):
+            print(
+                f"[FLUX LOAD] hub repo id={pipeline_root} (Diffusers will fetch/cache)",
+                flush=True,
+            )
+            return
+        report = self.preflight_validate_package(Path(pipeline_root), source=source)
+        if report["ready"]:
+            print(
+                f"[FLUX LOAD] package validated path={pipeline_root} "
+                f"transformer={report.get('transformer_file')}",
+                flush=True,
+            )
+            return
+        raise RuntimeError(
+            "[FLUX ERROR] refusing from_pretrained on incomplete package "
+            f"path={pipeline_root} repo={source} missing={report.get('missing')}"
+        )
+
+    def _purge_incomplete_package(self, path: Path, *, reason: str) -> None:
+        """Remove an invalid local tree so snapshot_download can recreate it cleanly."""
+        if not path.exists():
+            return
+        print(
+            f"[FLUX DOWNLOAD] purging incomplete package path={path} reason={reason}",
+            flush=True,
+        )
+        self.logger.warning(
+            "[FLUX DOWNLOAD] purging incomplete package at %s (%s)", path, reason
+        )
+        shutil.rmtree(path, ignore_errors=True)
 
     def _prepare_hybrid_kontext_dir(self) -> Optional[Path]:
         """
@@ -384,61 +494,51 @@ class FLUXModelLoader:
         Ensure a complete Diffusers Kontext package exists under model_path.
 
         On Kaggle, ``models/`` is gitignored so a fresh clone has no weights.
-        Download the configured HF package into ``model_path`` when incomplete.
-        Never treat a partial tree (missing transformer tensors) as a cache hit.
+        Incomplete / LFS-pointer trees are purged and re-downloaded into
+        ``models/flux-kontext`` (never nested as ``.../eramth/...``).
         """
         import threading
 
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        # Never force offline mode for recovery.
+        if os.environ.get("HF_HUB_OFFLINE", "").strip() in ("1", "true", "True"):
+            print(
+                "[FLUX DOWNLOAD] warning: HF_HUB_OFFLINE is set; clearing for recovery",
+                flush=True,
+            )
+            os.environ.pop("HF_HUB_OFFLINE", None)
 
-        preflight = self.preflight_validate_package(
-            self.model_path, source=repo_id
-        )
+        download_root = Path(self.model_path)
+        preflight = self.preflight_validate_package(download_root, source=repo_id)
         if preflight["ready"]:
             self._cache_status = "hit"
+            print(f"[FLUX CACHE] HIT path={download_root.resolve()}", flush=True)
             self.logger.info(
-                "[FLUX] CACHE HIT local package ready at %s", self.model_path.resolve()
+                "[FLUX] CACHE HIT local package ready at %s", download_root.resolve()
             )
-            print(f"[FLUX] CACHE HIT path={self.model_path.resolve()}", flush=True)
-            return str(self.model_path)
-
-        download_root = self.model_path
-        # Transformer-only local tree without T5/VAE: prefer dedicated hub dir unless
-        # legacy schnell shared components can supply the rest.
-        if self._has_transformer_weights(self.model_path) and not self._local_t5_ready(
-            self.model_path
-        ):
-            if not self._package_ready_for_pipeline(self.LEGACY_SCHNELL_PATH):
-                download_root = self.model_path.parent / f"{self.model_path.name}-hub"
-                self.logger.warning(
-                    "Incomplete local Kontext tree at %s (transformer without T5/VAE). "
-                    "Downloading hub package to %s",
-                    self.model_path,
-                    download_root,
-                )
-
-        if self._package_ready_for_pipeline(download_root):
-            self.preflight_validate_package(download_root, source=repo_id)
-            self._cache_status = "hit"
-            self.logger.info("[FLUX] CACHE HIT hub package at %s", download_root.resolve())
-            print(f"[FLUX] CACHE HIT path={download_root.resolve()}", flush=True)
             return str(download_root)
 
-        self._cache_status = "miss"
-        self._progress(
-            f"Downloading FLUX weights (CACHE MISS: {repo_id})",
-            9,
+        print(
+            f"[FLUX CACHE] MISS path={download_root} missing={preflight.get('missing')}",
+            flush=True,
         )
+        self._cache_status = "miss"
+
+        # Incomplete trees poison resume_download; wipe then clean snapshot.
+        if download_root.exists():
+            self._purge_incomplete_package(
+                download_root,
+                reason=f"preflight FAIL missing={preflight.get('missing')}",
+            )
+
+        self._progress(f"Downloading FLUX weights (CACHE MISS: {repo_id})", 9)
+        print(f"[FLUX DOWNLOAD] repo={repo_id}", flush=True)
+        print(f"[FLUX DOWNLOAD] local_dir={download_root.resolve()}", flush=True)
         self.logger.info(
-            "[FLUX] CACHE MISS / DOWNLOAD starting repo=%s -> %s (HF_TOKEN present: %s) "
-            "(reason: incomplete or missing local package — see PREFLIGHT FAIL)",
+            "[FLUX DOWNLOAD] starting repo=%s -> %s (HF_TOKEN present: %s)",
             repo_id,
             download_root,
             self._hf_token_present(),
-        )
-        print(
-            f"[FLUX] CACHE MISS / DOWNLOAD repo={repo_id} dest={download_root}",
-            flush=True,
         )
         download_root.mkdir(parents=True, exist_ok=True)
         try:
@@ -458,7 +558,6 @@ class FLUXModelLoader:
             started = time.perf_counter()
             while not stop_hb.wait(20.0):
                 elapsed = int(time.perf_counter() - started)
-                # Keep UI alive during multi-GB downloads (stay in loading band 9-11%).
                 pct = min(11, 9 + elapsed // 120)
                 self._progress(
                     f"Downloading FLUX weights ({elapsed}s elapsed, CACHE MISS)",
@@ -468,15 +567,25 @@ class FLUXModelLoader:
         hb = threading.Thread(target=_heartbeat, name="flux-download-hb", daemon=True)
         hb.start()
         try:
-            snapshot_download(
-                repo_id=repo_id,
-                local_dir=str(download_root),
-                resume_download=True,
-                max_workers=2,
-                token=token,
-            )
+            # Explicit local_dir keeps a flat Diffusers tree under models/flux-kontext.
+            snapshot_kwargs = {
+                "repo_id": repo_id,
+                "local_dir": str(download_root),
+                "max_workers": 2,
+                "token": token,
+            }
+            # resume_download deprecated but still accepted on older hub; ignore TypeError.
+            try:
+                snapshot_download(**snapshot_kwargs, resume_download=True)  # type: ignore[call-arg]
+            except TypeError:
+                snapshot_download(**snapshot_kwargs)
         except Exception as exc:
             err = str(exc).lower()
+            print(
+                f"[FLUX ERROR] download failed repo={repo_id} "
+                f"path={download_root} exc={type(exc).__name__}: {exc}",
+                flush=True,
+            )
             if any(k in err for k in ("401", "403", "unauthorized", "gated", "access")):
                 raise RuntimeError(
                     "MODEL_AUTH_FAILED: Hugging Face authentication failed while downloading "
@@ -497,18 +606,24 @@ class FLUXModelLoader:
 
         self._download_time_s = round(time.perf_counter() - t_dl, 2)
         self._mark("MODEL_DOWNLOAD", t_dl, end=True)
+        print("[FLUX DOWNLOAD] completed", flush=True)
+        print("[FLUX PREFLIGHT] validating package", flush=True)
 
         post = self.preflight_validate_package(download_root, source=repo_id)
         if not post["ready"]:
+            print(
+                f"[FLUX ERROR] download finished but package still invalid "
+                f"missing={post.get('missing')} transformer_bytes={post.get('transformer_bytes')}",
+                flush=True,
+            )
             raise RuntimeError(
                 f"MODEL_DOWNLOAD_FAILED: Download of '{repo_id}' completed but package at "
                 f"'{download_root}' is still incomplete "
-                f"(transformer_ok={post['transformer_weights']} "
-                f"t5_ok={post['text_encoder_2_weights']} "
-                f"vae_ok={post['vae_weights']} "
-                f"transformer_bytes={post['transformer_bytes']}). "
-                "Delete the incomplete directory and retry, or check disk/network."
+                f"(missing={post.get('missing')}, "
+                f"transformer_bytes={post.get('transformer_bytes')}, "
+                f"lfs_pointer={post.get('transformer_lfs_pointer')})."
             )
+        print("[FLUX PREFLIGHT] PASS", flush=True)
         self.logger.info("FLUX hub package ready at %s", download_root.resolve())
         self._progress("FLUX weights downloaded - initializing pipeline", 12)
         return str(download_root)
@@ -542,7 +657,7 @@ class FLUXModelLoader:
             self.logger.info(
                 "[FLUX] CACHE HIT complete local Kontext weights at %s", self.model_path
             )
-            print(f"[FLUX] CACHE HIT path={self.model_path}", flush=True)
+            print(f"[FLUX CACHE] HIT path={self.model_path}", flush=True)
             return str(self.model_path), None
 
         if self._has_transformer_weights(self.model_path) and (
@@ -559,11 +674,10 @@ class FLUXModelLoader:
                 self.LEGACY_SCHNELL_PATH,
             )
             print(
-                f"[FLUX PREFLIGHT] model source=hybrid "
-                f"transformer={self.model_path} shared={self.LEGACY_SCHNELL_PATH}",
+                f"[FLUX CACHE] HIT hybrid transformer={self.model_path} "
+                f"shared={self.LEGACY_SCHNELL_PATH}",
                 flush=True,
             )
-            print("[FLUX PREFLIGHT] validation PASS", flush=True)
             return str(self.LEGACY_SCHNELL_PATH), str(self.model_path)
 
         if not self.hf_model_id:
@@ -579,13 +693,13 @@ class FLUXModelLoader:
             "on",
         )
         if skip_prefetch:
+            # Hub-direct still allowed, but never pretend a broken local tree is ready.
             self._cache_status = "hub_direct"
             self.logger.info("Using Hugging Face Kontext source directly: %s", self.hf_model_id)
             print(
-                f"[FLUX PREFLIGHT] model source={self.hf_model_id} (hub_direct)",
+                f"[FLUX CACHE] MISS local incomplete → hub_direct source={self.hf_model_id}",
                 flush=True,
             )
-            print("[FLUX PREFLIGHT] validation PASS", flush=True)
             return self.hf_model_id, None
 
         local_pkg = self._ensure_hub_package(self.hf_model_id)
@@ -879,6 +993,24 @@ class FLUXModelLoader:
                 dtype,
                 self._cache_status,
             )
+
+            # Hard gate: never call from_pretrained on an incomplete local package.
+            if transformer_root is not None:
+                tr_report = self.preflight_validate_package(
+                    Path(transformer_root),
+                    source=f"{self.hf_model_id or 'hybrid'}#transformer",
+                )
+                if not tr_report["transformer_weights"]:
+                    raise RuntimeError(
+                        "[FLUX ERROR] refusing transformer from_pretrained; "
+                        f"missing={tr_report.get('missing')} path={transformer_root}"
+                    )
+            else:
+                self._assert_local_package_loadable(
+                    str(pipeline_root),
+                    source=self.hf_model_id or str(pipeline_root),
+                )
+
             if transformer_root is not None:
                 self._progress("Loading FLUX transformer weights (from_pretrained)", 13)
                 t_tr = self._mark("TRANSFORMER_LOAD", time.perf_counter())
@@ -952,6 +1084,10 @@ class FLUXModelLoader:
                 extra="component=FluxKontextPipeline",
             )
             self.logger.info("Loading FluxKontextPipeline from %s ...", pipeline_root)
+            print(
+                f"[FLUX LOAD] FluxKontextPipeline.from_pretrained root={pipeline_root}",
+                flush=True,
+            )
             kwargs = {
                 "torch_dtype": dtype,
                 "low_cpu_mem_usage": use_low_cpu_mem,
@@ -978,41 +1114,55 @@ class FLUXModelLoader:
                             "set FLUX_QUANTIZATION=nf4."
                         )
             except Exception as direct_exc:
-                if not want_nf4:
-                    raise
-                self.logger.info(
-                    "Direct Kontext load deferred (%s); trying explicit NF4 transformer...",
-                    direct_exc,
+                err_l = str(direct_exc).lower()
+                missing_weight = any(
+                    s in err_l
+                    for s in (
+                        "diffusion_pytorch_model.safetensors",
+                        "diffusion_pytorch_model.bin",
+                        "no file named",
+                    )
                 )
-                pipeline = None
-
-            if (
-                pipeline is None
-                and want_nf4
-                and torch is not None
-                and torch.cuda.is_available()
-            ):
-                from transformers import BitsAndBytesConfig
-
-                quant_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=dtype or torch.bfloat16,
+                print(
+                    f"[FLUX ERROR] from_pretrained failed root={pipeline_root} "
+                    f"exc={type(direct_exc).__name__}: {direct_exc}",
+                    flush=True,
                 )
-                transformer = FluxTransformer2DModel.from_pretrained(
-                    pipeline_root if transformer_root is None else transformer_root,
-                    subfolder="transformer",
-                    quantization_config=quant_config,
-                    torch_dtype=dtype or torch.bfloat16,
-                    low_cpu_mem_usage=use_low_cpu_mem,
-                )
-                pipeline = FluxKontextPipeline.from_pretrained(
-                    pipeline_root,
-                    transformer=transformer,
-                    torch_dtype=dtype,
-                    low_cpu_mem_usage=use_low_cpu_mem,
-                )
-                used_bnb_4bit = True
+                # One controlled recovery — never retry the same broken local tree.
+                if (
+                    missing_weight
+                    and self.hf_model_id
+                    and not self._is_hub_repo_id(str(pipeline_root))
+                    and transformer_root is None
+                ):
+                    print(
+                        "[FLUX DOWNLOAD] recovery after load failure: purge+redownload",
+                        flush=True,
+                    )
+                    repaired = self._ensure_hub_package(self.hf_model_id)
+                    self._assert_local_package_loadable(
+                        repaired, source=self.hf_model_id
+                    )
+                    pipeline_root = repaired
+                    model_source = repaired
+                    pipeline = FluxKontextPipeline.from_pretrained(
+                        pipeline_root,
+                        torch_dtype=dtype,
+                        low_cpu_mem_usage=use_low_cpu_mem,
+                    )
+                    trans = getattr(pipeline, "transformer", None)
+                    used_bnb_4bit = bool(
+                        trans is not None
+                        and any(
+                            "Linear4bit" in type(m).__name__
+                            for m in list(trans.modules())[:50]
+                        )
+                    )
+                else:
+                    raise RuntimeError(
+                        f"[FLUX ERROR] FluxKontextPipeline.from_pretrained failed for "
+                        f"'{pipeline_root}': {type(direct_exc).__name__}: {direct_exc}"
+                    ) from direct_exc
 
             if pipeline is None:
                 raise RuntimeError(
