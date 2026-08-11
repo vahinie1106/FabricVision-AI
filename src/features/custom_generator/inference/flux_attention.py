@@ -96,6 +96,10 @@ def memory_efficient_attention_context() -> contextlib.AbstractContextManager:
 
     Preferred API: ``torch.nn.attention.sdpa_kernel``.
     Fallback: ``torch.backends.cuda.sdp_kernel(enable_math=False, ...)``.
+
+    WARNING: Do not wrap the entire FluxKontext ``pipeline(...)`` call with this.
+    VAE encode/decode on T4 often requires MATH (head dims incompatible with
+    flash/mem-efficient). Use ``transformer_only_memory_efficient_attention``.
     """
     if torch is None or not torch.cuda.is_available():
         return contextlib.nullcontext()
@@ -123,6 +127,33 @@ def memory_efficient_attention_context() -> contextlib.AbstractContextManager:
         "(need torch.nn.attention.sdpa_kernel or torch.backends.cuda.sdp_kernel). "
         "NO_SUPPORTED_EFFICIENT_ATTENTION_BACKEND"
     )
+
+
+@contextlib.contextmanager
+def transformer_only_memory_efficient_attention(pipeline: Any) -> Iterator[None]:
+    """
+    Restrict MATH-disabled SDPA to ``pipeline.transformer.forward`` only.
+
+    VAE encode (prepare_latents) and VAE decode stay on default PyTorch SDPA
+    (MATH allowed). Flux transformer denoise prefers flash/mem-efficient.
+    """
+    transformer = getattr(pipeline, "transformer", None)
+    if transformer is None or not hasattr(transformer, "forward"):
+        # No transformer to wrap — do not apply a global MATH=False context.
+        yield
+        return
+
+    original_forward = transformer.forward
+
+    def _forward_with_efficient_sdpa(*args: Any, **kwargs: Any) -> Any:
+        with memory_efficient_attention_context():
+            return original_forward(*args, **kwargs)
+
+    transformer.forward = _forward_with_efficient_sdpa  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        transformer.forward = original_forward  # type: ignore[method-assign]
 
 
 def _try_diffusers_native_efficient(pipeline: Any) -> Optional[str]:
@@ -158,20 +189,26 @@ def _try_diffusers_native_efficient(pipeline: Any) -> Optional[str]:
 
 def configure_memory_efficient_attention(pipeline: Any) -> Dict[str, Any]:
     """
-    Configure Flux attention for memory-efficient SDPA (MATH disabled at call time).
+    Configure Flux *transformer* attention for memory-efficient SDPA.
 
-    Returns a diagnostics dict suitable for smoke logs. Does not install xFormers
-    or FlashAttention packages.
+    MATH is disabled only inside ``transformer.forward`` (via
+    ``transformer_only_memory_efficient_attention``). VAE keeps default SDPA
+    (MATH allowed). Does not install xFormers or FlashAttention packages.
     """
     flags_before = probe_sdpa_flags()
     diag: Dict[str, Any] = {
         "attention_backend_requested": "memory_efficient",
         "diffusers_attention_backend": None,
         "pytorch_context_api": None,
+        # Scoped: transformer denoise only (not global / not VAE).
         "attention_math_enabled": False,
         "attention_flash_enabled": flags_before.get("flash_sdp_enabled"),
         "attention_mem_efficient_enabled": flags_before.get("mem_efficient_sdp_enabled"),
         "attention_backend_effective": None,
+        "flux_transformer_attention": "memory_efficient_requested",
+        "flux_transformer_math": False,
+        "vae_attention": "normal/default",
+        "attention_scope": "transformer_forward_only",
         "attention_config_ok": False,
         "error": None,
     }
@@ -266,13 +303,18 @@ def configure_memory_efficient_attention(pipeline: Any) -> Dict[str, Any]:
 
 
 def format_attention_diag_lines(diag: Dict[str, Any]) -> List[str]:
-    """Smoke-friendly KEY=value lines."""
+    """Smoke-friendly KEY=value lines (honest transformer vs VAE scope)."""
     return [
         f"ATTENTION_BACKEND_REQUESTED={diag.get('attention_backend_requested')}",
+        f"ATTENTION_SCOPE={diag.get('attention_scope', 'transformer_forward_only')}",
+        f"FLUX_TRANSFORMER_ATTENTION={diag.get('flux_transformer_attention', 'memory_efficient_requested')}",
+        f"FLUX_TRANSFORMER_MATH={diag.get('flux_transformer_math', False)}",
+        # Legacy key: MATH disabled for transformer only, not globally.
         f"ATTENTION_MATH_ENABLED={diag.get('attention_math_enabled')}",
         f"ATTENTION_FLASH_ENABLED={diag.get('attention_flash_enabled')}",
         f"ATTENTION_MEM_EFFICIENT_ENABLED={diag.get('attention_mem_efficient_enabled')}",
         f"ATTENTION_BACKEND_EFFECTIVE={diag.get('attention_backend_effective')}",
+        f"VAE_ATTENTION={diag.get('vae_attention', 'normal/default')}",
         f"ATTENTION_DIFFUSERS_BACKEND={diag.get('diffusers_attention_backend')}",
         f"ATTENTION_PYTORCH_CONTEXT_API={diag.get('pytorch_context_api')}",
         f"ATTENTION_CONFIG_OK={diag.get('attention_config_ok')}",

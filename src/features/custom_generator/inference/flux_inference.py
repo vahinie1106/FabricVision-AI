@@ -551,12 +551,12 @@ class FLUXInferenceEngine:
             _progress("Generating", 55)
             t_diff_start = time.perf_counter()
             last_step_t = t_diff_start
-            # Suppress SDPA MATH during denoise: Kontext 1024 joint seq (~8320)
-            # otherwise allocates ~6.19 GiB attention workspace on T4.
+            # Suppress SDPA MATH on the Flux *transformer only*. Wrapping the whole
+            # pipeline(...) breaks VAE encode/decode on T4 (head dims need MATH).
             from src.features.custom_generator.inference.flux_attention import (
                 NoSupportedEfficientAttention,
                 configure_memory_efficient_attention,
-                memory_efficient_attention_context,
+                transformer_only_memory_efficient_attention,
             )
 
             attn_diag = getattr(self.model_loader, "_attention_diag", None) or {}
@@ -576,7 +576,7 @@ class FLUXInferenceEngine:
                     f"Cannot run FLUX Kontext without memory-efficient SDPA ({err}). "
                     "MATH attention would OOM at 1024 on 16GB-class GPUs."
                 )
-            with memory_efficient_attention_context():
+            with transformer_only_memory_efficient_attention(pipeline):
                 output = pipeline(**kwargs)
             t_diff_end = time.perf_counter()
             diffusion_s = round(t_diff_end - t_diff_start, 3)
