@@ -277,12 +277,19 @@ class FLUXInferenceEngine:
         if hasattr(self.model_loader, "get_runtime_info"):
             runtime = self.model_loader.get_runtime_info()
 
+        physical_vram_mb = float(runtime.get("gpu_vram_mb") or 0.0)
+        if physical_vram_mb <= 0 and torch is not None and torch.cuda.is_available():
+            try:
+                physical_vram_mb = torch.cuda.get_device_properties(0).total_memory / (1024**2)
+            except Exception:
+                physical_vram_mb = 0.0
+
         self.logger.info("Kontext inference started (conditioning image present)")
         snap0 = self._vram_snapshot()
         self.logger.info(
             "[FLUX] Effective config: %sx%s steps=%s guidance=%s max_seq=%s "
             "preencode=%s offload=%s bnb4bit=%s dtype=%s alloc_conf=%s | "
-            "CUDA allocated=%.1f MB reserved=%.1f MB (physical VRAM=6144 MiB)",
+            "CUDA allocated=%.1f MB reserved=%.1f MB (physical VRAM=%.0f MiB)",
             width,
             height,
             num_inference_steps,
@@ -295,6 +302,7 @@ class FLUXInferenceEngine:
             os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
             snap0["allocated_mb"],
             snap0["reserved_mb"],
+            physical_vram_mb,
         )
 
         # Critical on 6GB: previous run may have left transformer/VAE on GPU.
@@ -483,6 +491,26 @@ class FLUXInferenceEngine:
 
             # Drop kwargs not accepted by this diffusers version
             kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters or k.startswith("_")}
+
+            # Large-resolution memory path (1024²+): VAE tiling/slicing are supported on
+            # FluxKontextPipeline and materially reduce decode/activation peaks on T4-class GPUs.
+            # Keep model_cpu_offload (sequential_cpu_offload is unsafe with bitsandbytes NF4).
+            large_res = int(height) * int(width) >= 1024 * 1024
+            force_tile = os.environ.get("FLUX_VAE_TILING", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if large_res or force_tile:
+                vae = getattr(pipeline, "vae", None)
+                if vae is not None:
+                    if hasattr(vae, "enable_slicing"):
+                        vae.enable_slicing()
+                        self.logger.info("[FLUX] VAE slicing enabled (large-res / OOM mitigation)")
+                    if hasattr(vae, "enable_tiling"):
+                        vae.enable_tiling()
+                        self.logger.info("[FLUX] VAE tiling enabled (large-res / OOM mitigation)")
 
             self.logger.info(
                 "Kontext inputs: steps=%s guidance=%s seed=%s size=%sx%s "
