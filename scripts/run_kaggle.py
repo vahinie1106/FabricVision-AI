@@ -742,6 +742,100 @@ def print_banner(
     print("", flush=True)
 
 
+def configure_kaggle_flux_runtime() -> None:
+    """Set T4-friendly FLUX env defaults and optionally warm CUDA on the main thread."""
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            _log("CUDA not available — FLUX will fail on this runtime")
+            return
+        # Initialize CUDA context on the main process before worker threads.
+        _ = torch.zeros(1, device="cuda")
+        props = torch.cuda.get_device_properties(0)
+        vram_mb = props.total_memory / (1024**2)
+        name = torch.cuda.get_device_name(0)
+        _log(f"GPU={name} VRAM={vram_mb:.0f}MB torch={torch.__version__}")
+        if vram_mb >= 14000:
+            os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "false")
+            os.environ.setdefault("FLUX_GENERATION_RESOLUTION", "768")
+            os.environ.setdefault("FLUX_STANDARD_STEPS", "12")
+            os.environ.setdefault("FLUX_VAE_TILING", "true")
+            _log(
+                "T4/16GB+ defaults: FLUX_MODEL_CPU_OFFLOAD=false "
+                "FLUX_GENERATION_RESOLUTION=768 FLUX_STANDARD_STEPS=12"
+            )
+        else:
+            os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")
+            _log("Low-VRAM defaults: FLUX_MODEL_CPU_OFFLOAD=true")
+    except Exception as exc:
+        _log(f"GPU runtime probe skipped: {exc}")
+
+
+def prefetch_flux_weights() -> None:
+    """Download FLUX weights at startup so first Generate is not a multi-GB cold download.
+
+    Loads once to verify the package, then unloads so the FastAPI child process
+    can initialize CUDA cleanly (parent must not keep a resident pipeline).
+    """
+    _log("Prefetching FLUX.1-Kontext weights (CACHE HIT/MISS logged by loader)...")
+    t0 = time.perf_counter()
+    try:
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from src.common.utils.utils import load_yaml_config
+        from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
+
+        hf_id = os.environ.get("FLUX_KONTEXT_MODEL_ID", "").strip() or None
+        if not hf_id:
+            flux_yaml = (
+                load_yaml_config(ROOT / "configs" / "custom_generator" / "flux_config.yaml")
+                or {}
+            )
+            hf_id = (flux_yaml.get("hf_model_id") or "").strip() or None
+
+        def _cb(step: str, pct: int) -> None:
+            _log(f"prefetch {pct}% {step}")
+
+        loader = FLUXModelLoader(
+            model_path=ROOT / "models" / "flux-kontext",
+            allow_fallback=False,
+            hf_model_id=hf_id,
+        )
+        loader.set_progress_callback(_cb)
+        pipe = loader.load()
+        if pipe is None:
+            raise RuntimeError("FLUX prefetch returned no pipeline")
+        info = loader.get_runtime_info()
+        # Free VRAM before spawning FastAPI (separate process will reload from disk).
+        try:
+            loader.park_on_cpu()
+        except Exception:
+            pass
+        loader._pipeline = None
+        try:
+            import gc
+
+            import torch
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        _log(
+            f"FLUX prefetch done in {time.perf_counter() - t0:.1f}s "
+            f"cache={info.get('cache_status')} init_s={info.get('init_time_s')} "
+            f"download_s={info.get('download_time_s')} offload={info.get('offload_strategy')} "
+            f"(pipeline unloaded for API child)"
+        )
+    except Exception as exc:
+        _log(f"ERROR: FLUX prefetch failed: {type(exc).__name__}: {exc}")
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="FabricVision-AI Kaggle / gateway launcher")
     parser.add_argument(
@@ -764,6 +858,16 @@ def main() -> int:
         type=int,
         default=8000,
         help="Public FastAPI / gateway port (default 8000)",
+    )
+    parser.add_argument(
+        "--prefetch-flux",
+        action="store_true",
+        help="Force FLUX weight download/init before serving traffic",
+    )
+    parser.add_argument(
+        "--no-prefetch-flux",
+        action="store_true",
+        help="Skip FLUX prefetch even on Kaggle (first Generate pays cold download)",
     )
     args = parser.parse_args()
 
@@ -805,6 +909,19 @@ def main() -> int:
     except Exception as exc:
         _log(f"ERROR: bitsandbytes prerequisite failed: {exc}")
         return 1
+
+    configure_kaggle_flux_runtime()
+
+    do_prefetch = args.prefetch_flux or (
+        bool(deploy.get("is_kaggle")) and not args.no_prefetch_flux
+    )
+    if do_prefetch:
+        try:
+            prefetch_flux_weights()
+        except Exception:
+            return 1
+    else:
+        _log("Skipping FLUX prefetch (first Generate may download weights)")
 
     stop_port(3000, "frontend")
     stop_port(args.port, "backend")

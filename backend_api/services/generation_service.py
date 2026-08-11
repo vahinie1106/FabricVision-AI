@@ -100,6 +100,15 @@ def _process_generation_sync(
 
         exec_mode = os.environ.get("FLUX_EXECUTION_MODE", "local").strip().lower()
         t_model = _stage_log("MODEL LOAD", t_job)
+
+        def on_progress(step: str, pct: int) -> None:
+            job_manager.update_job(
+                job_id,
+                status="processing",
+                progress=max(5, min(99, int(pct))),
+                current_step=step,
+            )
+
         if exec_mode == "remote" and os.environ.get("FLUX_REMOTE_URL"):
             job_manager.update_job(
                 job_id,
@@ -113,6 +122,7 @@ def _process_generation_sync(
 
             RemoteFluxProvider()
             loader = None
+            _stage_log("MODEL LOAD", t_model, end=True, extra="remote=True")
         else:
             hf_id = os.environ.get("FLUX_KONTEXT_MODEL_ID", "").strip() or None
             if not hf_id:
@@ -137,6 +147,7 @@ def _process_generation_sync(
                 settings.BASE_DIR / "models" / "flux-kontext"
             )
             model_manager.flux_manager.hf_model_id = hf_id
+            model_manager.flux_manager.progress_callback = on_progress
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
             try:
@@ -155,6 +166,24 @@ def _process_generation_sync(
                     "Hugging Face for eramth/flux-kontext-4bit."
                 )
 
+            runtime = {}
+            if hasattr(loader, "get_runtime_info"):
+                runtime = loader.get_runtime_info() or {}
+            cache = runtime.get("cache_status", "unknown")
+            init_s = runtime.get("init_time_s")
+            dl_s = runtime.get("download_time_s")
+            _stage_log(
+                "MODEL LOAD",
+                t_model,
+                end=True,
+                extra=(
+                    f"reused={already_loaded} cache={cache} "
+                    f"init_s={init_s} download_s={dl_s} "
+                    f"offload={runtime.get('offload_strategy')} "
+                    f"vram_mb={runtime.get('gpu_vram_mb')}"
+                ),
+            )
+
             if already_loaded or getattr(loader, "_reuse_count", 0) > 0:
                 job_manager.update_job(
                     job_id,
@@ -165,10 +194,8 @@ def _process_generation_sync(
                 job_manager.update_job(
                     job_id,
                     progress=18,
-                    current_step="Loading model",
+                    current_step="FLUX READY",
                 )
-
-        _stage_log("MODEL LOAD", t_model, end=True, extra=f"reused={already_loaded}")
 
         config = GarmentGenerationConfig(
             config_dir=str(settings.BASE_DIR / "configs"),
@@ -182,15 +209,6 @@ def _process_generation_sync(
         )
 
         pipeline = GarmentGenerationPipeline(config=config, model_loader=loader)
-
-        def on_progress(step: str, pct: int) -> None:
-            # Thread-safe enough for in-memory job store; keeps long jobs "alive"
-            job_manager.update_job(
-                job_id,
-                status="processing",
-                progress=max(5, min(99, int(pct))),
-                current_step=step,
-            )
 
         job_manager.update_job(
             job_id,
@@ -285,8 +303,11 @@ def _process_generation_sync(
             "offload_strategy": getattr(loader, "_offload_strategy", None),
             "attention_backend": getattr(loader, "_attention_backend", None),
             "torch_compile": getattr(loader, "_torch_compile_enabled", False),
-            "bnb_4bit": getattr(loader, "_used_bnb_4bit", None),
-            "generation_time_s": stats.get("generation_time_s"),
+                "bnb_4bit": getattr(loader, "_used_bnb_4bit", None),
+                "cache_status": getattr(loader, "_cache_status", None),
+                "model_init_time_s": getattr(loader, "_init_time_s", None),
+                "model_download_time_s": getattr(loader, "_download_time_s", None),
+                "generation_time_s": stats.get("generation_time_s"),
             "peak_vram_mb": stats.get("peak_vram_mb"),
             "height": pipeline.config.height,
             "width": pipeline.config.width,

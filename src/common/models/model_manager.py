@@ -70,7 +70,8 @@ class ModelManager:
         if model_name == "qwen":
             self.qwen_manager.load()
         elif model_name == "flux":
-            self.flux_manager.load()
+            cb = getattr(self.flux_manager, "progress_callback", None)
+            self.flux_manager.load(progress_callback=cb)
         elif model_name == "catvton":
             self.catvton_manager.load()
 

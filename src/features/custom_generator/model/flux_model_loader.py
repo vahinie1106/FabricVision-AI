@@ -8,7 +8,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.common.models.device_manager import DeviceManager
 
@@ -16,6 +16,8 @@ try:
     import torch
 except ImportError:
     torch = None
+
+ProgressCallback = Optional[Callable[[str, int], None]]
 
 
 class FLUXModelLoader:
@@ -29,7 +31,7 @@ class FLUXModelLoader:
     3. Hugging Face download IDs (NF4 package preferred for 6GB GPUs)
 
     The pipeline is resident for the process lifetime. Callers must reuse
-    `load()` — it returns the cached pipeline without reloading weights.
+    `load()` - it returns the cached pipeline without reloading weights.
     """
 
     DEFAULT_HF_ID = "black-forest-labs/FLUX.1-Kontext-dev"
@@ -63,8 +65,13 @@ class FLUXModelLoader:
         self._attention_diag: dict = {}
         self._torch_compile_enabled = False
         self._init_time_s = 0.0
+        self._download_time_s = 0.0
+        self._pipeline_assemble_time_s = 0.0
+        self._offload_config_time_s = 0.0
+        self._cache_status = "unknown"  # hit | miss | hybrid | hub_direct
         self._load_count = 0
         self._reuse_count = 0
+        self._progress_callback: ProgressCallback = None
         # Quantization profile: nf4 (default / low-VRAM) | full (bf16/fp16, quality path)
         quant_env = os.environ.get("FLUX_QUANTIZATION", "").strip().lower()
         disable_nf4 = os.environ.get("FLUX_DISABLE_NF4", "").strip().lower() in (
@@ -95,6 +102,31 @@ class FLUXModelLoader:
             attention_backend
             or os.environ.get("FLUX_ATTENTION_BACKEND", "auto")
         ).strip().lower()
+
+    def set_progress_callback(self, callback: ProgressCallback) -> None:
+        self._progress_callback = callback
+
+    def _progress(self, step: str, pct: int) -> None:
+        msg = f"[FLUX] {step}"
+        self.logger.info(msg)
+        print(msg, flush=True)
+        if self._progress_callback is not None:
+            try:
+                self._progress_callback(step, int(pct))
+            except Exception:
+                pass
+
+    def _mark(self, label: str, t_seg: float, *, end: bool = False, extra: str = "") -> float:
+        now = time.perf_counter()
+        if end:
+            line = f"[FLUX] {label} END t={now:.2f} elapsed={now - t_seg:.2f}s"
+        else:
+            line = f"[FLUX] {label} START t={now:.2f}"
+        if extra:
+            line = f"{line} {extra}"
+        self.logger.info(line)
+        print(line, flush=True)
+        return now
 
     def _is_complete_local_dir(self, path: Path) -> bool:
         if not path.exists() or not (path / "model_index.json").exists():
@@ -199,10 +231,14 @@ class FLUXModelLoader:
         On Kaggle, ``models/`` is gitignored so a fresh clone has no weights.
         Download the configured HF package into ``model_path`` when incomplete.
         """
+        import threading
+
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
         if self._is_complete_local_dir(self.model_path) and self._local_t5_ready(self.model_path):
-            self.logger.info("FLUX local package ready at %s", self.model_path.resolve())
+            self._cache_status = "hit"
+            self.logger.info("[FLUX] CACHE HIT local package ready at %s", self.model_path.resolve())
+            print(f"[FLUX] CACHE HIT path={self.model_path.resolve()}", flush=True)
             return str(self.model_path)
 
         download_root = self.model_path
@@ -219,14 +255,25 @@ class FLUXModelLoader:
                 )
 
         if self._is_complete_local_dir(download_root) and self._local_t5_ready(download_root):
+            self._cache_status = "hit"
+            self.logger.info("[FLUX] CACHE HIT hub package at %s", download_root.resolve())
+            print(f"[FLUX] CACHE HIT path={download_root.resolve()}", flush=True)
             return str(download_root)
 
+        self._cache_status = "miss"
+        self._progress(
+            f"Downloading FLUX weights (CACHE MISS: {repo_id})",
+            9,
+        )
         self.logger.info(
-            "FLUX weights missing locally — downloading %s -> %s "
-            "(HF_TOKEN present: %s)",
+            "[FLUX] CACHE MISS / DOWNLOAD starting repo=%s -> %s (HF_TOKEN present: %s)",
             repo_id,
             download_root,
             self._hf_token_present(),
+        )
+        print(
+            f"[FLUX] CACHE MISS / DOWNLOAD repo={repo_id} dest={download_root}",
+            flush=True,
         )
         download_root.mkdir(parents=True, exist_ok=True)
         try:
@@ -239,6 +286,22 @@ class FLUXModelLoader:
         token = (
             os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or None
         )
+        t_dl = self._mark("weight download", time.perf_counter())
+        stop_hb = threading.Event()
+
+        def _heartbeat() -> None:
+            started = time.perf_counter()
+            while not stop_hb.wait(20.0):
+                elapsed = int(time.perf_counter() - started)
+                # Keep UI alive during multi-GB downloads (stay in loading band 9-11%).
+                pct = min(11, 9 + elapsed // 120)
+                self._progress(
+                    f"Downloading FLUX weights ({elapsed}s elapsed, CACHE MISS)",
+                    pct,
+                )
+
+        hb = threading.Thread(target=_heartbeat, name="flux-download-hb", daemon=True)
+        hb.start()
         try:
             snapshot_download(
                 repo_id=repo_id,
@@ -263,6 +326,12 @@ class FLUXModelLoader:
                 f"MODEL_DOWNLOAD_FAILED: Could not download '{repo_id}' into "
                 f"'{download_root}': {type(exc).__name__}: {exc}"
             ) from exc
+        finally:
+            stop_hb.set()
+            hb.join(timeout=2.0)
+
+        self._download_time_s = round(time.perf_counter() - t_dl, 2)
+        self._mark("weight download", t_dl, end=True)
 
         if not (
             self._is_complete_local_dir(download_root) and self._local_t5_ready(download_root)
@@ -272,6 +341,7 @@ class FLUXModelLoader:
                 f"'{download_root}' is still incomplete (missing T5/VAE/weights)."
             )
         self.logger.info("FLUX hub package ready at %s", download_root.resolve())
+        self._progress("FLUX weights downloaded - initializing pipeline", 12)
         return str(download_root)
 
     def _resolve_model_source(self) -> tuple[str, Optional[str]]:
@@ -296,14 +366,19 @@ class FLUXModelLoader:
             self.model_path
         ):
             if self._local_t5_ready(self.model_path):
-                self.logger.info("Found complete local Kontext weights at %s", self.model_path)
+                self._cache_status = "hit"
+                self.logger.info(
+                    "[FLUX] CACHE HIT complete local Kontext weights at %s", self.model_path
+                )
+                print(f"[FLUX] CACHE HIT path={self.model_path}", flush=True)
                 return str(self.model_path), None
 
         if self._has_transformer_weights(self.model_path) and self._is_complete_local_dir(
             self.LEGACY_SCHNELL_PATH
         ):
+            self._cache_status = "hybrid"
             self.logger.info(
-                "Hybrid Kontext load: transformer=%s shared_from=%s",
+                "[FLUX] CACHE HIT hybrid Kontext load: transformer=%s shared_from=%s",
                 self.model_path,
                 self.LEGACY_SCHNELL_PATH,
             )
@@ -322,6 +397,7 @@ class FLUXModelLoader:
             "on",
         )
         if skip_prefetch:
+            self._cache_status = "hub_direct"
             self.logger.info("Using Hugging Face Kontext source directly: %s", self.hf_model_id)
             return self.hf_model_id, None
 
@@ -447,32 +523,45 @@ class FLUXModelLoader:
             self._torch_compile_enabled = False
             return False
 
-    def load(self) -> Any | None:
+    def load(self, progress_callback: ProgressCallback = None) -> Any | None:
         """Load FluxKontextPipeline once; subsequent calls reuse the resident pipeline."""
+        if progress_callback is not None:
+            self._progress_callback = progress_callback
         if self._pipeline is not None:
             self._reuse_count += 1
             self.logger.info(
                 "[FLUX] Reusing loaded Kontext pipeline (reuse_count=%s)",
                 self._reuse_count,
             )
+            print(
+                f"[FLUX] REUSE pipeline resident=True reuse_count={self._reuse_count}",
+                flush=True,
+            )
+            self._progress("Reusing loaded FLUX.1-Kontext pipeline", 15)
             return self._pipeline
 
         if os.environ.get("PYTEST_CURRENT_TEST") and self.allow_fallback:
             self.logger.info("Pytest environment detected; skipping Kontext weight load.")
             return None
 
-        self.logger.info("[FLUX] Model initialization started")
-        t0 = time.perf_counter()
+        t0 = self._mark("pipeline initialization", time.perf_counter())
+        self._progress("Loading model - resolving FLUX weights", 8)
         target_device = self.device_manager.resolve_device(self.device_setting)
-        self.logger.info("Loading FLUX.1-Kontext model...")
+        vram_before = self._gpu_vram_mb()
+        print(
+            f"[FLUX] START pipeline initialization device={target_device} "
+            f"gpu_vram_mb={vram_before:.0f} cuda={bool(torch and torch.cuda.is_available())}",
+            flush=True,
+        )
 
         # NF4 Diffusers packages require bitsandbytes + valid package metadata.
         if bool(getattr(self, "_want_nf4", True)):
             try:
                 from src.common.utils.ensure_bitsandbytes import ensure_bitsandbytes
 
+                t_bnb = self._mark("bitsandbytes check", time.perf_counter())
                 bnb_ver = ensure_bitsandbytes(auto_install=True)
-                self.logger.info("[FLUX] bitsandbytes ready: %s", bnb_ver)
+                self._mark("bitsandbytes check", t_bnb, end=True, extra=f"ver={bnb_ver}")
             except Exception as exc:
                 msg = str(exc) or f"{type(exc).__name__}"
                 self.logger.error("%s", msg)
@@ -498,6 +587,7 @@ class FLUXModelLoader:
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
         try:
+            self._progress("Resolving FLUX model source", 8)
             pipeline_root, transformer_root = self._resolve_model_source()
         except Exception as exc:
             self.logger.error("%s", exc)
@@ -522,10 +612,14 @@ class FLUXModelLoader:
             transformer = None
             want_nf4 = bool(getattr(self, "_want_nf4", True))
             self.logger.info(
-                "[FLUX] Quantization profile: %s (FLUX_QUANTIZATION / FLUX_DISABLE_NF4)",
+                "[FLUX] Quantization profile: %s dtype=%s cache=%s",
                 "nf4" if want_nf4 else "full_precision",
+                dtype,
+                self._cache_status,
             )
             if transformer_root is not None:
+                self._progress("Loading FLUX transformer", 13)
+                t_tr = self._mark("transformer load", time.perf_counter())
                 self.logger.info(
                     "Loading Kontext transformer from %s (shared root %s)",
                     transformer_root,
@@ -565,7 +659,6 @@ class FLUXModelLoader:
                             )
                         )
                 else:
-                    # Quality path: load transformer weights without BitsAndBytes NF4.
                     transformer = FluxTransformer2DModel.from_pretrained(
                         transformer_root,
                         subfolder="transformer",
@@ -573,7 +666,10 @@ class FLUXModelLoader:
                         low_cpu_mem_usage=use_low_cpu_mem,
                     )
                     used_bnb_4bit = False
+                self._mark("transformer load", t_tr, end=True)
 
+            self._progress("Loading FluxKontextPipeline (T5/CLIP/VAE)", 14)
+            t_pipe = self._mark("pipeline assembly", time.perf_counter())
             self.logger.info("Loading FluxKontextPipeline from %s ...", pipeline_root)
             kwargs = {
                 "torch_dtype": dtype,
@@ -641,12 +737,12 @@ class FLUXModelLoader:
                 raise RuntimeError(
                     f"Unable to construct FluxKontextPipeline from {pipeline_root}"
                 )
+            self._pipeline_assemble_time_s = round(time.perf_counter() - t_pipe, 2)
+            self._mark("pipeline assembly", t_pipe, end=True)
 
             self._used_bnb_4bit = used_bnb_4bit
 
             if target_device == "cuda":
-                # Reduce allocator fragmentation on long offload runs (safe default).
-                # Only set if the operator has not already configured alloc conf.
                 if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
                     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
                     self.logger.info(
@@ -654,58 +750,60 @@ class FLUXModelLoader:
                     )
 
                 # Offload policy:
-                # - default / FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB path)
-                # - FLUX_MODEL_CPU_OFFLOAD=false → keep weights on GPU (16GB quality path)
+                # - FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB path)
+                # - FLUX_MODEL_CPU_OFFLOAD=false → GPU-resident
+                # - auto: offload on <14GB; GPU-resident on T4/16GB+ (NF4 or full)
                 offload_env = os.environ.get("FLUX_MODEL_CPU_OFFLOAD", "").strip().lower()
+                physical_mb = self._gpu_vram_mb()
                 prefer_offload = True
                 if offload_env in ("0", "false", "no", "off"):
                     prefer_offload = False
                 elif offload_env in ("1", "true", "yes", "on"):
                     prefer_offload = True
-                elif not want_nf4:
-                    # Full precision without explicit offload flag: prefer GPU-resident
-                    # when physical VRAM looks large enough; else keep offload.
-                    physical_mb = 0.0
-                    try:
-                        if torch is not None and torch.cuda.is_available():
-                            physical_mb = torch.cuda.get_device_properties(0).total_memory / (
-                                1024**2
-                            )
-                    except Exception:
-                        physical_mb = 0.0
+                else:
+                    # Auto: T4 15GB / 16GB+ should keep NF4 resident - CPU offload
+                    # thrash was measured at multi-minute per diffusion step on 6GB.
                     prefer_offload = physical_mb < 14000
 
+                self._progress("Configuring device / offload", 16)
+                t_off = self._mark("offload configuration", time.perf_counter())
                 # WHY model_cpu_offload (not sequential): sequential + bnb NF4 previously
                 # raised "Cannot copy out of meta tensor; no data!" on this stack.
                 if prefer_offload and hasattr(pipeline, "enable_model_cpu_offload"):
                     pipeline.enable_model_cpu_offload()
                     self._offload_strategy = "model_cpu_offload"
                     self.logger.info(
-                        "Kontext model CPU offload enabled (%s)",
+                        "Kontext model CPU offload enabled (%s, vram=%.0fMB)",
                         "bnb-safe" if used_bnb_4bit else "standard",
+                        physical_mb,
                     )
                 else:
                     if hasattr(pipeline, "to"):
                         pipeline.to(target_device)
                     self._offload_strategy = "gpu_resident" if not prefer_offload else "none"
                     self.logger.info(
-                        "Kontext GPU-resident load (offload=%s, nf4=%s)",
+                        "Kontext GPU-resident load (offload=%s, nf4=%s, vram=%.0fMB)",
                         self._offload_strategy,
                         used_bnb_4bit,
+                        physical_mb,
                     )
 
                 if hasattr(pipeline, "vae") and pipeline.vae is not None:
-                    # Slicing: lower VRAM during decode without softening details.
                     if hasattr(pipeline.vae, "enable_slicing"):
                         pipeline.vae.enable_slicing()
-                    # Tiling softens fine garment edges at 512–768; keep OFF by default.
-                    # Enable only via FLUX_VAE_TILING=true when resolving OOM on larger sizes.
                     want_tile = os.environ.get("FLUX_VAE_TILING", "false").strip().lower() in (
                         "1",
                         "true",
                         "yes",
                         "on",
                     )
+                    # Auto-enable VAE tiling on high-res T4 path when not forced off.
+                    if (
+                        not want_tile
+                        and physical_mb >= 14000
+                        and os.environ.get("FLUX_VAE_TILING", "").strip() == ""
+                    ):
+                        want_tile = True
                     if want_tile and hasattr(pipeline.vae, "enable_tiling"):
                         pipeline.vae.enable_tiling()
                         self.logger.info("[FLUX] VAE tiling enabled (OOM mitigation)")
@@ -725,6 +823,8 @@ class FLUXModelLoader:
                         torch.set_float32_matmul_precision("high")
                     except Exception:
                         pass
+                self._offload_config_time_s = round(time.perf_counter() - t_off, 2)
+                self._mark("offload configuration", t_off, end=True)
             elif hasattr(pipeline, "to"):
                 pipeline.to(target_device)
                 self._offload_strategy = "none"
@@ -735,14 +835,28 @@ class FLUXModelLoader:
             self._pipeline = pipeline
             self._load_count += 1
             self._init_time_s = round(time.perf_counter() - t0, 2)
+            alloc_after = 0.0
+            if torch is not None and torch.cuda.is_available():
+                alloc_after = round(torch.cuda.memory_allocated() / (1024**2), 1)
+            self._mark("pipeline initialization", t0, end=True)
+            print(
+                f"[FLUX] FLUX READY elapsed={self._init_time_s}s "
+                f"cache={self._cache_status} download_s={self._download_time_s} "
+                f"assemble_s={self._pipeline_assemble_time_s} "
+                f"offload={self._offload_strategy} bnb4bit={used_bnb_4bit} "
+                f"vram_alloc_mb={alloc_after}",
+                flush=True,
+            )
+            self._progress("FLUX READY", 18)
             self.logger.info(
                 "[FLUX] Model initialization completed (%.2fs, bnb4bit=%s offload=%s "
-                "attention=%s compile=%s)",
+                "attention=%s compile=%s cache=%s)",
                 self._init_time_s,
                 used_bnb_4bit,
                 self._offload_strategy,
                 self._attention_backend,
                 self._torch_compile_enabled,
+                self._cache_status,
             )
             return pipeline
         except Exception as exc:
@@ -841,6 +955,10 @@ class FLUXModelLoader:
             "attention_diag": dict(getattr(self, "_attention_diag", {}) or {}),
             "torch_compile": self._torch_compile_enabled,
             "init_time_s": self._init_time_s,
+            "download_time_s": self._download_time_s,
+            "pipeline_assemble_time_s": self._pipeline_assemble_time_s,
+            "offload_config_time_s": self._offload_config_time_s,
+            "cache_status": self._cache_status,
             "load_count": self._load_count,
             "reuse_count": self._reuse_count,
             "pipeline_resident": self._pipeline is not None,

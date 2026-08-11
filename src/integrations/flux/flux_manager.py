@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from src.common.models.device_manager import DeviceManager
+
+ProgressCallback = Optional[Callable[[str, int], None]]
 
 
 class FluxManager:
@@ -26,13 +28,15 @@ class FluxManager:
         self.logger = logging.getLogger("fabricvision.models.flux_manager")
         self.device_manager = DeviceManager()
         self.loader: Optional[Any] = None
+        self.progress_callback: ProgressCallback = None
 
-    def load(self) -> Any | None:
+    def load(self, progress_callback: ProgressCallback = None) -> Any | None:
         """Load FLUX.1-Kontext weights into memory (reuses resident pipeline)."""
+        cb = progress_callback if progress_callback is not None else self.progress_callback
         if self.loader is not None and getattr(self.loader, "pipeline", None) is not None:
             self.logger.info("[FLUX] Reusing loaded Kontext pipeline via FluxManager")
             # Touch loader.load() so reuse counters / logs stay consistent
-            return self.loader.load()
+            return self.loader.load(progress_callback=cb)
 
         self.logger.info(
             "[FLUX] Model initialization started via FluxManager from %s",
@@ -48,7 +52,7 @@ class FluxManager:
             hf_model_id=self.hf_model_id,
         )
         self.logger.info("FLUX model ID: %s", self.loader.hf_model_id)
-        pipeline = self.loader.load()
+        pipeline = self.loader.load(progress_callback=cb)
         if pipeline is not None:
             self.logger.info("[FLUX] Model initialization completed via FluxManager")
         return pipeline

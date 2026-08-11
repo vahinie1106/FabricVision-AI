@@ -50,15 +50,24 @@ fast_preview:
   guidance_scale: 2.5
   measured_runtime_note: "~6-8 min cold (Day-17 class); not <2.5 min"
 
-# Standard (DEFAULT) — Day-17 cold measured ≈ 603.5s @ 512/3
-# guidance 3.0: slightly stronger edit adherence for fabric-print fidelity without
-# adding diffusion steps (steps remain the dominant RTX 3050 cost).
+# Standard — RTX 3050 6GB measured default (soft at 3 steps; keep for low-VRAM).
+# On Tesla T4 / 16GB+, GarmentGenerationPipeline auto-upgrades Standard to
+# 768×768 / 12 steps unless FLUX_GENERATION_RESOLUTION / FLUX_STANDARD_STEPS set.
 standard:
   height: 512
   width: 512
   num_inference_steps: 3
   guidance_scale: 3.0
   measured_runtime_s_cold: 603.5
+  note: "low-VRAM default; high-VRAM auto-upgrade applies on T4"
+
+# Explicit T4 Standard (also selected automatically when VRAM>=14GB)
+standard_t4:
+  height: 768
+  width: 768
+  num_inference_steps: 12
+  guidance_scale: 3.0
+  measured_runtime_note: "Tesla T4 15GB NF4 GPU-resident target"
 
 # Production — Kaggle T4-safe square size (1024 OOMs; override via FLUX_GENERATION_RESOLUTION)
 production:

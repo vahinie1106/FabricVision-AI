@@ -90,7 +90,7 @@ export function resolveStageIndex(
     const lower = currentStep.toLowerCase();
     // Ordered specific → general. Never use bare "load" (matches "uploading").
     const keywordMap: Array<{ keys: string[]; id: string }> = [
-      { keys: ["reusing", "loading model", "connecting to remote"], id: "load-model" },
+      { keys: ["reusing", "loading model", "connecting to remote", "downloading flux", "flux ready"], id: "load-model" },
       { keys: ["preparing fabric", "fabric appearance"], id: "fabric" },
       { keys: ["garment conditioning", "conditioning"], id: "conditioning" },
       { keys: ["encoding prompt"], id: "prompt" },

@@ -224,6 +224,10 @@ class GarmentGenerationPipeline:
         if mode_key == "preview" and preview_steps.isdigit():
             self.config.num_inference_steps = max(1, int(preview_steps))
 
+        # T4 / 16GB+ quality path: Standard UI mode must not stay at the RTX 3050
+        # 512×3 preset (known soft/blurry). Prefer 768 / 12 steps unless overridden.
+        self._apply_high_vram_standard_defaults(mode_key)
+
         gen_cfg_path = Path(self.config.config_dir) / "generation_config.yaml"
         if not gen_cfg_path.exists():
             gen_cfg_path = Path(self.config.config_dir) / "custom_generator" / "generation_config.yaml"
@@ -253,6 +257,60 @@ class GarmentGenerationPipeline:
             self.config.png_optimize = bool(
                 loaded_gen.get("png_optimize", self.config.png_optimize)
             )
+
+    def _gpu_vram_mb(self) -> float:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                return float(torch.cuda.get_device_properties(0).total_memory) / (1024**2)
+        except Exception:
+            return 0.0
+        return 0.0
+
+    def _apply_high_vram_standard_defaults(self, mode_key: str) -> None:
+        """
+        On Tesla T4 / 16GB+ GPUs, Standard must not inherit the RTX 3050
+        soft 512×3 preset. Env overrides always win.
+        """
+        if mode_key != "standard":
+            return
+        vram = self._gpu_vram_mb()
+        if vram < 14000:
+            self.logger.info(
+                "[FLUX] Standard low-VRAM path (%.0f MB): %sx%s steps=%s",
+                vram,
+                self.config.width,
+                self.config.height,
+                self.config.num_inference_steps,
+            )
+            return
+
+        res_forced = bool(
+            os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip()
+            or os.environ.get("FLUX_PRODUCTION_SIZE", "").strip()
+        )
+        steps_forced = bool(os.environ.get("FLUX_STANDARD_STEPS", "").strip())
+
+        if not res_forced:
+            self.config.height = 768
+            self.config.width = 768
+        if not steps_forced:
+            # 12 steps: quality leap vs 3 without the 20–30 step ladder cost.
+            self.config.num_inference_steps = max(self.config.num_inference_steps, 12)
+        if self.config.guidance_scale < 3.0:
+            self.config.guidance_scale = 3.0
+
+        self.logger.info(
+            "[FLUX] Standard high-VRAM path (%.0f MB): %sx%s steps=%s guidance=%s "
+            "(T4-quality defaults; override via FLUX_GENERATION_RESOLUTION / "
+            "FLUX_STANDARD_STEPS)",
+            vram,
+            self.config.width,
+            self.config.height,
+            self.config.num_inference_steps,
+            self.config.guidance_scale,
+        )
 
     def run(
         self,
