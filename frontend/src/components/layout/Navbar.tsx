@@ -9,7 +9,7 @@ export default function Navbar() {
 
   const links = [
     { name: "Home", href: "/" },
-    { name: "AI Studio", href: "/studio" },
+    { name: "AI Studio", href: "/studio/custom-garment" },
     { name: "Projects", href: "/projects" },
     { name: "About", href: "/about" },
   ];
@@ -25,7 +25,13 @@ export default function Navbar() {
 
         <nav className="hidden md:flex space-x-8">
           {links.map((link) => {
-            const isActive = pathname === link.href || pathname.startsWith(link.href + "/");
+            const isActive =
+              link.href === "/"
+                ? pathname === "/"
+                : pathname === link.href ||
+                  pathname.startsWith(link.href + "/") ||
+                  (link.href === "/studio/custom-garment" &&
+                    pathname.startsWith("/studio/"));
             return (
               <Link
                 key={link.name}
@@ -52,9 +58,12 @@ export default function Navbar() {
           <button className="text-sm font-medium text-[#333333] hover:text-[#1A1A1A]">
             Log in
           </button>
-          <button className="text-sm font-semibold bg-[#1A1A1A] text-white px-4 py-2 rounded-xl hover:bg-[#333333] transition-transform hover:scale-[1.02] shadow-[0_4px_12px_rgba(26,26,26,0.2)]">
+          <Link
+            href="/studio/custom-garment"
+            className="text-sm font-semibold bg-[#1A1A1A] text-white px-4 py-2 rounded-xl hover:bg-[#333333] transition-transform hover:scale-[1.02] shadow-[0_4px_12px_rgba(26,26,26,0.2)]"
+          >
             Start Designing
-          </button>
+          </Link>
         </div>
       </div>
     </header>
