@@ -15,7 +15,7 @@ export default function Home() {
         {/* Left: Text & CTA */}
         <div className="w-full lg:w-1/2 text-left">
           <motion.div 
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 1, y: 0 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6 }}
             className="inline-flex items-center space-x-2 bg-white px-4 py-2 rounded-full border border-gray-200 shadow-sm mb-8"
@@ -25,7 +25,7 @@ export default function Home() {
           </motion.div>
           
           <motion.h1 
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 1, y: 0 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.1 }}
             className="text-5xl lg:text-6xl font-bold text-[#1A1A1A] leading-tight mb-6"
@@ -37,7 +37,7 @@ export default function Home() {
           </motion.h1>
           
           <motion.p 
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 1, y: 0 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.2 }}
             className="text-lg text-[#767676] max-w-lg mb-10 leading-relaxed"
@@ -46,7 +46,7 @@ export default function Home() {
           </motion.p>
           
           <motion.div 
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 1, y: 0 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, delay: 0.3 }}
             className="flex flex-col sm:flex-row items-center space-y-4 sm:space-y-0 sm:space-x-4"

@@ -92,6 +92,27 @@ def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
     return out
 
 
+def _rewrite_response_headers(headers: httpx.Headers) -> dict[str, str]:
+    """Drop hop-by-hop headers and rewrite localhost Next Location → relative path."""
+    out = _filter_response_headers(headers)
+    # Normalize header key casing for Location.
+    loc_key = next((k for k in out if k.lower() == "location"), None)
+    if not loc_key:
+        return out
+    location = out[loc_key]
+    upstream = frontend_upstream()
+    rewritten = location
+    for needle in (upstream, "http://127.0.0.1:3000", "http://localhost:3000"):
+        if rewritten.startswith(needle):
+            rewritten = rewritten[len(needle) :] or "/"
+            break
+    if rewritten != location:
+        out.pop(loc_key, None)
+        out["location"] = rewritten
+        logger.info("Rewrote Location %s → %s", location, rewritten)
+    return out
+
+
 def register_frontend_gateway(app: FastAPI) -> None:
     """
     Register a catch-all proxy to Next.js.
@@ -157,7 +178,7 @@ def register_frontend_gateway(app: FastAPI) -> None:
         return Response(
             content=upstream_resp.content,
             status_code=upstream_resp.status_code,
-            headers=_filter_response_headers(upstream_resp.headers),
+            headers=_rewrite_response_headers(upstream_resp.headers),
             media_type=upstream_resp.headers.get("content-type"),
         )
 

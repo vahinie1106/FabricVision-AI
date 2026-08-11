@@ -7,15 +7,36 @@
  * SAME-ORIGIN gateway (FastAPI on :8000, including Kaggle Jupyter proxy):
  *   {detectedOrConfiguredBasePath}/api/v1
  *
- * On Kaggle the public prefix is dynamic. jupyter-server-proxy under a Kaggle
- * Jupyter tunnel typically looks like:
+ * On Kaggle the public prefix is dynamic:
  *   /k/<session>/proxy/proxy/8000
- * (first /proxy/ = Kaggle Jupyter tunnel, second = port mapper).
- * Never bake a hard-coded host-root "/proxy/8000"-only path.
+ * Never bake host-root "/proxy/8000" alone.
+ * Never call http://127.0.0.1:8000 from a jupyter-proxy browser session.
  */
 
 function stripTrailingSlash(value: string): string {
   return value.replace(/\/+$/, "");
+}
+
+function isAbsoluteHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
+function isLoopbackAbsoluteUrl(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.hostname === "localhost" || u.hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
+function isProxyDeploymentHost(hostname: string): boolean {
+  const host = (hostname || "").toLowerCase();
+  return (
+    host.includes("kaggle.net") ||
+    host.includes("jupyter-proxy") ||
+    host.includes("googleapis.com")
+  );
 }
 
 /** Optional build-time basePath (set by scripts/run_kaggle.py from live Jupyter). */
@@ -29,9 +50,8 @@ export function getConfiguredBasePath(): string {
 
 /**
  * Detect the public gateway prefix from the browser location.
- * Prefer `/k/<session>/proxy/proxy/<port>` (intentional two-layer path), then
- * `/k/<session>/proxy/<port>`, then host-root `/proxy/<port>`.
- * Do NOT strip a legitimate `/proxy/proxy/<port>` segment.
+ * Prefer `/k/<session>/proxy/proxy/<port>`, then `/k/<session>/proxy/<port>`,
+ * then host-root `/proxy/<port>`.
  */
 export function detectRuntimeBasePath(): string {
   if (typeof window === "undefined") return "";
@@ -59,9 +79,7 @@ export function getDeploymentBasePath(): string {
     const runtime = detectRuntimeBasePath();
     if (
       runtime &&
-      (host.includes("kaggle.net") ||
-        host.includes("jupyter-proxy") ||
-        host.includes("googleapis.com") ||
+      (isProxyDeploymentHost(host) ||
         process.env.NEXT_PUBLIC_USE_SAME_ORIGIN === "true")
     ) {
       return runtime;
@@ -70,10 +88,6 @@ export function getDeploymentBasePath(): string {
   }
 
   return getConfiguredBasePath();
-}
-
-function isAbsoluteHttpUrl(value: string): boolean {
-  return /^https?:\/\//i.test(value);
 }
 
 function isLocalNextDevHost(): boolean {
@@ -85,24 +99,51 @@ function isLocalNextDevHost(): boolean {
   );
 }
 
+function sameOriginApiRoot(basePath: string): string {
+  return stripTrailingSlash(`${basePath}/api/v1`);
+}
+
 /**
  * Resolve the API root including `/api/v1` (no trailing slash).
  */
 export function resolveApiBaseUrl(): string {
-  const configured = (process.env.NEXT_PUBLIC_API_URL || "").trim();
-  if (configured && isAbsoluteHttpUrl(configured)) {
+  const rawConfigured = (process.env.NEXT_PUBLIC_API_URL || "").trim();
+  const onProxyBrowser =
+    typeof window !== "undefined" && isProxyDeploymentHost(window.location.hostname);
+
+  // frontend/.env.local often has http://127.0.0.1:8000/api/v1 for local Next.dev.
+  // That absolute loopback URL must NEVER win inside a public Kaggle proxy tab —
+  // the browser would hang trying to reach the user's own machine.
+  const configured =
+    onProxyBrowser && rawConfigured && isAbsoluteHttpUrl(rawConfigured) && isLoopbackAbsoluteUrl(rawConfigured)
+      ? ""
+      : rawConfigured;
+
+  if (configured && isAbsoluteHttpUrl(configured) && !isLoopbackAbsoluteUrl(configured)) {
     return stripTrailingSlash(configured);
   }
 
-  // SSR / Node without window: keep local absolute API unless same-origin build.
+  // Absolute loopback is only valid for local Next.dev SSR/client against :8000.
+  if (configured && isAbsoluteHttpUrl(configured) && isLoopbackAbsoluteUrl(configured)) {
+    if (typeof window === "undefined") {
+      // SSR during local next start — OK
+      return stripTrailingSlash(configured);
+    }
+    if (isLocalNextDevHost() && process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true") {
+      return stripTrailingSlash(configured);
+    }
+    // Same-origin / proxy builds: ignore loopback and continue.
+  }
+
+  // SSR / Node without window
   if (typeof window === "undefined") {
     if (
       process.env.NEXT_PUBLIC_USE_SAME_ORIGIN === "true" ||
       getConfiguredBasePath()
     ) {
-      return stripTrailingSlash(`${getConfiguredBasePath()}/api/v1`);
+      return sameOriginApiRoot(getConfiguredBasePath());
     }
-    if (configured) {
+    if (configured && !isAbsoluteHttpUrl(configured)) {
       const path = configured.replace(/^\.\//, "/");
       const normalized = path.startsWith("/") ? path : `/${path}`;
       return stripTrailingSlash(normalized);
@@ -114,41 +155,48 @@ export function resolveApiBaseUrl(): string {
   if (
     isLocalNextDevHost() &&
     process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true" &&
-    !configured
+    !(configured && !isAbsoluteHttpUrl(configured))
   ) {
     return "http://127.0.0.1:8000/api/v1";
   }
 
   const basePath = getDeploymentBasePath();
-  if (configured) {
-    // Relative override such as "/api/v1" — if it already includes the full
-    // public prefix, use as-is; otherwise prefix with the live base path.
+
+  if (configured && !isAbsoluteHttpUrl(configured)) {
     const path = configured.replace(/^\.\//, "/");
     const normalized = path.startsWith("/") ? path : `/${path}`;
+
     if (basePath && normalized.startsWith(`${basePath}/`)) {
       return stripTrailingSlash(normalized);
     }
-    if (basePath && normalized === "/api/v1") {
-      return stripTrailingSlash(`${basePath}/api/v1`);
+    // Stale baked session path from a previous Kaggle run — use live base.
+    if (basePath && /\/proxy\/(?:proxy\/)?\d+\/api\/v1\/?$/.test(normalized)) {
+      return sameOriginApiRoot(basePath);
     }
-    // Configured absolute-from-root API under a dynamic public prefix.
-    if (basePath && normalized.startsWith("/api/")) {
+    if (normalized === "/api/v1" || normalized.startsWith("/api/")) {
       return stripTrailingSlash(`${basePath}${normalized}`);
     }
     return stripTrailingSlash(`${basePath}${normalized}`);
   }
 
-  return stripTrailingSlash(`${basePath}/api/v1`);
+  return sameOriginApiRoot(basePath);
 }
 
 /**
  * Origin used to resolve `/outputs/...` media paths.
- * Empty string ⇒ same-origin relative URLs (required for Kaggle proxy).
+ * Empty / path ⇒ same-origin relative URLs (required for Kaggle proxy).
  */
 export function resolveApiOrigin(): string {
-  const configuredOrigin = (process.env.NEXT_PUBLIC_API_ORIGIN || "").trim();
+  const rawOrigin = (process.env.NEXT_PUBLIC_API_ORIGIN || "").trim();
+  const onProxyBrowser =
+    typeof window !== "undefined" && isProxyDeploymentHost(window.location.hostname);
+
+  const configuredOrigin =
+    onProxyBrowser && rawOrigin && isAbsoluteHttpUrl(rawOrigin) && isLoopbackAbsoluteUrl(rawOrigin)
+      ? ""
+      : rawOrigin;
+
   if (configuredOrigin) {
-    // If a stale "/proxy/8000" was baked but runtime path differs, prefer runtime.
     const runtime = getDeploymentBasePath();
     if (
       runtime &&
@@ -157,19 +205,26 @@ export function resolveApiOrigin(): string {
     ) {
       return runtime;
     }
+    if (isAbsoluteHttpUrl(configuredOrigin)) {
+      if (isLoopbackAbsoluteUrl(configuredOrigin) && onProxyBrowser) {
+        return runtime;
+      }
+      return stripTrailingSlash(configuredOrigin);
+    }
     return stripTrailingSlash(configuredOrigin);
   }
 
   const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "").trim();
   if (apiUrl && isAbsoluteHttpUrl(apiUrl)) {
-    return stripTrailingSlash(apiUrl.replace(/\/api\/v1\/?$/, ""));
+    if (!(onProxyBrowser && isLoopbackAbsoluteUrl(apiUrl))) {
+      return stripTrailingSlash(apiUrl.replace(/\/api\/v1\/?$/, ""));
+    }
   }
 
   if (
     typeof window !== "undefined" &&
     isLocalNextDevHost() &&
-    process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true" &&
-    !apiUrl
+    process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true"
   ) {
     return "http://127.0.0.1:8000";
   }

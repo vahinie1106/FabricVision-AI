@@ -276,13 +276,13 @@ def _http_probe(url: str, timeout: float = 12.0, token: Optional[str] = None) ->
             out["status"] = int(getattr(resp, "status", 200))
             out["content_type"] = resp.headers.get("Content-Type") or ""
             out["location"] = resp.headers.get("Location")
-            out["body"] = resp.read(500).decode("utf-8", errors="replace")
+            out["body"] = resp.read(2_000_000).decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         out["status"] = int(exc.code)
         out["content_type"] = (exc.headers.get("Content-Type") if exc.headers else "") or ""
         out["location"] = exc.headers.get("Location") if exc.headers else None
         try:
-            out["body"] = exc.read(500).decode("utf-8", errors="replace")
+            out["body"] = exc.read(64_000).decode("utf-8", errors="replace")
         except Exception:
             out["body"] = str(exc.reason)
         out["error"] = f"HTTPError {exc.code}"
@@ -476,10 +476,15 @@ def _http_status(url: str, timeout: float = 8.0) -> tuple[int, str]:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             code = int(getattr(resp, "status", 200))
-            body = resp.read(400).decode("utf-8", errors="replace")
+            # Need enough bytes to see /_next/static script tags (not just <head>).
+            body = resp.read(2_000_000).decode("utf-8", errors="replace")
             return code, body
     except urllib.error.HTTPError as exc:
-        return int(exc.code), str(exc.reason)
+        try:
+            body = exc.read(64_000).decode("utf-8", errors="replace")
+        except Exception:
+            body = str(exc.reason)
+        return int(exc.code), body
     except Exception as exc:
         return 0, str(exc)
 
@@ -572,17 +577,144 @@ def stop_port(port: int, label: str) -> None:
 
 
 def _frontend_env(base_path: str) -> dict:
+    """Env for Next build/start — never bake loopback API URLs into the client."""
     env = os.environ.copy()
     env["NEXT_PUBLIC_USE_SAME_ORIGIN"] = "true"
+    # Relative API path; browser resolves with live detectRuntimeBasePath().
+    # Do NOT bake http://127.0.0.1:8000 (frontend/.env.local local-dev default) —
+    # that makes public Kaggle tabs hang calling the user's own machine.
+    env["NEXT_PUBLIC_API_URL"] = "/api/v1"
+    env["NEXT_PUBLIC_API_ORIGIN"] = ""
     if base_path:
         env["NEXT_PUBLIC_BASE_PATH"] = base_path
-        env["NEXT_PUBLIC_API_URL"] = f"{base_path}/api/v1"
-        env["NEXT_PUBLIC_API_ORIGIN"] = base_path
     else:
         env.pop("NEXT_PUBLIC_BASE_PATH", None)
-        env["NEXT_PUBLIC_API_URL"] = "/api/v1"
-        env["NEXT_PUBLIC_API_ORIGIN"] = ""
     return env
+
+
+def extract_next_static_refs(html: str) -> List[str]:
+    """Collect /_next/static asset paths referenced by HTML."""
+    import re
+
+    refs: List[str] = []
+    for match in re.finditer(
+        r"""(?:src|href)=["']([^"']*?/_next/static/[^"']+)["']""",
+        html,
+        flags=re.IGNORECASE,
+    ):
+        ref = match.group(1).strip()
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def assert_html_next_assets_use_base_path(url: str, base_path: str) -> List[str]:
+    """
+    Ensure HTML script/link tags target {basePath}/_next/static/... when a
+    public prefix is configured. Bare /_next/... behind Kaggle proxy loads from
+    the wrong host root → JS never runs → blank/infinite load UI.
+    """
+    code, body = _http_status(url, timeout=15.0)
+    if code != 200:
+        raise RuntimeError(f"HTML asset check failed for {url}: HTTP {code}")
+    refs = extract_next_static_refs(body)
+    if not refs:
+        # App Router may stream; still require at least one static ref for / pages.
+        raise RuntimeError(
+            f"HTML from {url} contains no /_next/static asset references — "
+            "Next.js client bundle will not load in the browser."
+        )
+    base = (base_path or "").rstrip("/")
+    if base:
+        bare = [r for r in refs if r.startswith("/_next/")]
+        if bare:
+            raise RuntimeError(
+                f"HTML from {url} references bare /_next assets without basePath "
+                f"{base!r}: {bare[:3]}. Rebuild with NEXT_PUBLIC_BASE_PATH set — "
+                "otherwise the public Kaggle site appears to load forever."
+            )
+        mismatched = [
+            r
+            for r in refs
+            if r.startswith("/") and not r.startswith(base + "/") and not r.startswith("http")
+        ]
+        if mismatched:
+            raise RuntimeError(
+                f"HTML from {url} has /_next assets outside basePath {base!r}: "
+                f"{mismatched[:3]}"
+            )
+        _log(
+            f"OK HTML /_next assets use basePath {base}: "
+            f"{len(refs)} refs (e.g. {refs[0]})"
+        )
+    else:
+        _log(f"OK HTML /_next assets present ({len(refs)} refs, no basePath)")
+    return refs
+
+
+def assert_public_next_static_reachable(
+    *,
+    public_url: str,
+    base_path: str,
+    proxy_host: str,
+    token: Optional[str] = None,
+) -> None:
+    """Fetch public HTML, then GET the first JS/CSS chunk via the public host."""
+    probe = _http_probe(public_url, timeout=25.0, token=token)
+    status = int(probe.get("status") or 0)
+    body = str(probe.get("body") or "")
+    if status != 200:
+        raise RuntimeError(
+            f"Public HTML not reachable for asset check: {public_url} → HTTP {status}"
+        )
+    refs = extract_next_static_refs(body)
+    if not refs:
+        # Fall back to local gateway HTML (same Next build) if public body is truncated.
+        refs = assert_html_next_assets_use_base_path("http://127.0.0.1:8000/", base_path)
+        _log("PUBLIC HTML had no /_next refs in body — using local gateway HTML refs")
+    else:
+        base = (base_path or "").rstrip("/")
+        if base:
+            bare = [r for r in refs if r.startswith("/_next/")]
+            if bare:
+                raise RuntimeError(
+                    f"PUBLIC HTML references bare /_next without basePath {base!r}: "
+                    f"{bare[:3]}"
+                )
+            _log(
+                f"OK PUBLIC HTML /_next assets use basePath {base}: "
+                f"{len(refs)} refs (e.g. {refs[0]})"
+            )
+
+    host = proxy_host.rstrip("/")
+    checked = 0
+    for ref in refs:
+        if ref.startswith("http://") or ref.startswith("https://"):
+            asset_url = ref
+        elif ref.startswith("/"):
+            asset_url = f"{host}{ref}"
+        else:
+            asset_url = f"{public_url.rstrip('/')}/{ref.lstrip('/')}"
+        if "/_next/static/" not in asset_url:
+            continue
+        asset_probe = _http_probe(asset_url, timeout=25.0, token=token)
+        asset_status = int(asset_probe.get("status") or 0)
+        _log(f"PUBLIC /_next asset: HTTP {asset_status} ({asset_url})")
+        if asset_status != 200:
+            raise RuntimeError(
+                f"Public Next.js asset not reachable (browser will hang): "
+                f"{asset_url} → HTTP {asset_status}. "
+                "basePath/assetPrefix mismatch or gateway not forwarding /_next."
+            )
+        checked += 1
+        if checked >= 3:
+            break
+    if checked == 0:
+        raise RuntimeError(
+            "Could not verify any public /_next/static assets — refusing to claim "
+            "the website is ready."
+        )
+    _log(f"OK PUBLIC /_next static verification ({checked} assets)")
 
 
 def build_frontend(base_path: str) -> None:
@@ -717,11 +849,21 @@ def print_banner(
     print("Kaggle Jupyter base URL:", flush=True)
     print(f"    {deploy.get('jupyter_base_url') or '(not detected — local/non-Kaggle)'}", flush=True)
     print("", flush=True)
-    print("PUBLIC WEBSITE:", flush=True)
+    print("PUBLIC WEBSITE (open this exact URL in your browser):", flush=True)
     print(f"    {deploy.get('public_url') or '(n/a outside Kaggle)'}", flush=True)
     if public_status and deploy.get("public_url"):
         print(f"    HTTP {public_status.get('root', 'n/a')}", flush=True)
+        if public_status.get("next_static") is not None:
+            print(
+                f"    /_next/static assets: HTTP {public_status.get('next_static')}",
+                flush=True,
+            )
     print("", flush=True)
+    print(
+        "NOTE: Page HTML returning 200 is not enough — JS under /_next/static "
+        "must also load through this same public prefix.",
+        flush=True,
+    )
     print("PUBLIC ABOUT:", flush=True)
     print(f"    {deploy.get('about_url') or '(n/a)'}", flush=True)
     if public_status and deploy.get("about_url"):
@@ -938,6 +1080,20 @@ def main() -> int:
         f"base_path={base_path!r}"
     )
 
+    if (
+        deploy.get("is_kaggle")
+        and not args.no_base_path
+        and not base_path
+    ):
+        _log(
+            "ERROR: Kaggle deployment requires a non-empty public basePath. "
+            "Could not detect Jupyter base_url. Set KAGGLE_PUBLIC_PATH or "
+            "pass --base-path /k/<session>/proxy/proxy/8000. "
+            "Building with empty basePath makes /_next assets miss the proxy "
+            "and the PUBLIC WEBSITE loads forever in the browser."
+        )
+        return 1
+
     # FLUX NF4 (eramth/flux-kontext-4bit) needs bitsandbytes before any load.
     # Fresh Kaggle images often ship without it → PackageNotFoundError in Diffusers.
     try:
@@ -1022,6 +1178,8 @@ def main() -> int:
 
         # Local gateway builds must not bake the obsolete host-root /proxy/8000 prefix.
         assert_html_has_no_stale_proxy_prefix("http://127.0.0.1:8000/")
+        # Critical: HTML must reference {basePath}/_next/static (not bare /_next).
+        assert_html_next_assets_use_base_path("http://127.0.0.1:8000/", base_path)
 
         next_code, _ = _http_status(
             f"http://127.0.0.1:3000{base_path}/" if base_path else "http://127.0.0.1:3000/"
@@ -1076,6 +1234,9 @@ def main() -> int:
                     )
                     wait_http("http://127.0.0.1:8000/about", "Gateway /about (rebuild)")
                     assert_html_has_no_stale_proxy_prefix("http://127.0.0.1:8000/")
+                    assert_html_next_assets_use_base_path(
+                        "http://127.0.0.1:8000/", base_path
+                    )
                     next_code, _ = _http_status(next_root)
                 else:
                     apply_public_path(deploy, winner)
@@ -1121,6 +1282,43 @@ def main() -> int:
                                 _shutdown()
                                 return 1
                         time.sleep(1.0)
+                else:
+                    # HTML 200 is not enough — browser hang is usually /_next/static.
+                    try:
+                        assert_public_next_static_reachable(
+                            public_url=str(deploy.get("public_url") or ""),
+                            base_path=base_path,
+                            proxy_host=str(
+                                deploy.get("proxy_host") or KAGGLE_PROXY_HOST_DEFAULT
+                            ),
+                            token=token,
+                        )
+                        public_status["next_static"] = 200
+                    except Exception as asset_exc:
+                        public_status["next_static"] = 0
+                        print_banner(
+                            health_code=health_code,
+                            root_code=root_code,
+                            next_code=next_code,
+                            deploy=deploy,
+                            public_status=public_status,
+                        )
+                        _log(
+                            f"ERROR: Public /_next static verification failed: {asset_exc}"
+                        )
+                        _log(
+                            "Services left running for debugging — Ctrl+C to stop."
+                        )
+                        while True:
+                            for proc, name in (
+                                (next_proc, "Next.js"),
+                                (api_proc, "FastAPI"),
+                            ):
+                                if proc.poll() is not None:
+                                    _log(f"{name} exited")
+                                    _shutdown()
+                                    return 1
+                            time.sleep(1.0)
             else:
                 print_banner(
                     health_code=health_code,
