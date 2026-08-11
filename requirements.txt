@@ -9,6 +9,11 @@ scikit-image
 httpx
 fastapi
 uvicorn
+# Required by FastAPI File()/Form() routes (generation + try-on). Not pulled by bare
+# `fastapi` — only by the optional fastapi[standard] extra. Missing on a fresh
+# Kaggle `pip install -r requirements.txt` crashes uvicorn during app import:
+# RuntimeError: Form data requires "python-multipart" to be installed.
+python-multipart>=0.0.18
 # Required for Diffusers NF4 FLUX Kontext (eramth/flux-kontext-4bit) on Kaggle T4 / local GPU.
 # PyPI wheels select CUDA backend from the installed torch runtime (do not pin CUDA suffix).
 bitsandbytes>=0.45.0

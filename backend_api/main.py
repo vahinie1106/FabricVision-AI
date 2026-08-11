@@ -1,7 +1,12 @@
 import os
+import sys
+
+print("[BACKEND START] backend_api.main loading", flush=True)
 
 # Must be set before any CUDA context is created in this process.
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+print("[BACKEND IMPORT] fastapi / settings / routes", flush=True)
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +20,11 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
     openapi_url="/openapi.json",
+)
+print(
+    f"[BACKEND APP CREATED] title={settings.PROJECT_NAME} "
+    f"version={settings.VERSION} pid={os.getpid()}",
+    flush=True,
 )
 
 # Also expose OpenAPI under the versioned API prefix (clients/docs bookmarks).
@@ -85,9 +95,11 @@ register_frontend_gateway(app)
 async def startup_event():
     import asyncio
     import logging
+    import traceback
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
+    print("[BACKEND SERVER STARTING] uvicorn lifespan/startup", flush=True)
     logger.info(f"Started {settings.PROJECT_NAME} v{settings.VERSION}")
 
     # Warm FLUX in THIS process in the background so /health stays responsive while
@@ -101,17 +113,19 @@ async def startup_event():
         loop = asyncio.get_running_loop()
 
         async def _bg_flux_warmup() -> None:
+            print("[FLUX WARMUP] STARTING", flush=True)
             try:
                 result = await loop.run_in_executor(None, warm_flux_in_api_process)
                 logger.info("FLUX warmup result: %s", result)
-                print(f"[startup] FLUX warmup result: {result}", flush=True)
+                print(f"[FLUX WARMUP] result: {result}", flush=True)
             except Exception as exc:
                 # Do not crash the API — Generate will surface MODEL_LOAD_ERROR.
                 logger.exception("FLUX warmup failed: %s", exc)
                 print(
-                    f"[startup] FLUX warmup FAILED: {type(exc).__name__}: {exc}",
+                    f"[FLUX WARMUP] FAILED {type(exc).__name__}: {exc}",
                     flush=True,
                 )
+                traceback.print_exc(file=sys.stderr)
 
         asyncio.create_task(_bg_flux_warmup())
         logger.info("FLUX warmup scheduled in background")

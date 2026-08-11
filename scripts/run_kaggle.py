@@ -27,15 +27,17 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TextIO
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "frontend"
 BASE_PATH_MARKER = FRONTEND / ".next" / "fabricvision-base-path.txt"
+KAGGLE_API_LOG = ROOT / "kaggle_api.log"
 KAGGLE_PROXY_HOST_DEFAULT = "https://kkb-production.jupyter-proxy.kaggle.net"
 
 
@@ -758,10 +760,51 @@ def start_next(base_path: str) -> subprocess.Popen:
     )
 
 
+def _tail_text(path: Path, *, max_chars: int = 12_000) -> str:
+    """Return the last max_chars of a log file (best-effort)."""
+    try:
+        if not path.exists():
+            return f"(log missing: {path})"
+        data = path.read_text(encoding="utf-8", errors="replace")
+        if len(data) <= max_chars:
+            return data if data.strip() else "(log empty)"
+        return data[-max_chars:]
+    except Exception as exc:
+        return f"(could not read {path}: {exc})"
+
+
+def _drain_pipe_to_log(pipe, log_fh: TextIO, echo: bool = True) -> None:
+    """Background reader so PIPE never fills and kaggle_api.log always has output."""
+    try:
+        for line in iter(pipe.readline, b""):
+            if not line:
+                break
+            text = line.decode("utf-8", errors="replace")
+            try:
+                log_fh.write(text)
+                log_fh.flush()
+            except Exception:
+                pass
+            if echo:
+                try:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
+
+
 def start_fastapi(base_path: str) -> subprocess.Popen:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(ROOT)
     env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    env["PYTHONUNBUFFERED"] = "1"
     env["FRONTEND_UPSTREAM"] = env.get("FRONTEND_UPSTREAM", "http://127.0.0.1:3000")
     if base_path:
         env["NEXT_PUBLIC_BASE_PATH"] = base_path
@@ -769,8 +812,16 @@ def start_fastapi(base_path: str) -> subprocess.Popen:
         env.pop("NEXT_PUBLIC_BASE_PATH", None)
 
     py = sys.executable
-    _log("Starting FastAPI/Uvicorn on 0.0.0.0:8000 ...")
-    return subprocess.Popen(
+    KAGGLE_API_LOG.parent.mkdir(parents=True, exist_ok=True)
+    # Truncate previous run so the first crash traceback is unambiguous.
+    log_fh = open(KAGGLE_API_LOG, "w", encoding="utf-8", errors="replace", buffering=1)
+    log_fh.write(
+        f"[run_kaggle] Starting FastAPI pid pending python={py} cwd={ROOT}\n"
+    )
+    log_fh.flush()
+
+    _log(f"Starting FastAPI/Uvicorn on 0.0.0.0:8000 (log={KAGGLE_API_LOG}) ...")
+    proc = subprocess.Popen(
         [
             py,
             "-m",
@@ -785,18 +836,63 @@ def start_fastapi(base_path: str) -> subprocess.Popen:
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        bufsize=0,
     )
+    log_fh.write(f"[run_kaggle] FastAPI PID: {proc.pid}\n")
+    log_fh.flush()
+    _log(f"FastAPI PID: {proc.pid}")
+
+    # Keep a reference so the file handle is not GC'd while the drain thread runs.
+    proc._fabricvision_api_log_fh = log_fh  # type: ignore[attr-defined]
+    proc._fabricvision_api_log_path = KAGGLE_API_LOG  # type: ignore[attr-defined]
+    if proc.stdout is not None:
+        t = threading.Thread(
+            target=_drain_pipe_to_log,
+            args=(proc.stdout, log_fh),
+            name="fastapi-log-drain",
+            daemon=True,
+        )
+        t.start()
+        proc._fabricvision_api_log_thread = t  # type: ignore[attr-defined]
+    return proc
 
 
-def wait_http(url: str, label: str, attempts: int = 60) -> int:
+def wait_http(
+    url: str,
+    label: str,
+    attempts: int = 60,
+    *,
+    proc: Optional[subprocess.Popen] = None,
+) -> int:
     last_detail = ""
-    for _ in range(attempts):
-        ok, code, detail = _http_ok(url)
+    for i in range(attempts):
+        if proc is not None:
+            code = proc.poll()
+            if code is not None:
+                log_path = getattr(proc, "_fabricvision_api_log_path", KAGGLE_API_LOG)
+                tail = _tail_text(Path(log_path))
+                _log(f"❌ {label}: process exited early (exit={code})")
+                _log(f"--- latest backend output ({log_path}) ---")
+                print(tail, flush=True)
+                raise RuntimeError(
+                    f"FastAPI process exited before becoming live "
+                    f"(exit={code}). See {log_path}. Last output:\n{tail}"
+                )
+            if i == 0 or i % 5 == 0:
+                _log(f"⏳ FastAPI still starting... {i}s elapsed")
+        ok, http_code, detail = _http_ok(url)
         last_detail = detail
         if ok:
-            _log(f"OK {label}: {url} → HTTP {code}")
-            return code
+            _log(f"OK {label}: {url} → HTTP {http_code}")
+            return http_code
         time.sleep(1.0)
+    if proc is not None:
+        log_path = getattr(proc, "_fabricvision_api_log_path", KAGGLE_API_LOG)
+        tail = _tail_text(Path(log_path))
+        raise RuntimeError(
+            f"{label} failed validation: {url} ({last_detail}). "
+            f"Backend log ({log_path}):\n{tail}"
+        )
     raise RuntimeError(f"{label} failed validation: {url} ({last_detail})")
 
 
@@ -1188,6 +1284,27 @@ def main() -> int:
         _log(f"ERROR: bitsandbytes prerequisite failed: {exc}")
         return 1
 
+    # FastAPI File()/Form() routes crash at import without python-multipart.
+    try:
+        import importlib.util
+
+        if importlib.util.find_spec("python_multipart") is None and importlib.util.find_spec(
+            "multipart"
+        ) is None:
+            _log("python-multipart missing — installing...")
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "-q", "python-multipart>=0.0.18"]
+            )
+        from python_multipart import __version__ as _mp_ver  # type: ignore
+
+        _log(f"python-multipart verified: {_mp_ver}")
+    except Exception as exc:
+        _log(
+            f"ERROR: python-multipart prerequisite failed: {exc}. "
+            "FastAPI generation/try-on Form routes will crash uvicorn on import."
+        )
+        return 1
+
     configure_kaggle_flux_runtime()
 
     do_prefetch = args.prefetch_flux or (
@@ -1250,7 +1367,11 @@ def main() -> int:
         signal.signal(signal.SIGTERM, _shutdown)
 
     try:
-        health_code = wait_http("http://127.0.0.1:8000/api/v1/health", "API health")
+        health_code = wait_http(
+            "http://127.0.0.1:8000/api/v1/health",
+            "API health",
+            proc=api_proc,
+        )
         # Gateway readiness probes Next.js / (never Next /health which 404s).
         wait_http("http://127.0.0.1:8000/health", "Gateway health")
         wait_http("http://127.0.0.1:8000/docs", "Swagger /docs")
@@ -1326,7 +1447,9 @@ def main() -> int:
                     api_proc = start_fastapi(base_path=base_path)
                     children.append(api_proc)
                     health_code = wait_http(
-                        "http://127.0.0.1:8000/api/v1/health", "API health (rebuild)"
+                        "http://127.0.0.1:8000/api/v1/health",
+                        "API health (rebuild)",
+                        proc=api_proc,
                     )
                     wait_http("http://127.0.0.1:8000/health", "Gateway health (rebuild)")
                     if os.environ.get("FLUX_WARMUP_ON_STARTUP", "true").strip().lower() not in (
