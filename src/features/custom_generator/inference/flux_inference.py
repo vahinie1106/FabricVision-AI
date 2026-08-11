@@ -159,6 +159,19 @@ class FLUXInferenceEngine:
             return True
         return "cuda" in msg and ("out of memory" in msg or "oom" in msg)
 
+    @staticmethod
+    def _is_attention_kernel_error(exc: BaseException) -> bool:
+        msg = str(exc).lower()
+        return "no available kernel" in msg or "attention_kernel_unavailable" in msg
+
+    def _physical_vram_mib(self) -> float:
+        if torch is None or not torch.cuda.is_available():
+            return 0.0
+        try:
+            return round(torch.cuda.get_device_properties(0).total_memory / (1024**2), 1)
+        except Exception:
+            return 0.0
+
     def _encode_prompt_timed(
         self,
         pipeline: Any,
@@ -553,9 +566,12 @@ class FLUXInferenceEngine:
             last_step_t = t_diff_start
             # Suppress SDPA MATH on the Flux *transformer only*. Wrapping the whole
             # pipeline(...) breaks VAE encode/decode on T4 (head dims need MATH).
+            # On T4 (sm_75), BF16 efficient SDPA is unavailable — Q/K/V are cast to
+            # FP16 only inside the temporary SDPA wrap during transformer.forward.
             from src.features.custom_generator.inference.flux_attention import (
                 NoSupportedEfficientAttention,
                 configure_memory_efficient_attention,
+                merge_runtime_attention_state,
                 transformer_only_memory_efficient_attention,
             )
 
@@ -576,8 +592,23 @@ class FLUXInferenceEngine:
                     f"Cannot run FLUX Kontext without memory-efficient SDPA ({err}). "
                     "MATH attention would OOM at 1024 on 16GB-class GPUs."
                 )
-            with transformer_only_memory_efficient_attention(pipeline):
+            with transformer_only_memory_efficient_attention(pipeline) as attn_runtime:
                 output = pipeline(**kwargs)
+            attn_diag = merge_runtime_attention_state(attn_diag, attn_runtime)
+            if self.model_loader is not None:
+                try:
+                    self.model_loader._attention_diag = attn_diag
+                except Exception:
+                    pass
+            self.logger.info(
+                "[FLUX] Attention runtime: dtype_req=%s dtype_eff=%s qkv=%s "
+                "fallback=%s reason=%s",
+                attn_diag.get("attention_dtype_requested"),
+                attn_diag.get("attention_dtype_effective"),
+                attn_diag.get("attention_qkv_dtype"),
+                attn_diag.get("attention_fallback_used"),
+                attn_diag.get("attention_fallback_reason"),
+            )
             t_diff_end = time.perf_counter()
             diffusion_s = round(t_diff_end - t_diff_start, 3)
 
@@ -750,10 +781,18 @@ class FLUXInferenceEngine:
             except Exception as park_exc:
                 self.logger.warning("post-error park_on_cpu failed: %s", park_exc)
             if self._is_cuda_oom(exc):
+                phys = self._physical_vram_mib()
                 raise RuntimeError(
                     f"CUDA out of memory during FLUX generation "
                     f"(allocated≈{self._vram_snapshot().get('allocated_mb')} MB; "
-                    f"physical VRAM=6144 MiB): {exc}"
+                    f"physical VRAM={phys} MiB): {exc}"
+                ) from exc
+            if self._is_attention_kernel_error(exc):
+                raise RuntimeError(
+                    "ATTENTION_KERNEL_UNAVAILABLE: FLUX transformer SDPA has no usable "
+                    "kernel (often BF16 Q/K/V on pre-Ampere GPUs with MATH disabled). "
+                    "Expected path: transformer-only FP16 Q/K/V cast for efficient SDPA. "
+                    f"Original: {exc}"
                 ) from exc
             if not self.allow_fallback:
                 raise RuntimeError(f"Real FLUX Kontext inference failed: {exc}") from exc

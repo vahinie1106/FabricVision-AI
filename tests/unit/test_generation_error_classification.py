@@ -21,6 +21,14 @@ def test_classify_cuda_oom():
     assert err_type in ("OUT_OF_MEMORY", "CUDA_OOM")
 
 
+def test_classify_attention_kernel_unavailable():
+    err_type, stage, _ = classify_generation_error(
+        RuntimeError("No available kernel. Aborting execution.")
+    )
+    assert err_type == "ATTENTION_KERNEL_UNAVAILABLE"
+    assert stage == "diffusion"
+
+
 def test_classify_model_auth_failed():
     err_type, stage, _ = classify_generation_error(
         RuntimeError("MODEL_AUTH_FAILED: 401 Unauthorized for gated model")

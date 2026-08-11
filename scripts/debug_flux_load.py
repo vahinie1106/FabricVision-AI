@@ -160,6 +160,14 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
     print(f"VRAM_AFTER_LOAD_ALLOC_MB={vram_total['allocated_mb']}", flush=True)
     print(f"VRAM_AFTER_LOAD_RESERVED_MB={vram_total['reserved_mb']}", flush=True)
     print(f"VRAM_AFTER_LOAD_FREE_MB={vram_total['free_mb']}", flush=True)
+    try:
+        from src.features.custom_generator.inference.flux_attention import probe_hardware
+
+        hw = probe_hardware()
+        print(f"CUDA_COMPUTE_CAPABILITY={hw.get('cuda_compute_capability_str')}", flush=True)
+        print(f"GPU_NAME_RUNTIME={hw.get('gpu_name')}", flush=True)
+    except Exception:
+        pass
 
     transformer = getattr(pipe, "transformer", None)
     print(f"MODEL_DTYPE={getattr(loader, 'precision', 'unknown')}", flush=True)
@@ -263,6 +271,29 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         ):
             if key in stats:
                 print(f"STATS_{key.upper()}={stats[key]}", flush=True)
+        # Post-inference attention facts (may include runtime Q/K/V dtype from first SDPA).
+        post_diag = stats.get("attention_diag") or getattr(loader, "_attention_diag", None) or {}
+        if post_diag:
+            print(
+                f"RUNTIME_ATTENTION_DTYPE_REQUESTED={post_diag.get('attention_dtype_requested')}",
+                flush=True,
+            )
+            print(
+                f"RUNTIME_ATTENTION_DTYPE_EFFECTIVE={post_diag.get('attention_dtype_effective')}",
+                flush=True,
+            )
+            print(
+                f"RUNTIME_ATTENTION_QKV_DTYPE={post_diag.get('attention_qkv_dtype')}",
+                flush=True,
+            )
+            print(
+                f"RUNTIME_ATTENTION_FALLBACK_USED={post_diag.get('attention_fallback_used')}",
+                flush=True,
+            )
+            print(
+                f"RUNTIME_ATTENTION_FALLBACK_REASON={post_diag.get('attention_fallback_reason')}",
+                flush=True,
+            )
         if out_w != width or out_h != height:
             print(
                 f"WARNING: output resolution is not {width}x{height} — Diffusers may have resized",
@@ -276,9 +307,27 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         msg = str(exc)
         lower = msg.lower()
         is_oom = "out of memory" in lower or "outofmemory" in type(exc).__name__.lower()
+        is_attn_kernel = (
+            "no available kernel" in lower or "attention_kernel_unavailable" in lower
+        )
         print("SMOKE_INFERENCE=FAILED", flush=True)
         if is_oom:
             print("ERROR=OUT_OF_MEMORY", flush=True)
+            print(
+                f"OOM_NOTE=At {width}x{height} FluxKontext must hold NF4 transformer "
+                "activations, latents, and VAE working memory under model_cpu_offload. "
+                "Set FLUX_GENERATION_RESOLUTION=512 if this size still OOMs. "
+                "Sequential CPU offload is NOT used with bitsandbytes NF4.",
+                flush=True,
+            )
+        elif is_attn_kernel:
+            print("ERROR=ATTENTION_KERNEL_UNAVAILABLE", flush=True)
+            print(
+                "ATTENTION_NOTE=No usable SDPA kernel for FLUX transformer "
+                "(BF16+efficient often fails on sm_75; Flash rejects large head dims). "
+                "Expected fix: FP16 Q/K/V cast inside transformer-only attention wrap.",
+                flush=True,
+            )
         else:
             print(f"ERROR={type(exc).__name__}: {exc}", flush=True)
         print(f"RESOLUTION={width}x{height}", flush=True)
@@ -287,13 +336,6 @@ def _run_smoke(loader, pipe, steps: int = 1) -> int:
         print(f"VRAM_AFTER_FAIL_ALLOC_MB={after['allocated_mb']}", flush=True)
         print(f"VRAM_AFTER_FAIL_RESERVED_MB={after['reserved_mb']}", flush=True)
         print(f"VRAM_AFTER_FAIL_FREE_MB={after['free_mb']}", flush=True)
-        print(
-            f"OOM_NOTE=At {width}x{height} FluxKontext must hold NF4 transformer activations, "
-            "latents, and VAE working memory under model_cpu_offload. "
-            "Set FLUX_GENERATION_RESOLUTION=512 if this size still OOMs on T4. "
-            "Sequential CPU offload is NOT used with bitsandbytes NF4.",
-            flush=True,
-        )
         traceback.print_exc()
         return 1
 

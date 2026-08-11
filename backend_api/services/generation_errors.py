@@ -86,6 +86,16 @@ def classify_generation_error(exc: BaseException) -> Tuple[str, str, str]:
     if "getcurrentstream" in lower or ("device" in lower and "mismatch" in lower):
         return "DEVICE_MISMATCH", "diffusion", combined
 
+    if (
+        "no available kernel" in lower
+        or "attention_kernel_unavailable" in lower
+        or (
+            "scaled_dot_product_attention" in lower
+            and "aborting execution" in lower
+        )
+    ):
+        return "ATTENTION_KERNEL_UNAVAILABLE", "diffusion", combined
+
     if "cuda" in lower and any(k in lower for k in ("error", "invalid", "fail")):
         return "CUDA_ERROR", "diffusion", combined
 
