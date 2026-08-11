@@ -49,6 +49,21 @@ def main() -> int:
         resume_download=True,
     )
     print("DONE", path)
+
+    # Fail loudly if the tree is still incomplete (e.g. LFS pointers only).
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    if str(root) not in sys.path:
+        sys.path.insert(0, str(root))
+    from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
+
+    loader = FLUXModelLoader(model_path=out, hf_model_id=repo)
+    report = loader.preflight_validate_package(out, source=repo)
+    if not report["ready"]:
+        print("PREFLIGHT_FAIL", report)
+        return 1
+    print("PREFLIGHT_PASS", report["path"])
     return 0
 
 
