@@ -3,16 +3,106 @@
 FLUX.1 Kontext preserves input composition. A raw fabric swatch therefore
 reproduces a textile fill. We build a garment-shaped mockup filled with the
 uploaded fabric so Kontext edits clothing structure while keeping material identity.
+
+When the UI selects an explicit Color (not Match Fabric), we tint the fabric
+fill to the target hue while preserving luminance/pattern so Kontext is not
+locked to the upload's original palette.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 from PIL import Image, ImageDraw
 
 logger = logging.getLogger("fabricvision.garment_generation.fabric_conditioning")
+
+# UI / vocabulary color names → RGB for lightweight luminance tinting.
+_COLOR_NAME_RGB: dict[str, Tuple[int, int, int]] = {
+    "black": (20, 20, 20),
+    "white": (245, 245, 245),
+    "red": (190, 35, 40),
+    "blue": (35, 90, 200),
+    "green": (40, 140, 70),
+    "yellow": (230, 200, 40),
+    "navy_blue": (20, 40, 110),
+    "navy": (20, 40, 110),
+    "royal_blue": (40, 80, 200),
+    "maroon": (128, 30, 40),
+    "beige": (210, 190, 160),
+    "olive_green": (110, 120, 50),
+    "olive": (110, 120, 50),
+    "pastel_pink": (240, 170, 190),
+    "pink": (230, 120, 160),
+    "lavender": (180, 160, 210),
+    "cream": (245, 235, 210),
+    "orange": (220, 120, 40),
+    "purple": (120, 60, 160),
+    "brown": (120, 75, 45),
+    "gray": (140, 140, 140),
+    "grey": (140, 140, 140),
+}
+
+
+def normalize_color_key(color: Optional[str]) -> str:
+    """Normalize UI/API color strings to snake_case tokens."""
+    if color is None:
+        return ""
+    return str(color).strip().lower().replace("-", " ").replace(" ", "_")
+
+
+def is_match_fabric_color(color: Optional[str]) -> bool:
+    """True when Color means preserve uploaded textile colors."""
+    key = normalize_color_key(color)
+    return key in ("", "match_fabric", "matchfabric")
+
+
+def resolve_target_rgb(color: Optional[str]) -> Optional[Tuple[int, int, int]]:
+    """Map a color name to RGB, or None if unknown / Match Fabric."""
+    key = normalize_color_key(color)
+    if is_match_fabric_color(key):
+        return None
+    if key in _COLOR_NAME_RGB:
+        return _COLOR_NAME_RGB[key]
+    # Soft match: pastel_pink → pink, olive_green → olive
+    for name, rgb in _COLOR_NAME_RGB.items():
+        if name in key or key in name:
+            return rgb
+    return None
+
+
+def tint_fabric_preserving_texture(
+    fabric_image: Image.Image,
+    target_color: str,
+) -> Image.Image:
+    """
+    Recolor fabric to ``target_color`` while keeping print/texture luminance.
+
+    Multiplies per-pixel luminance by the target RGB so floral/print contrast
+    survives; chrominance follows the UI color. Pure PIL (no extra model).
+    """
+    rgb = resolve_target_rgb(target_color)
+    if rgb is None:
+        return fabric_image.convert("RGB")
+
+    src = fabric_image.convert("RGB")
+    # Luminance via ITU-R BT.601; scale each channel by target/255.
+    gray = src.convert("L")
+    tr, tg, tb = rgb
+    # Build solid color then multiply with luminance (ImageChops.multiply).
+    solid = Image.new("RGB", src.size, (tr, tg, tb))
+    # Expand gray to RGB so multiply works channel-wise.
+    lum_rgb = Image.merge("RGB", (gray, gray, gray))
+    from PIL import ImageChops
+
+    tinted = ImageChops.multiply(solid, lum_rgb)
+    logger.info(
+        "Tinted fabric for explicit color=%s rgb=%s (luminance-preserving)",
+        normalize_color_key(target_color),
+        rgb,
+    )
+    return tinted
 
 
 def _cover_fabric(fabric: Image.Image, width: int, height: int) -> Image.Image:
@@ -171,18 +261,28 @@ def build_garment_conditioning_image(
     height: int = 512,
     sleeve: str = "",
     background: Tuple[int, int, int] = (255, 255, 255),
+    target_color: Optional[str] = None,
 ) -> Image.Image:
     """
     Create a white-studio garment mockup filled with the uploaded fabric.
 
     Hard edges (no mask Gaussian blur): soft masks caused measurable edge halos
     in generated outputs. Kontext still invents folds from the silhouette.
+
+    When ``target_color`` is an explicit UI color (not Match Fabric), the fabric
+    fill is luminance-tinted so Kontext is not anchored to the upload palette.
     """
     if fabric_image is None:
         raise ValueError("fabric_image is required")
 
     w, h = int(width), int(height)
-    fabric_fill = _cover_fabric(fabric_image, w, h)
+    source = fabric_image
+    recolored = False
+    if target_color and not is_match_fabric_color(target_color):
+        source = tint_fabric_preserving_texture(fabric_image, target_color)
+        recolored = True
+
+    fabric_fill = _cover_fabric(source, w, h)
     # Mild unsharp on the fabric fill only (not the silhouette edge) to counter
     # LANCZOS softness before Kontext sees the mockup. Radius kept tiny.
     try:
@@ -203,10 +303,13 @@ def build_garment_conditioning_image(
     canvas.paste(fabric_fill, (0, 0), mask=mask)
 
     logger.info(
-        "Built garment conditioning image: garment=%s sleeve=%s size=%sx%s blur=none unsharp=mild",
+        "Built garment conditioning image: garment=%s sleeve=%s size=%sx%s "
+        "blur=none unsharp=mild conditioning_recolored=%s target_color=%s",
         garment_type,
         sleeve or "default",
         w,
         h,
+        recolored,
+        normalize_color_key(target_color) if recolored else "match_fabric",
     )
     return canvas

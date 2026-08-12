@@ -261,11 +261,28 @@ class GarmentPromptBuilder:
             or fabric_metadata.get("color")
             or user_customization.get("color")
         )
+        color_source = str(fabric_metadata.get("color_source") or "").strip()
+        force_recolor = bool(user_customization.get("force_recolor"))
+        ui_color = user_customization.get("color") or fabric_metadata.get("color")
+        ui_key = (
+            str(ui_color).strip().lower().replace(" ", "_").replace("-", "_")
+            if ui_color is not None
+            else ""
+        )
+        explicit_recolor = color_source == "ui_recolor" or (
+            force_recolor and ui_key not in ("", "match_fabric", "matchfabric")
+        )
         # When fabric pixels provided colors, ignore UI recolor unless force_recolor
-        if fabric_metadata.get("color_source") == "fabric_pixels":
+        if explicit_recolor and ui_key not in ("", "match_fabric", "matchfabric"):
+            raw_color = user_customization.get("color") or fabric_metadata.get(
+                "dominant_colors"
+            ) or raw_color
+            color_mode = "explicit"
+        elif color_source == "fabric_pixels":
             raw_color = fabric_metadata.get("dominant_colors") or raw_color
-        elif user_customization.get("force_recolor") and user_customization.get("color"):
-            raw_color = user_customization.get("color")
+            color_mode = "match_fabric"
+        else:
+            color_mode = "match_fabric"
         if isinstance(raw_color, list):
             # Keep up to 3 names so white+red+green florals survive CLIP budget
             colors_str = ", ".join(
@@ -274,6 +291,9 @@ class GarmentPromptBuilder:
         else:
             colors_str = self.validate_and_normalize_color(raw_color).replace("_", " ")
         colors_str = colors_str or "multicolor"
+        # Never leave Match Fabric as a "color" token in the prompt.
+        if colors_str.replace(" ", "_") in ("match_fabric", "matchfabric"):
+            colors_str = "multicolor"
 
         gender = self._normalize_token(user_customization.get("gender"), "women")
         garment_type = self._normalize_token(user_customization.get("garment_type"), "kurti")
@@ -317,6 +337,7 @@ class GarmentPromptBuilder:
             "size": size,
             "dominant_colors": colors_str,
             "fabric_appearance": appearance,
+            "color_mode": color_mode,
         }
 
     def _build_compact_kontext_layers(self, context: Dict[str, str]) -> list[str]:
@@ -325,6 +346,10 @@ class GarmentPromptBuilder:
 
         Why layers: CLIP truncates at 77 tokens. Garment construction and fabric
         identity stay first; style is optional and drops under budget pressure.
+
+        Color modes:
+        - match_fabric: preserve uploaded textile colors (do not recolor).
+        - explicit: apply UI target color; keep texture/pattern, never "do not recolor".
         """
         primary = (
             f"Edit fabric-filled {context['garment_type']} mockup into wearable "
@@ -332,7 +357,16 @@ class GarmentPromptBuilder:
             f"{context['sleeve_length']}, {context['fit']}."
         )
         appearance = (context.get("fabric_appearance") or "").strip()
-        if appearance:
+        color_mode = (context.get("color_mode") or "match_fabric").strip()
+        target = (context.get("dominant_colors") or "multicolor").strip()
+        if color_mode == "explicit":
+            # Authoritative UI color — do NOT say "preserve colors" or "do not recolor".
+            fabric = (
+                f"Apply {target} color to the garment while preserving the uploaded "
+                f"fabric's {context['pattern']} textile texture and pattern "
+                f"({context['material']}). Recolor to {target}."
+            )
+        elif appearance:
             fabric = (
                 f"Preserve source fabric look ({appearance}; "
                 f"{context['dominant_colors']}, {context['pattern']}, "
@@ -359,6 +393,7 @@ class GarmentPromptBuilder:
         self,
         layers: list[str],
         max_tokens: int = CLIP_SAFE_CONTENT_TOKENS,
+        fabric_fallback: Optional[str] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """
         Deterministically compact prompt layers to fit CLIP budget.
@@ -388,7 +423,7 @@ class GarmentPromptBuilder:
         # If primary+fabric overflow, keep a grounded fabric clause (not a vague slogan).
         if token_count > max_tokens and len(layers) >= 2:
             compacted = True
-            short_fabric = (
+            short_fabric = fabric_fallback or (
                 "Preserve source fabric print, colors, and pattern scale; do not recolor."
             )
             prompt = f"{layers[0]} {short_fabric}".strip()
@@ -477,8 +512,28 @@ class GarmentPromptBuilder:
         # Prefer layered compact builder (guarantees attribute priority under CLIP budget).
         # Template remains available for Gradio/legacy callers that want full wording.
         layers = self._build_compact_kontext_layers(context)
-        final_positive, stats = self.fit_to_clip_budget(layers)
-        self.last_prompt_stats = stats
+        if context.get("color_mode") == "explicit":
+            target = context.get("dominant_colors") or "target"
+            fabric_fallback = (
+                f"Apply {target} color; preserve textile texture and pattern."
+            )
+        else:
+            fabric_fallback = (
+                "Preserve source fabric print, colors, and pattern scale; do not recolor."
+            )
+        final_positive, stats = self.fit_to_clip_budget(
+            layers, fabric_fallback=fabric_fallback
+        )
+        self.last_prompt_stats = {
+            **stats,
+            "color_mode": context.get("color_mode"),
+            "dominant_colors": context.get("dominant_colors"),
+            "color_instruction": layers[1] if len(layers) > 1 else "",
+        }
+        self.logger.info(
+            "[FLUX COLOR DEBUG] FINAL COLOR INSTRUCTION:\n%s",
+            layers[1] if len(layers) > 1 else final_positive,
+        )
         self.logger.info("Kontext final prompt: %s", final_positive)
         return final_positive, negative_prompt
 

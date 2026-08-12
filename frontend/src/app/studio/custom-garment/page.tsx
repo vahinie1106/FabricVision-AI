@@ -385,7 +385,8 @@ export default function CustomGarmentGenerator() {
                 ]}
               />
               <p className="text-[11px] text-[#767676] mt-1 leading-relaxed">
-                Match Fabric keeps the uploaded textile colors (recommended). Other values only apply if you force a recolor.
+                Match Fabric keeps the uploaded textile colors. Choosing Black, Blue,
+                Red, etc. recolors the garment while preserving fabric texture and pattern.
               </p>
             </div>
           </div>

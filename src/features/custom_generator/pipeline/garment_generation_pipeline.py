@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, Optional
 from src.common.utils.utils import load_yaml_config, serialize_json
 from src.features.custom_generator.inference.fabric_conditioning import (
     build_garment_conditioning_image,
+    is_match_fabric_color,
+    normalize_color_key,
 )
 from src.features.custom_generator.inference.flux_inference import FLUXInferenceEngine
 from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
@@ -384,17 +386,41 @@ class GarmentGenerationPipeline:
             )
 
             appearance = describe_fabric_appearance(fabric_image)
-            # CRITICAL: pixel palette wins over UI Color dropdown unless force_recolor.
-            # Observed failure: UI color=yellow forced yellow garment despite white+red floral fabric.
-            force_recolor = bool(user_customization.get("force_recolor"))
-            if force_recolor and user_customization.get("color"):
+            # Color modes:
+            # - Match Fabric: pixel palette is authoritative (preserve upload colors).
+            # - Explicit UI color: target color is authoritative; pixels describe
+            #   texture/pattern only (never silently ignore a real Color selection).
+            ui_selected = (
+                user_customization.get("color")
+                or fabric_metadata.get("color")
+                or ""
+            )
+            explicit_color = not is_match_fabric_color(str(ui_selected))
+            # Harden: explicit Color field implies recolor even if force_recolor was omitted.
+            force_recolor = bool(user_customization.get("force_recolor")) or explicit_color
+            source_palette = appearance.get("dominant_color_names") or []
+            if force_recolor and explicit_color:
+                target = normalize_color_key(str(ui_selected))
+                user_customization = {
+                    **user_customization,
+                    "color": target,
+                    "force_recolor": True,
+                }
+                pattern_hint = appearance.get("pattern_hint") or fabric_metadata.get(
+                    "pattern"
+                )
                 fabric_metadata = {
                     **fabric_metadata,
-                    "pattern": appearance.get("pattern_hint")
-                    or fabric_metadata.get("pattern"),
-                    "dominant_colors": [str(user_customization.get("color"))],
+                    "pattern": pattern_hint,
+                    "dominant_colors": [target],
                     "color_source": "ui_recolor",
-                    "fabric_appearance": appearance.get("appearance_summary"),
+                    # Pattern/texture only — do not embed source palette as "preserve colors".
+                    "fabric_appearance": (
+                        f"{pattern_hint} textile texture"
+                        if pattern_hint
+                        else appearance.get("appearance_summary")
+                    ),
+                    "source_palette": source_palette,
                 }
                 self.logger.info(
                     "[FLUX COLOR] source=ui_recolor palette=%s",
@@ -409,17 +435,41 @@ class GarmentGenerationPipeline:
                     or fabric_metadata.get("dominant_colors"),
                     "color_source": "fabric_pixels",
                     "fabric_appearance": appearance.get("appearance_summary"),
+                    "source_palette": source_palette,
                 }
                 user_customization = {
                     k: v for k, v in user_customization.items() if k != "color"
                 }
+                user_customization["force_recolor"] = False
                 self.logger.info(
-                    "[FLUX COLOR] source=fabric_pixels palette=%s (UI color ignored)",
+                    "[FLUX COLOR] source=fabric_pixels palette=%s (Match Fabric)",
                     fabric_metadata.get("dominant_colors"),
                 )
+            color_mode = (
+                "explicit"
+                if fabric_metadata.get("color_source") == "ui_recolor"
+                else "match_fabric"
+            )
+            target_color = (
+                fabric_metadata.get("dominant_colors", [None])[0]
+                if color_mode == "explicit"
+                else "match_fabric"
+            )
+            for line in (
+                "[FLUX COLOR DEBUG]",
+                f"ui_selected_color={normalize_color_key(str(ui_selected)) or 'match_fabric'}",
+                f"color_mode={color_mode}",
+                f"source_palette={source_palette}",
+                f"target_color={target_color}",
+                f"recolor_enabled={color_mode == 'explicit'}",
+            ):
+                self.logger.info(line)
+                print(line, flush=True)
             self.logger.info("Fabric appearance cues: %s", appearance)
         except Exception as exc:
             self.logger.warning("Fabric appearance enrichment skipped: %s", exc)
+            color_mode = "match_fabric"
+            target_color = None
         timings["fabric_appearance_s"] = round(time.perf_counter() - t0, 3)
         _mark("FABRIC PREPROCESS", t0, end=True)
 
@@ -428,12 +478,28 @@ class GarmentGenerationPipeline:
         t0 = _mark("CONDITIONING", time.perf_counter())
         garment_type = str(user_customization.get("garment_type") or "shirt")
         sleeve = str(user_customization.get("sleeve") or "")
+        conditioning_target = (
+            str(user_customization.get("color"))
+            if bool(user_customization.get("force_recolor"))
+            and not is_match_fabric_color(str(user_customization.get("color") or ""))
+            else None
+        )
         conditioning_image = build_garment_conditioning_image(
             fabric_image=fabric_image,
             garment_type=garment_type,
             width=self.config.width,
             height=self.config.height,
             sleeve=sleeve,
+            target_color=conditioning_target,
+        )
+        conditioning_recolored = conditioning_target is not None
+        self.logger.info(
+            "[FLUX COLOR DEBUG] conditioning_recolored=%s",
+            conditioning_recolored,
+        )
+        print(
+            f"[FLUX COLOR DEBUG] conditioning_recolored={conditioning_recolored}",
+            flush=True,
         )
         timings["fabric_conditioning_s"] = round(time.perf_counter() - t0, 3)
         _mark("CONDITIONING", t0, end=True)
