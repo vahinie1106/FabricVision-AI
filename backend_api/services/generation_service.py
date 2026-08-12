@@ -414,6 +414,8 @@ def _process_generation_sync(
             user_customization=user_customization,
             reference_image=ref_img,
             progress_callback=on_progress,
+            # Predictable on-disk name matching the API job id.
+            output_filename=f"garment_{job_id}",
         )
 
         t_save = _stage_log("IMAGE SAVE", t_job)
@@ -425,16 +427,47 @@ def _process_generation_sync(
         if not p.exists():
             raise RuntimeError(f"Generated image missing on disk: {img_path}")
 
+        # Hard requirement: final asset must live under outputs/.../images/
+        # and be a valid non-black PNG before the job can be marked completed.
+        from src.features.custom_generator.inference.garment_output import (
+            persist_and_verify_garment_png,
+        )
+
+        try:
+            verify_stats = persist_and_verify_garment_png(
+                Image.open(p).convert("RGB"),
+                p,
+                compress_level=3,
+            )
+        except Exception as verify_exc:
+            raise RuntimeError(
+                f"Generated image failed post-save verification at {p}: {verify_exc}"
+            ) from verify_exc
+
         try:
             rel_path = p.resolve().relative_to(settings.OUTPUT_DIR.resolve())
             result_url_val = f"/outputs/{rel_path.as_posix()}"
         except ValueError:
-            filename = p.name
-            dest = settings.OUTPUT_DIR / filename
-            if p.exists() and not dest.exists():
+            # Mirror into the canonical images/ tree so /outputs/... always resolves.
+            dest = (
+                settings.OUTPUT_DIR
+                / "generated_garments"
+                / "images"
+                / p.name
+            )
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if p.resolve() != dest.resolve():
                 shutil.copy2(p, dest)
-            result_url_val = f"/outputs/{filename}"
-        _stage_log("IMAGE SAVE", t_save, end=True, extra=f"url={result_url_val}")
+            # Re-verify the mirrored copy.
+            persist_and_verify_garment_png(Image.open(dest).convert("RGB"), dest)
+            p = dest
+            result_url_val = f"/outputs/generated_garments/images/{dest.name}"
+        _stage_log(
+            "IMAGE SAVE",
+            t_save,
+            end=True,
+            extra=f"url={result_url_val} path={p} bytes={verify_stats.get('file_size')}",
+        )
 
         stats = getattr(pipeline.inference_engine, "last_execution_stats", {}) or {}
         if stats.get("was_fallback_used") or not stats.get("was_real_flux_used", True):
@@ -477,6 +510,9 @@ def _process_generation_sync(
             "positive_prompt": meta_result.get("positive_prompt"),
             "negative_prompt": meta_result.get("negative_prompt"),
             "result_url": result_url_val,
+            "output_stats": meta_result.get("output_stats") or verify_stats,
+            "raw_image_path": meta_result.get("raw_image_path"),
+            "garment_id": meta_result.get("garment_id") or f"garment_{job_id}",
         }
         _stage_log(
             "METADATA",

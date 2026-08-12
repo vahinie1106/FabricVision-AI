@@ -16,6 +16,9 @@ from src.features.custom_generator.inference.fabric_conditioning import (
     recolor_fabric_base_preserving_motifs,
     save_fabric_recolor_audit,
 )
+from src.features.custom_generator.inference.garment_output import (
+    persist_and_verify_garment_png,
+)
 from src.features.custom_generator.inference.flux_inference import FLUXInferenceEngine
 from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
 from src.features.custom_generator.prompting.garment_prompt_builder import GarmentPromptBuilder
@@ -662,6 +665,7 @@ class GarmentGenerationPipeline:
         metadata_dir = output_base / "metadata"
         images_dir.mkdir(parents=True, exist_ok=True)
         metadata_dir.mkdir(parents=True, exist_ok=True)
+        raw_dir.mkdir(parents=True, exist_ok=True)
 
         image_path = images_dir / f"{garment_id}.png"
         # Visually lossless PNG: moderate compress_level is faster without quality loss.
@@ -672,11 +676,34 @@ class GarmentGenerationPipeline:
                 image.size[0],
                 image.size[1],
             )
-        image.save(
-            image_path,
-            format="PNG",
-            compress_level=int(self.config.png_compress_level),
-            optimize=bool(self.config.png_optimize),
+        try:
+            output_stats = persist_and_verify_garment_png(
+                image,
+                image_path,
+                expected_size=(self.config.width, self.config.height),
+                compress_level=int(self.config.png_compress_level),
+            )
+        except Exception as save_exc:
+            self.logger.error("Final garment image save/verify failed: %s", save_exc)
+            print(f"[GARMENT OUTPUT] SAVE FAILED: {save_exc}", flush=True)
+            raise RuntimeError(
+                f"Failed to persist final garment image to {image_path}: {save_exc}"
+            ) from save_exc
+
+        if not Path(image_path).exists():
+            raise RuntimeError(f"Final garment image missing after save: {image_path}")
+
+        raw_exists = Path(raw_path).exists()
+        self.logger.info(
+            "[GARMENT OUTPUT] final=%s raw_exists=%s raw=%s",
+            image_path.resolve(),
+            raw_exists,
+            raw_path,
+        )
+        print(
+            f"[GARMENT OUTPUT] FINAL PATH={image_path.resolve()} "
+            f"RAW PATH={raw_path} raw_exists={raw_exists}",
+            flush=True,
         )
         timings["image_saving_s"] = round(time.perf_counter() - t0, 3)
         timings["total_pipeline_s"] = round(time.perf_counter() - t_total, 3)
@@ -717,6 +744,7 @@ class GarmentGenerationPipeline:
             "raw_image_path": str(raw_path),
             "pipeline_timings": timings,
             "vram_policy": getattr(self, "_vram_policy", None),
+            "output_stats": output_stats,
         }
         serialize_json(metadata, metadata_dir / f"{garment_id}.json")
 

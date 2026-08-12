@@ -69,7 +69,9 @@ class GarmentPromptBuilder:
                 "fabric swatch, textile sample, fabric close-up, repeating textile fill, "
                 "abstract fabric, flat cloth only, cropped fabric, pattern tile, blurry, "
                 "soft focus, muddy details, low resolution, human model, person, face, "
-                "mannequin, busy background, distorted proportions, artifacts"
+                "mannequin, busy background, distorted proportions, artifacts, "
+                "plastic fabric, cgi render, warped sleeves, malformed neckline, "
+                "extra limbs, jewelry, random objects"
             ),
             "kontext_instruction_template": (
                 "Edit this fabric-filled {garment_type} mockup into a sharp, highly detailed "
@@ -378,21 +380,21 @@ class GarmentPromptBuilder:
         - explicit: change BASE fabric color only; keep original print/motif colors.
         """
         primary = (
-            f"Edit fabric-filled {context['garment_type']} mockup into wearable "
-            f"{context['gender']} {context['garment_type']}: {context['neckline']}, "
-            f"{context['sleeve_length']}, {context['fit']}."
+            f"Edit fabric-filled {context['garment_type']} mockup into realistic "
+            f"wearable {context['gender']} {context['garment_type']}: "
+            f"{context['neckline']}, {context['sleeve_length']}, {context['fit']}, "
+            f"natural drape."
         )
         appearance = (context.get("fabric_appearance") or "").strip()
         color_mode = (context.get("color_mode") or "match_fabric").strip()
         target = (context.get("dominant_colors") or "multicolor").strip()
         motifs = (context.get("motif_colors") or "original print").strip()
         if color_mode == "explicit":
-            # Base-only recolor — never imply whole-palette / motif recoloring.
+            # Base-only recolor — keep compact so CLIP budget retains this layer.
             fabric = (
-                f"Change only the base fabric color to {target}. The base/background "
-                f"textile must visibly be {target} while preserving original "
-                f"{context['pattern']} print colors ({motifs}), motif shapes, texture, "
-                f"and print scale. Do not recolor the printed floral motifs."
+                f"Change only the base fabric color to {target}; keep original "
+                f"{context['pattern']} print colors ({motifs}) and print scale. "
+                f"Do not recolor the printed motifs."
             )
         elif appearance:
             fabric = (
@@ -407,8 +409,8 @@ class GarmentPromptBuilder:
                 f"Same print scale; do not recolor."
             )
         quality = (
-            "Sharp neckline, sleeve seams, hem, clean edges on white. "
-            "No model, not a flat swatch."
+            "Natural folds following the print, clean seams and hem, sharp silhouette "
+            "on white. No model, not a swatch, not plastic CGI."
         )
         # Avoid "casual casual" when style == occasion
         if context["style"] == context["occasion"]:

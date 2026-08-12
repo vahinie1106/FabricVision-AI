@@ -102,7 +102,7 @@ def test_kontext_prompt_explicit_blue_applies_target_color():
     lower = pos.lower()
     assert "blue" in lower
     assert "base fabric color" in lower
-    assert "printed floral motifs" in lower or "print colors" in lower
+    assert "printed floral motifs" in lower or "printed motifs" in lower or "print colors" in lower
     assert "preserve source fabric look" not in lower
     assert "recolor to blue" not in lower
     assert "apply blue color" not in lower
@@ -113,7 +113,7 @@ def test_kontext_prompt_explicit_blue_applies_target_color():
     assert "blue" in (builder.last_prompt_stats.get("dominant_colors") or "").lower()
     instruction = (builder.last_prompt_stats.get("color_instruction") or "").lower()
     assert "base fabric color" in instruction
-    assert "visibly be blue" in instruction or "base/background" in instruction
+    assert "blue" in instruction
 
 
 def test_kontext_prompt_explicit_black_no_contradiction():
