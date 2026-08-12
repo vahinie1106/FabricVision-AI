@@ -1,4 +1,14 @@
 import type { NextConfig } from "next";
+import path from "path";
+
+/**
+ * Pin Turbopack/Next to this frontend package.
+ *
+ * An orphan repo-root package-lock.json (empty packages, no package.json) caused
+ * Next 16 to infer the parent as workspace root, breaking CSS/module resolution
+ * under Kaggle and triggering the multiple-lockfiles warning.
+ */
+const frontendRoot = path.resolve(__dirname);
 
 /**
  * Optional public path prefix for Jupyter/Kaggle reverse proxies.
@@ -12,6 +22,10 @@ import type { NextConfig } from "next";
 const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").trim().replace(/\/+$/, "");
 
 const nextConfig: NextConfig = {
+  // Absolute path required; keeps PostCSS/Tailwind scoped to frontend/.
+  turbopack: {
+    root: frontendRoot,
+  },
   ...(basePath
     ? {
         basePath,
