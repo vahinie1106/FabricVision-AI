@@ -29,12 +29,13 @@ ProgressCallback = Optional[Callable[[str, int], None]]
 # under model_cpu_offload on RTX 3050. 128 preserves full prompt semantics with far less work.
 DEFAULT_MAX_SEQUENCE_LENGTH = 128
 
-# Safe completion-first defaults. Production on Kaggle T4 targets 700+ px
-# (704 / 720 / 768). Local low-VRAM stays at 512 unless explicitly overridden.
+# Safe completion-first defaults. Kaggle T4×2 Production target is 768×768.
+# Local low-VRAM (RTX 3050) stays at 512 unless explicitly overridden.
 ALLOWED_FLUX_GENERATION_RESOLUTIONS = (384, 512, 640, 704, 720, 768, 1024)
 DEFAULT_FLUX_GENERATION_RESOLUTION = 512
-# Interim Kaggle Production default until ladder benchmark picks a winner.
-DEFAULT_KAGGLE_PRODUCTION_RESOLUTION = 704
+DEFAULT_KAGGLE_PRODUCTION_RESOLUTION = 768
+DEFAULT_KAGGLE_PRODUCTION_STEPS = 12
+DEFAULT_KAGGLE_PRODUCTION_GUIDANCE = 3.0
 MIN_KAGGLE_PRODUCTION_RESOLUTION = 700
 
 
@@ -60,7 +61,7 @@ def resolve_flux_production_resolution(default: Optional[int] = None) -> int:
     Production-only square resolution.
 
     Priority: FLUX_PRODUCTION_RESOLUTION → FLUX_PRODUCTION_SIZE →
-    FLUX_GENERATION_RESOLUTION → default (≥700 preferred on Kaggle T4).
+    FLUX_GENERATION_RESOLUTION → default (Kaggle locked target: 768).
     """
     fallback = (
         DEFAULT_KAGGLE_PRODUCTION_RESOLUTION if default is None else int(default)
@@ -84,6 +85,29 @@ def resolve_flux_production_resolution(default: Optional[int] = None) -> int:
             if size >= fallback:
                 return size
     return DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
+
+
+def resolve_flux_production_steps(default: Optional[int] = None) -> int:
+    """Production steps from FLUX_PRODUCTION_STEPS (Kaggle locked target: 12)."""
+    fallback = DEFAULT_KAGGLE_PRODUCTION_STEPS if default is None else int(default)
+    raw = os.environ.get("FLUX_PRODUCTION_STEPS", "").strip()
+    if raw.isdigit():
+        return max(1, int(raw))
+    return max(1, int(fallback))
+
+
+def resolve_flux_production_guidance(default: Optional[float] = None) -> float:
+    """Production guidance from FLUX_PRODUCTION_GUIDANCE (Kaggle locked target: 3.0)."""
+    fallback = (
+        DEFAULT_KAGGLE_PRODUCTION_GUIDANCE if default is None else float(default)
+    )
+    raw = os.environ.get("FLUX_PRODUCTION_GUIDANCE", "").strip()
+    if raw:
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+    return float(fallback)
 
 
 class FLUXInferenceEngine:
@@ -979,11 +1003,6 @@ class FLUXInferenceEngine:
             except Exception as denoise_exc:
                 if not self._is_cuda_oom(denoise_exc):
                     raise
-                fallback = recommend_oom_fallback(
-                    height=int(height),
-                    width=int(width),
-                    num_inference_steps=int(num_inference_steps),
-                )
                 self.logger.error(
                     "[VRAM] OOM during transformer/diffusion at %sx%s steps=%s: %s",
                     width,
@@ -994,6 +1013,23 @@ class FLUXInferenceEngine:
                 log_vram("after OOM before cleanup")
                 self._park_pipeline(pipeline)
                 log_vram("after cleanup")
+                # Production lock (Kaggle): fail clearly — never silently resize
+                # 768×12 → smaller and still report the locked config as success.
+                no_oom_fallback = os.environ.get(
+                    "FLUX_PRODUCTION_NO_OOM_FALLBACK", ""
+                ).strip().lower() in ("1", "true", "yes", "on")
+                if no_oom_fallback:
+                    raise RuntimeError(
+                        f"CUDA out of memory at requested Production settings "
+                        f"{width}x{height} steps={num_inference_steps} "
+                        f"(FLUX_PRODUCTION_NO_OOM_FALLBACK=1 — no silent resize). "
+                        f"Original error: {denoise_exc}"
+                    ) from denoise_exc
+                fallback = recommend_oom_fallback(
+                    height=int(height),
+                    width=int(width),
+                    num_inference_steps=int(num_inference_steps),
+                )
                 if fallback is None:
                     raise
                 self.logger.warning(

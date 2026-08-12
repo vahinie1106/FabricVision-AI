@@ -1148,9 +1148,9 @@ def configure_kaggle_flux_runtime() -> None:
     Primary heavy-inference target: Kaggle NVIDIA T4 (often T4×2).
     Local RTX 3050 remains a light/dev path only.
 
-    Do NOT force 768×12 GPU-resident — that path OOMs on T4-class cards when
-    NF4 + Kontext activations exceed free headroom. Prefer measured policy:
-    512 Standard + VAE tiling; opt into 768 only via FLUX_ALLOW_HIGH_RES.
+    Production lock (T4 / T4×2): 768×768 / 12 steps / guidance 3.0 via
+    FLUX_PRODUCTION_* env. Do NOT silently demote Production to 512.
+    Standard stays completion-first (typically 512×8 + VAE tiling).
 
     On dual T4: pin FLUX → cuda:0, CatVTON → cuda:1 and enable dual residency.
     """
@@ -1215,18 +1215,16 @@ def configure_kaggle_flux_runtime() -> None:
             f"reserved_mb={reserved:.0f} free_mb={free:.0f} torch={torch.__version__}"
         )
         if vram_mb >= 14000:
-            # Kaggle T4 / T4×2 — primary Production inference environment.
-            # Production minimum is 700+ px (704/720/768). Do NOT default to 512.
-            # Standard stays on its own policy (typically 512×8) unless
-            # FLUX_GENERATION_RESOLUTION is set explicitly.
+            # Kaggle T4 / T4×2 — locked Production target.
+            # Do NOT default Production to 512. Standard stays on its own policy.
             os.environ.setdefault("FLUX_VAE_TILING", "true")
             os.environ.setdefault("FLUX_STANDARD_STEPS", "8")
-            # Interim Production defaults until ladder benchmark picks a winner.
-            os.environ.setdefault("FLUX_PRODUCTION_RESOLUTION", "704")
-            os.environ.setdefault("FLUX_PRODUCTION_SIZE", "704")
-            os.environ.setdefault("FLUX_PRODUCTION_STEPS", "10")
-            # Leave FLUX_GENERATION_RESOLUTION unset so Preview/Standard are not
-            # forced to 700+; Production uses FLUX_PRODUCTION_* above.
+            os.environ.setdefault("FLUX_PRODUCTION_RESOLUTION", "768")
+            os.environ.setdefault("FLUX_PRODUCTION_SIZE", "768")
+            os.environ.setdefault("FLUX_PRODUCTION_STEPS", "12")
+            os.environ.setdefault("FLUX_PRODUCTION_GUIDANCE", "3.0")
+            # Fail clearly on OOM instead of silently resizing and claiming 768×12.
+            os.environ.setdefault("FLUX_PRODUCTION_NO_OOM_FALLBACK", "1")
             try:
                 major, _ = torch.cuda.get_device_capability(flux_idx)
             except Exception:
@@ -1239,29 +1237,31 @@ def configure_kaggle_flux_runtime() -> None:
                     "FLUX_TORCH_DTYPE=float16 (transformer/compute); "
                     "VAE is upcast to float32 at load/generate to avoid fp16 NaN/black"
                 )
-            # Never silently demote Production 700+/768 → 512 on T4.
+            # Never silently demote Production 768 → 512 on T4.
             prod_res = (
                 os.environ.get("FLUX_PRODUCTION_RESOLUTION")
                 or os.environ.get("FLUX_PRODUCTION_SIZE")
                 or ""
             ).strip()
             if prod_res.isdigit() and int(prod_res) < 700:
-                os.environ["FLUX_PRODUCTION_RESOLUTION"] = "704"
-                os.environ["FLUX_PRODUCTION_SIZE"] = "704"
+                os.environ["FLUX_PRODUCTION_RESOLUTION"] = "768"
+                os.environ["FLUX_PRODUCTION_SIZE"] = "768"
                 _log(
-                    f"Raised Production resolution {prod_res} → 704 "
-                    "(Kaggle Production minimum is 700+)"
+                    f"Raised Production resolution {prod_res} → 768 "
+                    "(Kaggle Production lock is 768×768)"
                 )
             _log(
-                "High-VRAM (T4-class) Production defaults: "
+                "High-VRAM (T4-class) Production lock: "
                 f"FLUX_PRODUCTION_RESOLUTION="
                 f"{os.environ.get('FLUX_PRODUCTION_RESOLUTION')} "
                 f"FLUX_PRODUCTION_STEPS={os.environ.get('FLUX_PRODUCTION_STEPS')} "
+                f"FLUX_PRODUCTION_GUIDANCE="
+                f"{os.environ.get('FLUX_PRODUCTION_GUIDANCE')} "
+                f"FLUX_PRODUCTION_NO_OOM_FALLBACK="
+                f"{os.environ.get('FLUX_PRODUCTION_NO_OOM_FALLBACK')} "
                 f"FLUX_STANDARD_STEPS={os.environ.get('FLUX_STANDARD_STEPS')} "
                 f"FLUX_MODEL_CPU_OFFLOAD={os.environ.get('FLUX_MODEL_CPU_OFFLOAD', 'auto')} "
-                "FLUX_VAE_TILING=true "
-                "(benchmark 704/720/768 × 8/10/12 via "
-                "scripts/kaggle_flux_production_benchmark.py)"
+                "FLUX_VAE_TILING=true"
             )
         else:
             os.environ.setdefault("FABRICVISION_PROFILE", "local_low_vram")

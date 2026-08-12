@@ -91,24 +91,27 @@ def test_production_low_vram_locks_512(monkeypatch):
     assert policy.profile == "production_low_vram"
 
 
-def test_production_t4_defaults_to_700plus(monkeypatch):
+def test_production_t4_defaults_to_768(monkeypatch):
     monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_SIZE", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_STEPS", raising=False)
+    monkeypatch.delenv("FLUX_PRODUCTION_GUIDANCE", raising=False)
     monkeypatch.delenv("FLUX_ALLOW_HIGH_RES", raising=False)
 
     policy = select_production_generation_policy(
         physical_mb=15109.0,
-        free_mb=5000.0,
+        free_mb=3000.0,  # low free must NOT demote locked 768
         offload_strategy="model_cpu_offload",
-        yaml_height=704,
-        yaml_steps=10,
+        yaml_height=768,
+        yaml_steps=12,
         yaml_guidance=3.0,
     )
-    assert policy.height >= 700
-    assert policy.width >= 700
-    assert 8 <= policy.num_inference_steps <= 12
+    assert policy.height == 768
+    assert policy.width == 768
+    assert policy.num_inference_steps == 12
+    assert policy.guidance_scale == 3.0
+    assert policy.profile == "production_t4_768"
 
 
 def test_production_t4_env_720(monkeypatch):
@@ -263,9 +266,9 @@ def test_pipeline_production_policy_on_t4(monkeypatch):
     from src.features.custom_generator.inference import flux_vram_policy as pol
 
     cfg = GarmentGenerationConfig(
-        height=704,
-        width=704,
-        num_inference_steps=10,
+        height=768,
+        width=768,
+        num_inference_steps=12,
         guidance_scale=3.0,
         generation_mode="production",
         allow_fallback=True,
@@ -278,6 +281,7 @@ def test_pipeline_production_policy_on_t4(monkeypatch):
     monkeypatch.delenv("FLUX_PRODUCTION_SIZE", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_STEPS", raising=False)
+    monkeypatch.delenv("FLUX_PRODUCTION_GUIDANCE", raising=False)
     monkeypatch.delenv("FLUX_ALLOW_HIGH_RES", raising=False)
     monkeypatch.setattr(
         pol,
@@ -295,7 +299,7 @@ def test_pipeline_production_policy_on_t4(monkeypatch):
     )
 
     pipe._apply_production_vram_defaults("production")
-    assert pipe.config.height >= 700
-    assert pipe.config.width >= 700
-    assert 8 <= pipe.config.num_inference_steps <= 12
-    assert pipe.config.guidance_scale >= 3.0
+    assert pipe.config.height == 768
+    assert pipe.config.width == 768
+    assert pipe.config.num_inference_steps == 12
+    assert pipe.config.guidance_scale == 3.0

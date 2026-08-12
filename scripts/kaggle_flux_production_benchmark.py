@@ -136,6 +136,9 @@ def run_in_process(fabric: Path, resolution: int, steps: int, guidance: float) -
     os.environ["FLUX_PRODUCTION_RESOLUTION"] = str(resolution)
     os.environ["FLUX_PRODUCTION_SIZE"] = str(resolution)
     os.environ["FLUX_PRODUCTION_STEPS"] = str(steps)
+    os.environ["FLUX_PRODUCTION_GUIDANCE"] = str(guidance)
+    # Never silently resize and still claim the locked Production cell succeeded.
+    os.environ["FLUX_PRODUCTION_NO_OOM_FALLBACK"] = "1"
     os.environ.setdefault("FLUX_VAE_TILING", "true")
 
     from PIL import Image
@@ -158,6 +161,9 @@ def run_in_process(fabric: Path, resolution: int, steps: int, guidance: float) -
             "oom": False,
             "error": "FLUX failed to load",
             "model_load_time_s": load_s,
+            "requested_resolution": f"{resolution}x{resolution}",
+            "requested_steps": steps,
+            "requested_guidance": guidance,
         }
 
     cfg = GarmentGenerationConfig(
@@ -206,7 +212,9 @@ def run_in_process(fabric: Path, resolution: int, steps: int, guidance: float) -
         )
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
-        oom = "out of memory" in err.lower() or "cuda" in err.lower() and "memory" in err.lower()
+        oom = "out of memory" in err.lower() or (
+            "cuda" in err.lower() and "memory" in err.lower()
+        )
     inf_s = round(time.perf_counter() - t_inf0, 2)
 
     import torch
@@ -223,48 +231,153 @@ def run_in_process(fabric: Path, resolution: int, steps: int, guidance: float) -
         else 0.0
     )
 
+    image_path = result.get("image_path") or result.get("output_path")
+    actual_w = actual_h = None
+    if image_path and Path(image_path).is_file():
+        with Image.open(image_path) as out_img:
+            actual_w, actual_h = out_img.size
+
+    stats = getattr(pipe.inference_engine, "last_execution_stats", None) or {}
+    meta = result.get("metadata") or {}
+    if "was_real_flux_used" in stats:
+        was_real = bool(stats["was_real_flux_used"]) and not bool(
+            stats.get("was_fallback_used")
+        )
+    else:
+        was_real = (
+            err is None
+            and bool(image_path)
+            and meta.get("model") == "FLUX.1-Kontext"
+            and not bool(stats.get("was_fallback_used"))
+        )
+
+    dims_ok = actual_w == resolution and actual_h == resolution
+    config_ok = (
+        int(pipe.config.width) == resolution
+        and int(pipe.config.height) == resolution
+        and int(pipe.config.num_inference_steps) == steps
+        and abs(float(pipe.config.guidance_scale) - float(guidance)) < 1e-6
+    )
+    ok = err is None and bool(image_path) and was_real and dims_ok and config_ok
+    if err is None and image_path and not dims_ok:
+        err = (
+            f"Output dimensions {actual_w}x{actual_h} != requested "
+            f"{resolution}x{resolution} (silent resize/mismatch — not accepted)"
+        )
+        ok = False
+
     return {
-        "ok": err is None and bool(result.get("was_real_flux_used", result.get("image_path"))),
+        "ok": ok,
         "oom": oom,
         "error": err,
         "model_load_time_s": load_s,
         "inference_time_s": inf_s,
         "total_time_s": round(load_s + inf_s, 2),
+        "requested_resolution": f"{resolution}x{resolution}",
+        "requested_steps": steps,
+        "requested_guidance": guidance,
         "resolution": f"{pipe.config.width}x{pipe.config.height}",
         "steps": pipe.config.num_inference_steps,
         "guidance": pipe.config.guidance_scale,
+        "actual_output_width": actual_w,
+        "actual_output_height": actual_h,
+        "actual_output_dims": (
+            f"{actual_w}x{actual_h}" if actual_w is not None else None
+        ),
         "gpu": DeviceManager.inventory_gpus(),
+        "flux_device": flux_dev,
         "vram_alloc_mb": vram_alloc,
         "vram_peak_mb": vram_peak,
-        "image_path": result.get("image_path") or result.get("result_url"),
-        "was_real_flux_used": result.get("was_real_flux_used"),
+        "image_path": image_path,
+        "was_real_flux_used": was_real,
+        "was_fallback_used": bool(stats.get("was_fallback_used")),
         "result_meta": {
-            k: result[k]
+            k: stats.get(k)
             for k in (
                 "was_real_flux_used",
+                "was_fallback_used",
                 "num_inference_steps",
                 "height",
                 "width",
                 "guidance_scale",
                 "generation_time_s",
                 "peak_vram_mb",
+                "output_size",
             )
-            if k in result
+            if k in stats
         },
     }
 
 
-def pick_fabric() -> Path:
-    for p in [
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def pick_fabric(explicit: str | Path | None = None) -> Path:
+    """Resolve a real fabric/sample image for the Production ladder.
+
+    ``data/uploads/`` is gitignored, so fresh Kaggle clones do not have
+    ``val_cotton.png``. Prefer an explicit ``--fabric`` path, then known local
+    upload names when present, then tracked ``tests/test_images/`` samples
+    (shipped with the repo). Never invent or synthesize an image.
+    """
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"--fabric path does not exist or is not a file: {path}"
+            )
+        return path.resolve()
+
+    # Prefer established FLUX benchmark / validation names when present locally.
+    preferred = [
+        ROOT / "data" / "uploads" / "30c9aacaacf444169b3959f2171b4942.jpg",
         ROOT / "data" / "uploads" / "val_cotton.png",
         ROOT / "frontend" / "public" / "studio" / "fabric.png",
-    ]:
-        if p.exists():
-            return p
-    pngs = list((ROOT / "data" / "uploads").glob("*.png"))
-    if not pngs:
-        raise FileNotFoundError("No fabric image found")
-    return pngs[0]
+        # Tracked in git — available on a fresh Kaggle clone.
+        ROOT / "tests" / "test_images" / "test_img_1.jpg",
+    ]
+    for p in preferred:
+        if p.is_file():
+            return p.resolve()
+
+    # Remaining tracked test samples.
+    test_dir = ROOT / "tests" / "test_images"
+    if test_dir.is_dir():
+        for pattern in ("*.jpg", "*.jpeg", "*.png", "*.webp"):
+            found = sorted(test_dir.glob(pattern))
+            if found:
+                return found[0].resolve()
+
+    # Optional local upload directory (gitignored; present after API sessions).
+    uploads = ROOT / "data" / "uploads"
+    if uploads.is_dir():
+        for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp"):
+            found = sorted(uploads.glob(pattern))
+            if found:
+                return found[0].resolve()
+
+    # Flat-lay garments tracked under curated_dataset (texture-like).
+    curated = ROOT / "curated_dataset"
+    if curated.is_dir():
+        flats = sorted(curated.rglob("*_6_flat.jpg")) + sorted(
+            curated.rglob("*_6_flat.png")
+        )
+        if flats:
+            return flats[0].resolve()
+
+    searched = [
+        str(ROOT / "data" / "uploads"),
+        str(ROOT / "tests" / "test_images"),
+        str(ROOT / "frontend" / "public" / "studio"),
+        str(ROOT / "curated_dataset"),
+    ]
+    raise FileNotFoundError(
+        "No fabric image found for the Production ladder. "
+        "Pass a real image explicitly, for example:\n"
+        "  python scripts/kaggle_flux_production_benchmark.py "
+        "--fabric /path/to/fabric.jpg\n"
+        f"Searched: {', '.join(searched)}"
+    )
 
 
 def parse_only(raw: str | None) -> list[tuple[int, int]]:
@@ -285,6 +398,14 @@ def main() -> int:
     parser.add_argument("--api", default=DEFAULT_API)
     parser.add_argument("--in-process", action="store_true", default=True)
     parser.add_argument("--api-mode", action="store_true", help="Use FastAPI instead of in-process")
+    parser.add_argument(
+        "--fabric",
+        default="",
+        help=(
+            "Path to a real fabric/sample image. Required when auto-discovery "
+            "fails (data/uploads is gitignored on fresh clones)."
+        ),
+    )
     parser.add_argument("--guidance", type=float, default=3.0)
     parser.add_argument("--only", default="", help="e.g. 704:8,720:10,768:12")
     parser.add_argument("--timeout", type=int, default=3600)
@@ -292,7 +413,7 @@ def main() -> int:
     in_process = not args.api_mode
 
     OUT.mkdir(parents=True, exist_ok=True)
-    fabric = pick_fabric()
+    fabric = pick_fabric(args.fabric or None)
     print(f"fabric={fabric}", flush=True)
     print(f"mode={'in-process' if in_process else 'api'}", flush=True)
 
@@ -305,6 +426,7 @@ def main() -> int:
             "resolution": resolution,
             "steps": steps,
             "guidance": args.guidance,
+            "fabric_path": str(fabric),
         }
         try:
             if in_process:
@@ -355,6 +477,7 @@ def main() -> int:
         print(json.dumps(row, indent=2)[:2000], flush=True)
 
     report = {
+        "fabric_path": str(fabric),
         "ladder": rows,
         "note": (
             "Select best Production config by quality + stability. "

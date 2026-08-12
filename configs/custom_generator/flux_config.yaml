@@ -71,21 +71,21 @@ standard_t4:
   guidance_scale: 3.0
   measured_runtime_note: "opt-in only; GPU-resident 768 OOM'd without free headroom"
 
-# Production — Kaggle T4 / T4×2 quality-first (minimum 700+ px).
-# Allowed ladder: 704 / 720 / 768 at 8–12 steps. Interim default 704×10
-# until scripts/kaggle_flux_production_benchmark.py selects a winner.
+# Production — Kaggle T4×2 locked target: 768×768 / 12 steps / guidance 3.0.
+# Override via FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_STEPS /
+# FLUX_PRODUCTION_GUIDANCE. Do NOT silently demote 768→512 on T4.
 # Local RTX 3050 is clamped to 512 by flux_vram_policy (low-VRAM path).
 production:
-  height: 704
-  width: 704
-  num_inference_steps: 10
+  height: 768
+  width: 768
+  num_inference_steps: 12
   guidance_scale: 3.0
-  measured_runtime_note: "Kaggle T4 production target ≥700; benchmark 704/720/768 × 8/10/12"
+  measured_runtime_note: "Kaggle T4×2 Production lock 768×12@3.0; OOM must fail clearly"
 
 high_quality:
-  height: 704
-  width: 704
-  num_inference_steps: 10
+  height: 768
+  width: 768
+  num_inference_steps: 12
   guidance_scale: 3.0
   measured_runtime_note: "alias of production"
 

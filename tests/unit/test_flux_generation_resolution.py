@@ -5,9 +5,13 @@ from __future__ import annotations
 from src.features.custom_generator.inference.flux_inference import (
     ALLOWED_FLUX_GENERATION_RESOLUTIONS,
     DEFAULT_FLUX_GENERATION_RESOLUTION,
+    DEFAULT_KAGGLE_PRODUCTION_GUIDANCE,
     DEFAULT_KAGGLE_PRODUCTION_RESOLUTION,
+    DEFAULT_KAGGLE_PRODUCTION_STEPS,
     resolve_flux_generation_resolution,
+    resolve_flux_production_guidance,
     resolve_flux_production_resolution,
+    resolve_flux_production_steps,
 )
 
 
@@ -33,17 +37,26 @@ def test_invalid_env_falls_back(monkeypatch):
     assert resolve_flux_generation_resolution() == 512
 
 
-def test_production_resolution_defaults_700plus(monkeypatch):
+def test_production_resolution_defaults_to_768(monkeypatch):
     monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_SIZE", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_RESOLUTION", raising=False)
-    assert DEFAULT_KAGGLE_PRODUCTION_RESOLUTION >= 700
-    assert resolve_flux_production_resolution() >= 700
-    assert 704 in ALLOWED_FLUX_GENERATION_RESOLUTIONS
-    assert 720 in ALLOWED_FLUX_GENERATION_RESOLUTIONS
+    monkeypatch.delenv("FLUX_PRODUCTION_STEPS", raising=False)
+    monkeypatch.delenv("FLUX_PRODUCTION_GUIDANCE", raising=False)
+    assert DEFAULT_KAGGLE_PRODUCTION_RESOLUTION == 768
+    assert DEFAULT_KAGGLE_PRODUCTION_STEPS == 12
+    assert DEFAULT_KAGGLE_PRODUCTION_GUIDANCE == 3.0
+    assert resolve_flux_production_resolution() == 768
+    assert resolve_flux_production_steps() == 12
+    assert resolve_flux_production_guidance() == 3.0
+    assert 768 in ALLOWED_FLUX_GENERATION_RESOLUTIONS
 
 
 def test_production_resolution_env(monkeypatch):
     monkeypatch.setenv("FLUX_PRODUCTION_RESOLUTION", "768")
+    monkeypatch.setenv("FLUX_PRODUCTION_STEPS", "12")
+    monkeypatch.setenv("FLUX_PRODUCTION_GUIDANCE", "3.0")
     monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
     assert resolve_flux_production_resolution() == 768
+    assert resolve_flux_production_steps() == 12
+    assert resolve_flux_production_guidance() == 3.0

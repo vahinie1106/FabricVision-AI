@@ -244,22 +244,26 @@ def select_production_generation_policy(
     physical_mb: Optional[float] = None,
     free_mb: Optional[float] = None,
     offload_strategy: Optional[str] = None,
-    yaml_height: int = 704,
-    yaml_steps: int = 10,
+    yaml_height: int = 768,
+    yaml_steps: int = 12,
     yaml_guidance: float = 3.0,
 ) -> ProductionGenPolicy:
     """
     Production / High-Quality policy.
 
     - Local / low-VRAM (<14GB): lock 512² (3050-safe).
-    - Kaggle T4 / high-VRAM: Production minimum 700+ px (704 / 720 / 768).
-      Default interim: 704² / 8–12 steps until ladder benchmark selects a winner.
+    - Kaggle T4 / high-VRAM: locked Production target 768×768 / 12 steps /
+      guidance 3.0 (env-overridable). Do NOT silently demote 768→720/704/512.
     """
     from src.features.custom_generator.inference.flux_inference import (
         ALLOWED_FLUX_GENERATION_RESOLUTIONS,
+        DEFAULT_KAGGLE_PRODUCTION_GUIDANCE,
         DEFAULT_KAGGLE_PRODUCTION_RESOLUTION,
+        DEFAULT_KAGGLE_PRODUCTION_STEPS,
         MIN_KAGGLE_PRODUCTION_RESOLUTION,
+        resolve_flux_production_guidance,
         resolve_flux_production_resolution,
+        resolve_flux_production_steps,
     )
 
     diag = collect_vram_diagnostics()
@@ -271,18 +275,16 @@ def select_production_generation_policy(
     allow_high_res = _env_truthy("FLUX_ALLOW_HIGH_RES")
     offload_env = _env_truthy("FLUX_MODEL_CPU_OFFLOAD")
 
-    # Steps: honor env; otherwise keep Production in the 8–12 quality band.
     if forced_steps is not None:
         base_steps = int(forced_steps)
     else:
-        base_steps = int(yaml_steps or 10)
-        base_steps = max(8, min(12, base_steps))
+        base_steps = resolve_flux_production_steps(
+            default=int(yaml_steps or DEFAULT_KAGGLE_PRODUCTION_STEPS)
+        )
 
-    guidance = float(yaml_guidance or 3.0)
-    if guidance < 3.0:
-        guidance = 3.0
-    if guidance > 3.5:
-        guidance = 3.5
+    guidance = resolve_flux_production_guidance(
+        default=float(yaml_guidance or DEFAULT_KAGGLE_PRODUCTION_GUIDANCE)
+    )
 
     prefer_offload = True if offload_env is None else offload_env
 
@@ -297,7 +299,9 @@ def select_production_generation_policy(
         return ProductionGenPolicy(
             height=int(res),
             width=int(res),
-            num_inference_steps=int(base_steps if forced_steps is not None else max(12, min(16, base_steps))),
+            num_inference_steps=int(
+                base_steps if forced_steps is not None else max(12, min(16, base_steps))
+            ),
             guidance_scale=float(guidance),
             prefer_model_cpu_offload=True if offload_env is None else offload_env,
             enable_vae_tiling=True,
@@ -305,7 +309,7 @@ def select_production_generation_policy(
             profile="production_low_vram",
         )
 
-    # Kaggle T4-class: Production must be ≥700 px.
+    # Kaggle T4-class: honor locked Production resolution (default 768).
     res = resolve_flux_production_resolution(
         default=int(yaml_height)
         if int(yaml_height) >= MIN_KAGGLE_PRODUCTION_RESOLUTION
@@ -316,18 +320,11 @@ def select_production_generation_policy(
     if res not in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
         res = DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
 
-    # Prefer 768 only when free headroom is large or operator opts in.
-    if res >= 768 and allow_high_res is False and free < 6500:
-        # Fall back within 700+ band rather than demoting to 512.
-        res = 720 if free >= 4500 else 704
-        profile = "production_t4_700plus_safe"
-        reason = (
-            f"production_t4_700plus_safe free={free:.0f}MB phys={phys:.0f}MB "
-            f"(768 deferred; min production is 700+)"
-        )
-    else:
-        profile = "production_t4_700plus"
-        reason = f"production_t4_700plus free={free:.0f}MB phys={phys:.0f}MB res={res}"
+    profile = "production_t4_768"
+    reason = (
+        f"production_t4_768 free={free:.0f}MB phys={phys:.0f}MB "
+        f"res={res} steps={base_steps} guidance={guidance}"
+    )
 
     return ProductionGenPolicy(
         height=int(res),

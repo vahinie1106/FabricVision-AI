@@ -208,7 +208,9 @@ class GarmentGenerationPipeline:
         # - FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_SIZE → Production only (≥700 on T4)
         from src.features.custom_generator.inference.flux_inference import (
             resolve_flux_generation_resolution,
+            resolve_flux_production_guidance,
             resolve_flux_production_resolution,
+            resolve_flux_production_steps,
         )
 
         if mode_key == "production":
@@ -216,17 +218,18 @@ class GarmentGenerationPipeline:
             # On low-VRAM the production VRAM policy will clamp to 512 later.
             self.config.height = size
             self.config.width = size
+            self.config.num_inference_steps = resolve_flux_production_steps(
+                default=self.config.num_inference_steps
+            )
+            self.config.guidance_scale = resolve_flux_production_guidance(
+                default=self.config.guidance_scale
+            )
         else:
             res_env = os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip()
             if res_env.isdigit():
                 size = resolve_flux_generation_resolution(default=self.config.height)
                 self.config.height = size
                 self.config.width = size
-
-        if mode_key == "production":
-            prod_steps = os.environ.get("FLUX_PRODUCTION_STEPS", "").strip()
-            if prod_steps.isdigit():
-                self.config.num_inference_steps = max(1, int(prod_steps))
 
         std_steps = os.environ.get("FLUX_STANDARD_STEPS", "").strip()
         if mode_key == "standard" and std_steps.isdigit():
