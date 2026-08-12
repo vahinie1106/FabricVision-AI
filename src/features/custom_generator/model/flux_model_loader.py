@@ -1345,12 +1345,16 @@ class FLUXModelLoader:
 
     def stabilize_flux_vae(self, pipeline: Any | None = None) -> dict[str, Any]:
         """
-        Keep Flux VAE in float32 when the pipeline compute dtype is float16.
+        Keep Flux VAE in float32 when the pipeline compute dtype is float16, and
+        wrap encode/decode so tensors Diffusers casts to fp16 are re-aligned to
+        the VAE dtype at the VAE boundary.
 
-        Evidence (Kaggle T4): raw+final PNGs were completely black (max=0, 3512 B)
-        after the pre-Ampere float16 compute path. Flux VAE in fp16 is a known
-        NaN→black failure (Diffusers #9096 / InvokeAI #7208). Transformer stays
-        NF4 + float16; only the VAE is upcast.
+        Evidence (Kaggle T4):
+        - FP16 VAE → NaN → completely black PNG (Diffusers #9096).
+        - FP32 VAE + Diffusers ``image.to(dtype=prompt_embeds.dtype)`` (fp16)
+          → ``Input type (c10::Half) and bias type (float) should be the same``
+          at ``vae.encode`` / ``conv_in``.
+        Transformer stays NF4 + float16; only the VAE path is adjusted.
         """
         info: dict[str, Any] = {
             "vae_dtype_before": None,
@@ -1358,6 +1362,7 @@ class FLUXModelLoader:
             "vae_device": None,
             "upcasted": False,
             "decode_wrapped": False,
+            "encode_wrapped": False,
         }
         pipe = pipeline if pipeline is not None else self._pipeline
         if pipe is None or torch is None:
@@ -1388,6 +1393,34 @@ class FLUXModelLoader:
         except Exception as exc:
             self.logger.warning("[FLUX] VAE fp32 upcast failed: %s", exc)
 
+        def _cast_to_vae_dtype(sample: Any) -> Any:
+            try:
+                target = next(vae.parameters()).dtype
+                if hasattr(sample, "to") and getattr(sample, "dtype", None) != target:
+                    return sample.to(dtype=target)
+            except Exception:
+                pass
+            return sample
+
+        # Diffusers FluxKontext prepare_latents does:
+        #   image = image.to(device=device, dtype=<pipeline/prompt dtype>)  # often fp16
+        #   self.vae.encode(image)
+        # With an FP32 VAE that raises:
+        #   Input type (c10::Half) and bias type (float) should be the same
+        # Cast at the VAE encode boundary only — do not change transformer dtype.
+        if hasattr(vae, "encode") and not getattr(
+            vae, "_fabricvision_fp32_encode_wrapped", False
+        ):
+            original_encode = vae.encode
+
+            def _encode_matching_dtype(sample, *args, **kwargs):  # noqa: ANN001
+                return original_encode(_cast_to_vae_dtype(sample), *args, **kwargs)
+
+            vae.encode = _encode_matching_dtype  # type: ignore[method-assign]
+            vae._fabricvision_fp32_encode_wrapped = True
+            info["encode_wrapped"] = True
+            self.logger.info("[FLUX] VAE.encode wrapped to cast inputs to VAE dtype")
+
         # Ensure decode latents match VAE dtype (pipeline may pass float16 latents).
         if hasattr(vae, "decode") and not getattr(
             vae, "_fabricvision_fp32_decode_wrapped", False
@@ -1395,13 +1428,7 @@ class FLUXModelLoader:
             original_decode = vae.decode
 
             def _decode_matching_dtype(latents, *args, **kwargs):  # noqa: ANN001
-                try:
-                    target = next(vae.parameters()).dtype
-                    if hasattr(latents, "to") and getattr(latents, "dtype", None) != target:
-                        latents = latents.to(dtype=target)
-                except Exception:
-                    pass
-                return original_decode(latents, *args, **kwargs)
+                return original_decode(_cast_to_vae_dtype(latents), *args, **kwargs)
 
             vae.decode = _decode_matching_dtype  # type: ignore[method-assign]
             vae._fabricvision_fp32_decode_wrapped = True

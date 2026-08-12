@@ -182,6 +182,9 @@ def test_stabilize_flux_vae_upcasts_float16(monkeypatch):
         def decode(self, latents, *args, **kwargs):
             return (latents,)
 
+        def encode(self, sample, *args, **kwargs):
+            return sample
+
     class _Pipe:
         def __init__(self):
             self.vae = _Vae()
@@ -194,6 +197,122 @@ def test_stabilize_flux_vae_upcasts_float16(monkeypatch):
     # Latents passed as fp16 must be cast for decode.
     out = pipe.vae.decode(torch.ones(1, 1, 2, 2, dtype=torch.float16))
     assert out[0].dtype == torch.float32
+
+
+def test_stabilize_flux_vae_encode_casts_fp16_to_fp32(monkeypatch):
+    """VAE FP32 + Diffusers fp16 conditioning tensor must cast at encode boundary."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    loader = FLUXModelLoader(allow_fallback=True)
+
+    seen = {}
+
+    class _Vae(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
+
+        def encode(self, sample, *args, **kwargs):
+            seen["dtype"] = sample.dtype
+            seen["id"] = id(sample)
+            return sample
+
+        def decode(self, latents, *args, **kwargs):
+            return (latents,)
+
+    class _Pipe:
+        def __init__(self):
+            self.vae = _Vae()
+
+    pipe = _Pipe()
+    info = loader.stabilize_flux_vae(pipe)
+    assert info["encode_wrapped"] is True
+    assert info["upcasted"] is False  # already fp32
+
+    fp16 = torch.ones(1, 3, 8, 8, dtype=torch.float16)
+    original_id = id(fp16)
+    _ = pipe.vae.encode(fp16)
+    assert seen["dtype"] == torch.float32
+    # Helper must not mutate the caller's tensor in-place via shared storage surprises
+    # for this path (.to creates a new tensor when dtype changes).
+    assert seen["id"] != original_id
+    assert fp16.dtype == torch.float16
+
+
+def test_stabilize_flux_vae_encode_keeps_matching_dtypes(monkeypatch):
+    """Same-dtype encode path remains unchanged (fp32→fp32)."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    loader = FLUXModelLoader(allow_fallback=True)
+    seen = {}
+
+    class _Vae(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(1, dtype=torch.float32))
+
+        def encode(self, sample, *args, **kwargs):
+            seen["dtype"] = sample.dtype
+            seen["id"] = id(sample)
+            return sample
+
+        def decode(self, latents, *args, **kwargs):
+            return (latents,)
+
+    class _Pipe:
+        def __init__(self):
+            self.vae = _Vae()
+
+    pipe = _Pipe()
+    info = loader.stabilize_flux_vae(pipe)
+    assert info["encode_wrapped"] is True
+    fp32 = torch.ones(1, 3, 4, 4, dtype=torch.float32)
+    original_id = id(fp32)
+    _ = pipe.vae.encode(fp32)
+    assert seen["dtype"] == torch.float32
+    # No dtype change → .to() may return same object
+    assert seen["id"] == original_id
+
+
+def test_stabilize_flux_vae_encode_fp16_vae_keeps_fp16_input(monkeypatch):
+    """If VAE remains fp16, fp16 conditioning stays fp16 at encode."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    loader = FLUXModelLoader(allow_fallback=True)
+    seen = {}
+
+    class _Vae(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(1, dtype=torch.float16))
+
+        def to(self, *args, **kwargs):
+            # Block upcast for this case — simulate a path where VAE stays fp16.
+            return self
+
+        def encode(self, sample, *args, **kwargs):
+            seen["dtype"] = sample.dtype
+            return sample
+
+        def decode(self, latents, *args, **kwargs):
+            return (latents,)
+
+        def parameters(self, recurse=True):
+            yield self.weight
+
+    class _Pipe:
+        def __init__(self):
+            self.vae = _Vae()
+
+    pipe = _Pipe()
+    info = loader.stabilize_flux_vae(pipe)
+    assert info["encode_wrapped"] is True
+    assert next(pipe.vae.parameters()).dtype == torch.float16
+    _ = pipe.vae.encode(torch.ones(1, 3, 4, 4, dtype=torch.float16))
+    assert seen["dtype"] == torch.float16
 
 
 def test_assert_non_black_pil_rejects_zero_image():

@@ -136,6 +136,52 @@ class FLUXInferenceEngine:
             "max_reserved_mb": max_reserved,
         }
 
+    def _log_vae_dtype_debug(self, pipeline: Any, conditioning_image: Any = None) -> None:
+        """Targeted dtype/device dump immediately before pipeline()."""
+        lines = ["[FLUX DTYPE DEBUG]"]
+        lines.append(f"conditioning input type: {type(conditioning_image).__name__}")
+        if conditioning_image is not None and hasattr(conditioning_image, "dtype"):
+            lines.append(f"conditioning tensor dtype: {conditioning_image.dtype}")
+            lines.append(f"conditioning tensor device: {getattr(conditioning_image, 'device', None)}")
+        elif conditioning_image is not None:
+            lines.append(
+                f"conditioning image: mode={getattr(conditioning_image, 'mode', None)} "
+                f"size={getattr(conditioning_image, 'size', None)} "
+                "(PIL/object — Diffusers will tensorize then cast to pipeline dtype)"
+            )
+        vae = getattr(pipeline, "vae", None)
+        if vae is not None:
+            try:
+                p = next(vae.parameters())
+                lines.append(f"VAE dtype: {p.dtype}")
+                lines.append(f"VAE device: {p.device}")
+                lines.append(
+                    f"VAE config force_upcast: {getattr(getattr(vae, 'config', None), 'force_upcast', None)}"
+                )
+                lines.append(f"VAE parameters dtype: {p.dtype}")
+                lines.append(f"VAE parameters device: {p.device}")
+            except Exception as exc:
+                lines.append(f"VAE inspect failed: {exc}")
+            conv_in = getattr(getattr(vae, "encoder", None), "conv_in", None)
+            if conv_in is not None:
+                w = getattr(conv_in, "weight", None)
+                b = getattr(conv_in, "bias", None)
+                if w is not None:
+                    lines.append(f"VAE encoder conv_in weight dtype: {w.dtype}")
+                    lines.append(f"VAE encoder conv_in weight device: {w.device}")
+                if b is not None:
+                    lines.append(f"VAE encoder conv_in bias dtype: {b.dtype}")
+                    lines.append(f"VAE encoder conv_in bias device: {b.device}")
+            lines.append(
+                f"VAE.encode wrapped: {bool(getattr(vae, '_fabricvision_fp32_encode_wrapped', False))}"
+            )
+            lines.append(
+                f"VAE.decode wrapped: {bool(getattr(vae, '_fabricvision_fp32_decode_wrapped', False))}"
+            )
+        for line in lines:
+            self.logger.info(line)
+            print(line, flush=True)
+
     def _log_tensor_stats(self, name: str, tensor: Any) -> None:
         """Compact tensor diagnostics — never dump full tensors."""
         if tensor is None or torch is None:
@@ -834,6 +880,7 @@ class FLUXInferenceEngine:
             def _run_pipeline_once(pipe_kwargs: Dict[str, Any]):
                 self._log_generation_stage("INPUT_PREPARED")
                 self._maybe_cuda_sync("INPUT_PREPARED")
+                self._log_vae_dtype_debug(pipeline, pipe_kwargs.get("image"))
                 log_vram("before transformer inference")
                 self._log_generation_stage("DENOISING_START")
                 try:
