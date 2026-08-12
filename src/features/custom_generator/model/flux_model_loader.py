@@ -419,6 +419,78 @@ class FLUXModelLoader:
         )
         shutil.rmtree(path, ignore_errors=True)
 
+    def _should_purge_before_download(self, path: Path, preflight: dict[str, Any]) -> bool:
+        """
+        Only wipe local trees that are corrupt (git-LFS pointers / junk).
+
+        Never delete a tree that already has a real multi-GB transformer: that
+        forces a multi-minute re-download after an interrupted snapshot. Prefer
+        ``resume_download`` / hub-cache reuse instead.
+        """
+        if not path.exists():
+            return False
+        if preflight.get("transformer_lfs_pointer"):
+            return True
+        transformer_ok = bool(preflight.get("transformer_weights"))
+        transformer_bytes = int(preflight.get("transformer_bytes") or 0)
+        if transformer_ok and transformer_bytes >= self._MIN_TRANSFORMER_WEIGHT_BYTES:
+            return False
+        # Tiny stub weight files (not LFS) still poison Diffusers — wipe.
+        tpath = path / "transformer" / "diffusion_pytorch_model.safetensors"
+        if tpath.is_file() and tpath.stat().st_size < self._MIN_TRANSFORMER_WEIGHT_BYTES:
+            return True
+        return False
+
+    def _dir_weight_bytes(self, path: Path) -> int:
+        """Approximate on-disk weight bytes under a package (for download progress)."""
+        if not path.is_dir():
+            return 0
+        total = 0
+        for name in self.REQUIRED_COMPONENT_DIRS:
+            total += self._component_weight_bytes(path / name)
+        return total
+
+    def _find_complete_hub_snapshot(self, repo_id: str) -> Optional[Path]:
+        """
+        Locate a complete Diffusers snapshot already present in the HF hub cache.
+
+        This is the common Kaggle case after a prior download: ``models/`` is
+        gitignored / empty on a fresh clone, but ``HF_HOME/hub`` still has blobs.
+        """
+        try:
+            from src.common.utils.hf_cache_env import hub_repo_cache_dir
+
+            repo_cache = hub_repo_cache_dir(repo_id)
+        except Exception as exc:
+            self.logger.warning("[FLUX CACHE] hub cache probe failed: %s", exc)
+            return None
+
+        candidates: list[Path] = []
+        snaps = repo_cache / "snapshots"
+        if snaps.is_dir():
+            candidates.extend([p for p in snaps.iterdir() if p.is_dir()])
+        # refs/main may point at the current revision
+        ref = repo_cache / "refs" / "main"
+        if ref.is_file():
+            try:
+                rev = ref.read_text(encoding="utf-8").strip()
+                snap = snaps / rev
+                if snap.is_dir():
+                    candidates.insert(0, snap)
+            except OSError:
+                pass
+
+        seen: set[str] = set()
+        for snap in candidates:
+            key = str(snap.resolve()) if snap.exists() else str(snap)
+            if key in seen:
+                continue
+            seen.add(key)
+            if self._package_ready_for_pipeline(snap):
+                print(f"[FLUX CACHE] HIT hub_snapshot={snap}", flush=True)
+                return snap
+        return None
+
     def _prepare_hybrid_kontext_dir(self) -> Optional[Path]:
         """
         Build a Diffusers-ready Kontext dir by combining:
@@ -491,14 +563,20 @@ class FLUXModelLoader:
 
     def _ensure_hub_package(self, repo_id: str) -> str:
         """
-        Ensure a complete Diffusers Kontext package exists under model_path.
+        Ensure a complete Diffusers Kontext package exists under model_path
+        (or reuse a complete Hugging Face hub snapshot).
 
         On Kaggle, ``models/`` is gitignored so a fresh clone has no weights.
-        Incomplete / LFS-pointer trees are purged and re-downloaded into
-        ``models/flux-kontext`` (never nested as ``.../eramth/...``).
+        Resolution order:
+        1. Complete local ``models/flux-kontext`` → CACHE HIT
+        2. Complete HF hub snapshot for ``repo_id`` → CACHE HIT (no network)
+        3. Download into ``models/flux-kontext`` (resume; do not wipe good weights)
         """
         import threading
 
+        from src.common.utils.hf_cache_env import ensure_huggingface_cache_env
+
+        cache_env = ensure_huggingface_cache_env()
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
         # Never force offline mode for recovery.
         if os.environ.get("HF_HUB_OFFLINE", "").strip() in ("1", "true", "True"):
@@ -508,6 +586,15 @@ class FLUXModelLoader:
             )
             os.environ.pop("HF_HUB_OFFLINE", None)
 
+        self._progress("Checking FLUX model cache", 5)
+        print(
+            f"[FLUX CACHE] CHECKING_CACHE model_path={self.model_path} "
+            f"HF_HOME={cache_env.get('HF_HOME') or os.environ.get('HF_HOME')!r} "
+            f"HUGGINGFACE_HUB_CACHE="
+            f"{cache_env.get('HUGGINGFACE_HUB_CACHE') or os.environ.get('HUGGINGFACE_HUB_CACHE')!r}",
+            flush=True,
+        )
+
         download_root = Path(self.model_path)
         preflight = self.preflight_validate_package(download_root, source=repo_id)
         if preflight["ready"]:
@@ -516,22 +603,38 @@ class FLUXModelLoader:
             self.logger.info(
                 "[FLUX] CACHE HIT local package ready at %s", download_root.resolve()
             )
+            self._progress("FLUX cache hit — loading pipeline", 12)
             return str(download_root)
+
+        hub_snap = self._find_complete_hub_snapshot(repo_id)
+        if hub_snap is not None:
+            self._cache_status = "hit"
+            self.logger.info(
+                "[FLUX] CACHE HIT Hugging Face hub snapshot at %s", hub_snap
+            )
+            self._progress("FLUX cache hit (hub snapshot) — loading pipeline", 12)
+            return str(hub_snap)
 
         print(
             f"[FLUX CACHE] MISS path={download_root} missing={preflight.get('missing')}",
             flush=True,
         )
         self._cache_status = "miss"
+        self._progress(f"CACHE MISS — downloading FLUX weights ({repo_id})", 9)
 
-        # Incomplete trees poison resume_download; wipe then clean snapshot.
-        if download_root.exists():
+        # Corrupt LFS/stub trees must be wiped. Valid partial downloads resume.
+        if self._should_purge_before_download(download_root, preflight):
             self._purge_incomplete_package(
                 download_root,
-                reason=f"preflight FAIL missing={preflight.get('missing')}",
+                reason=f"corrupt/incomplete stub missing={preflight.get('missing')}",
+            )
+        elif download_root.exists() and preflight.get("transformer_weights"):
+            print(
+                "[FLUX CACHE] RESUME keeping existing transformer weights; "
+                "filling missing components without purge",
+                flush=True,
             )
 
-        self._progress(f"Downloading FLUX weights (CACHE MISS: {repo_id})", 9)
         print(f"[FLUX DOWNLOAD] repo={repo_id}", flush=True)
         print(f"[FLUX DOWNLOAD] local_dir={download_root.resolve()}", flush=True)
         self.logger.info(
@@ -553,21 +656,38 @@ class FLUXModelLoader:
         )
         t_dl = self._mark("MODEL_DOWNLOAD", time.perf_counter())
         stop_hb = threading.Event()
+        # Approx size of eramth/flux-kontext-4bit Diffusers tree (transformer alone ~6.7GiB).
+        expected_bytes = float(
+            os.environ.get("FLUX_EXPECTED_PACKAGE_BYTES", str(12 * 1024**3))
+        )
 
         def _heartbeat() -> None:
             started = time.perf_counter()
-            while not stop_hb.wait(20.0):
+            while not stop_hb.wait(15.0):
                 elapsed = int(time.perf_counter() - started)
-                pct = min(11, 9 + elapsed // 120)
-                self._progress(
-                    f"Downloading FLUX weights ({elapsed}s elapsed, CACHE MISS)",
-                    pct,
-                )
+                on_disk = self._dir_weight_bytes(download_root)
+                if expected_bytes > 0 and on_disk > 0:
+                    frac = min(1.0, on_disk / expected_bytes)
+                    # Download window: 9% → 48% based on measured bytes on disk.
+                    pct = 9 + int(39 * frac)
+                    gb = on_disk / (1024**3)
+                    self._progress(
+                        f"Downloading FLUX weights ({gb:.2f} GiB on disk, "
+                        f"{elapsed}s elapsed)",
+                        pct,
+                    )
+                else:
+                    pct = min(20, 9 + elapsed // 60)
+                    self._progress(
+                        f"Downloading FLUX weights ({elapsed}s elapsed, CACHE MISS)",
+                        pct,
+                    )
 
         hb = threading.Thread(target=_heartbeat, name="flux-download-hb", daemon=True)
         hb.start()
         try:
             # Explicit local_dir keeps a flat Diffusers tree under models/flux-kontext.
+            # Hub blobs still land under HUGGINGFACE_HUB_CACHE for later CACHE HITs.
             snapshot_kwargs = {
                 "repo_id": repo_id,
                 "local_dir": str(download_root),
@@ -611,6 +731,18 @@ class FLUXModelLoader:
 
         post = self.preflight_validate_package(download_root, source=repo_id)
         if not post["ready"]:
+            # Prefer a hub snapshot if local_dir materialization is incomplete but
+            # the hub cache already has a full tree (common after interrupted copy).
+            hub_snap = self._find_complete_hub_snapshot(repo_id)
+            if hub_snap is not None:
+                self._cache_status = "hit"
+                print(
+                    f"[FLUX CACHE] HIT hub_snapshot after download validate "
+                    f"path={hub_snap}",
+                    flush=True,
+                )
+                self._progress("FLUX weights ready (hub snapshot) — initializing pipeline", 12)
+                return str(hub_snap)
             print(
                 f"[FLUX ERROR] download finished but package still invalid "
                 f"missing={post.get('missing')} transformer_bytes={post.get('transformer_bytes')}",
@@ -625,7 +757,7 @@ class FLUXModelLoader:
             )
         print("[FLUX PREFLIGHT] PASS", flush=True)
         self.logger.info("FLUX hub package ready at %s", download_root.resolve())
-        self._progress("FLUX weights downloaded - initializing pipeline", 12)
+        self._progress("FLUX weights downloaded — initializing pipeline", 12)
         return str(download_root)
 
     def _resolve_model_source(self) -> tuple[str, Optional[str]]:
@@ -639,6 +771,9 @@ class FLUXModelLoader:
         Incomplete local trees (model_index + partial weights, missing transformer
         tensors / git-LFS pointers) must NOT short-circuit to from_pretrained.
         """
+        from src.common.utils.hf_cache_env import ensure_huggingface_cache_env
+
+        ensure_huggingface_cache_env()
         self.logger.info("FLUX model ID: %s", self.hf_model_id)
         self.logger.info(
             "FLUX resolve: model_path=%s exists=%s hf_token_present=%s cuda=%s gpu_vram_mb=%.0f",

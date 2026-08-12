@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -115,6 +116,8 @@ def test_incomplete_package_triggers_purge_and_download(tmp_path: Path):
     _fake_component_weights(root, "text_encoder_2")
     (root / "transformer").mkdir(parents=True, exist_ok=True)
     _write(root / "transformer" / "config.json", "{}")
+    # Tiny stub weight (not a real transformer) → purge allowed.
+    _write(root / "transformer" / "diffusion_pytorch_model.safetensors", b"\0" * 4096)
 
     loader = FLUXModelLoader(model_path=root, hf_model_id="eramth/flux-kontext-4bit")
 
@@ -129,10 +132,92 @@ def test_incomplete_package_triggers_purge_and_download(tmp_path: Path):
     mocked.assert_called_once()
     assert Path(path) == root
     assert loader._package_ready_for_pipeline(root) is True
-    # Incomplete tree must have been purged before download.
-    assert not (root / "transformer" / "config.json").exists() or (
+    assert (
         root / "transformer" / "diffusion_pytorch_model.safetensors"
-    ).exists()
+    ).stat().st_size >= FLUXModelLoader._MIN_TRANSFORMER_WEIGHT_BYTES
+
+
+def test_valid_partial_transformer_is_not_purged(tmp_path: Path):
+    """Interrupted downloads with a real transformer must resume, not wipe GiB of weights."""
+    root = tmp_path / "flux-kontext"
+    _write(root / "model_index.json", '{"_class_name": "FluxKontextPipeline"}')
+    (root / "transformer").mkdir(parents=True, exist_ok=True)
+    _write(root / "transformer" / "config.json", "{}")
+    _write(
+        root / "transformer" / "diffusion_pytorch_model.safetensors",
+        b"\0" * FLUXModelLoader._MIN_TRANSFORMER_WEIGHT_BYTES,
+    )
+    loader = FLUXModelLoader(model_path=root, hf_model_id="eramth/flux-kontext-4bit")
+    report = loader.preflight_validate_package(root)
+    assert report["transformer_weights"] is True
+    assert loader._should_purge_before_download(root, report) is False
+
+    def _fake_snapshot(*, repo_id, local_dir, **_kwargs):
+        dest = Path(local_dir)
+        # Preserve existing transformer; fill the rest.
+        _make_complete_package(dest)
+        return str(dest)
+
+    with patch("huggingface_hub.snapshot_download", side_effect=_fake_snapshot) as mocked:
+        path = loader._ensure_hub_package("eramth/flux-kontext-4bit")
+
+    mocked.assert_called_once()
+    assert Path(path) == root
+    assert loader._cache_status == "miss" or loader._package_ready_for_pipeline(root)
+
+
+def test_hub_snapshot_cache_hit_skips_download(tmp_path: Path, monkeypatch):
+    hub = tmp_path / "hf-hub"
+    snap = hub / "models--eramth--flux-kontext-4bit" / "snapshots" / "abc123"
+    _make_complete_package(snap)
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(hub))
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-home"))
+
+    local = tmp_path / "models" / "flux-kontext"
+    loader = FLUXModelLoader(model_path=local, hf_model_id="eramth/flux-kontext-4bit")
+
+    with patch("huggingface_hub.snapshot_download") as mocked:
+        path = loader._ensure_hub_package("eramth/flux-kontext-4bit")
+
+    mocked.assert_not_called()
+    assert Path(path) == snap
+    assert loader._cache_status == "hit"
+
+
+def test_cache_miss_then_hit_uses_local_package(tmp_path: Path):
+    root = tmp_path / "flux-kontext"
+    loader = FLUXModelLoader(model_path=root, hf_model_id="eramth/flux-kontext-4bit")
+
+    def _fake_snapshot(*, repo_id, local_dir, **_kwargs):
+        dest = Path(local_dir)
+        _make_complete_package(dest)
+        return str(dest)
+
+    with patch("huggingface_hub.snapshot_download", side_effect=_fake_snapshot) as mocked:
+        first = loader._ensure_hub_package("eramth/flux-kontext-4bit")
+        assert mocked.call_count == 1
+        assert loader._cache_status == "miss" or loader._package_ready_for_pipeline(Path(first))
+
+        loader2 = FLUXModelLoader(model_path=root, hf_model_id="eramth/flux-kontext-4bit")
+        second = loader2._ensure_hub_package("eramth/flux-kontext-4bit")
+        assert mocked.call_count == 1  # no second download
+        assert loader2._cache_status == "hit"
+        assert Path(second) == root
+
+
+def test_hf_cache_env_kaggle_default(tmp_path: Path, monkeypatch):
+    from src.common.utils import hf_cache_env as mod
+
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_CACHE", raising=False)
+    monkeypatch.setattr(mod, "is_kaggle_environment", lambda: True)
+    monkeypatch.setattr(mod, "default_hf_home", lambda: tmp_path / "kaggle-hf")
+
+    applied = mod.ensure_huggingface_cache_env()
+    assert applied["HF_HOME"] == str(tmp_path / "kaggle-hf")
+    assert (tmp_path / "kaggle-hf" / "hub").is_dir()
+    assert os.environ["HUGGINGFACE_HUB_CACHE"].endswith("hub")
 
 
 def test_download_failure_never_ready(tmp_path: Path):

@@ -342,6 +342,12 @@ def warm_flux_in_api_process() -> Dict[str, Any]:
                 hf_id = None
 
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        try:
+            from src.common.utils.hf_cache_env import ensure_huggingface_cache_env
+
+            ensure_huggingface_cache_env()
+        except Exception as exc:
+            logger.warning("HF cache env setup skipped during warmup: %s", exc)
         model_manager.flux_manager.allow_fallback = False
         model_manager.flux_manager.model_path = (
             settings.BASE_DIR / "models" / "flux-kontext"

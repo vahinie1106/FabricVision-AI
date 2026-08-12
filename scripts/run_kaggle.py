@@ -1018,6 +1018,19 @@ def configure_kaggle_flux_runtime() -> None:
     """
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    # Durable HF cache under /kaggle/working so restarts reuse blobs (CACHE HIT).
+    try:
+        from src.common.utils.hf_cache_env import ensure_huggingface_cache_env
+
+        applied = ensure_huggingface_cache_env()
+        _log(
+            "HF cache env: "
+            f"HF_HOME={applied.get('HF_HOME') or os.environ.get('HF_HOME')!r} "
+            f"HUGGINGFACE_HUB_CACHE="
+            f"{applied.get('HUGGINGFACE_HUB_CACHE') or os.environ.get('HUGGINGFACE_HUB_CACHE')!r}"
+        )
+    except Exception as exc:
+        _log(f"HF cache env setup skipped: {exc}")
     try:
         import torch
 
