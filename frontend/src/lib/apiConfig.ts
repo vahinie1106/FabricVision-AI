@@ -34,6 +34,7 @@ function isProxyDeploymentHost(hostname: string): boolean {
   const host = (hostname || "").toLowerCase();
   return (
     host.includes("kaggle.net") ||
+    host.includes("kaggleusercontent.com") ||
     host.includes("jupyter-proxy") ||
     host.includes("googleapis.com")
   );

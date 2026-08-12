@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Clock, History, Trash2, PanelRightClose, PanelRightOpen } from "lucide-react";
 import type { HistoryItem } from "@/hooks/useGenerationHistory";
 import { EmptyState } from "@/components/feedback/EmptyState";
+import { resolveMediaUrl } from "@/lib/resolveMediaUrl";
 import { cn } from "@/lib/cn";
 
 interface HistorySidebarProps {
@@ -75,7 +76,7 @@ export function HistorySidebar({
                     <div className="w-14 h-14 rounded-lg overflow-hidden bg-[#F7F5F0] shrink-0">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={item.thumbnailUrl}
+                        src={resolveMediaUrl(item.thumbnailUrl) || item.thumbnailUrl}
                         alt=""
                         className="w-full h-full object-cover"
                         loading="lazy"

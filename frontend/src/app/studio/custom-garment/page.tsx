@@ -545,10 +545,13 @@ export default function CustomGarmentGenerator() {
 
               <div className="max-w-xl mx-auto">
                 {showCompare && fabricPreview ? (
-                  <ImageComparison beforeSrc={fabricPreview} afterSrc={resolvedResult} />
+                  <ImageComparison
+                    beforeSrc={fabricPreview}
+                    afterSrc={resolveMediaUrl(resultUrl) || resultUrl || ""}
+                  />
                 ) : (
                   <ResultCard
-                    imageUrl={resolvedResult}
+                    imageUrl={resultUrl || ""}
                     title={`${color} ${garmentType}`}
                     meta={{
                       model: `FLUX.1 Kontext · ${String(metadata?.generation_mode || generationMode)}`,

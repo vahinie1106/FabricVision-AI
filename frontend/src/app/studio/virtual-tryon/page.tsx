@@ -451,7 +451,7 @@ export default function VirtualTryOn() {
                 <div>
                   {resolvedResult ? (
                     <ResultCard
-                      imageUrl={resolvedResult}
+                      imageUrl={resultUrl || ""}
                       title="Final Composition"
                       meta={{
                         model: tryonMeta?.was_real_catvton_used
