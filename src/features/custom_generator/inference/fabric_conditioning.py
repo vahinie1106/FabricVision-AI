@@ -4,21 +4,23 @@ FLUX.1 Kontext preserves input composition. A raw fabric swatch therefore
 reproduces a textile fill. We build a garment-shaped mockup filled with the
 uploaded fabric so Kontext edits clothing structure while keeping material identity.
 
-When the UI selects an explicit Color (not Match Fabric), we tint the fabric
-fill to the target hue while preserving luminance/pattern so Kontext is not
-locked to the upload's original palette.
+When the UI selects an explicit Color (not Match Fabric), only the BASE fabric
+region is recolored to the target. Print/motif pixels keep their original hues
+(e.g. white ground → blue ground, red florals stay red).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional, Sequence, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Sequence, Tuple
 
-from PIL import Image, ImageDraw
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
 
 logger = logging.getLogger("fabricvision.garment_generation.fabric_conditioning")
 
-# UI / vocabulary color names → RGB for lightweight luminance tinting.
+# UI / vocabulary color names → RGB for base-fabric recolor targets.
 _COLOR_NAME_RGB: dict[str, Tuple[int, int, int]] = {
     "black": (20, 20, 20),
     "white": (245, 245, 245),
@@ -43,6 +45,20 @@ _COLOR_NAME_RGB: dict[str, Tuple[int, int, int]] = {
     "gray": (140, 140, 140),
     "grey": (140, 140, 140),
 }
+
+
+@dataclass
+class FabricBaseRecolorResult:
+    """Audit bundle for base-only fabric recoloring."""
+
+    image: Image.Image
+    original: Image.Image
+    base_mask: Image.Image
+    recolored_base: Image.Image
+    base_rgb: Tuple[int, int, int]
+    target_rgb: Tuple[int, int, int]
+    base_coverage: float
+    target_color: str
 
 
 def normalize_color_key(color: Optional[str]) -> str:
@@ -72,37 +88,185 @@ def resolve_target_rgb(color: Optional[str]) -> Optional[Tuple[int, int, int]]:
     return None
 
 
+def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+    """Convert uint8 RGB array (..., 3) to CIE LAB (D65)."""
+    rgb_f = rgb.astype(np.float64) / 255.0
+    mask = rgb_f > 0.04045
+    linear = np.empty_like(rgb_f)
+    linear[~mask] = rgb_f[~mask] / 12.92
+    linear[mask] = ((rgb_f[mask] + 0.055) / 1.055) ** 2.4
+    m = np.array(
+        [
+            [0.4124564, 0.3575761, 0.1804375],
+            [0.2126729, 0.7151522, 0.0721750],
+            [0.0193339, 0.1191920, 0.9503041],
+        ],
+        dtype=np.float64,
+    )
+    xyz = linear @ m.T
+    xyz[..., 0] /= 0.95047
+    xyz[..., 2] /= 1.08883
+
+    def _f(t: np.ndarray) -> np.ndarray:
+        return np.where(t > 0.008856, np.cbrt(t), (7.787 * t) + (16.0 / 116.0))
+
+    fx, fy, fz = _f(xyz[..., 0]), _f(xyz[..., 1]), _f(xyz[..., 2])
+    return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=-1)
+
+
+def _estimate_base_rgb(arr: np.ndarray) -> Tuple[int, int, int]:
+    """Estimate dominant/base fabric RGB via quantized mode (not motif accents)."""
+    # Coarse quantization keeps print accents from winning the mode on florals.
+    q = (arr.astype(np.int32) // 24) * 24 + 12
+    flat = q.reshape(-1, 3)
+    # Pack RGB into int keys for a fast mode count.
+    keys = flat[:, 0] * 1_000_000 + flat[:, 1] * 1_000 + flat[:, 2]
+    vals, counts = np.unique(keys, return_counts=True)
+    mode_key = int(vals[int(np.argmax(counts))])
+    br = mode_key // 1_000_000
+    bg = (mode_key // 1_000) % 1_000
+    bb = mode_key % 1_000
+    # Refine: mean of pixels near the mode cluster.
+    mode_rgb = np.array([br, bg, bb], dtype=np.float64)
+    dist = np.linalg.norm(flat.astype(np.float64) - mode_rgb, axis=1)
+    keep = dist <= max(18.0, float(np.percentile(dist, 25)))
+    if not np.any(keep):
+        keep = dist <= float(np.percentile(dist, 40))
+    mean = flat[keep].mean(axis=0) if np.any(keep) else mode_rgb
+    return (
+        int(np.clip(round(mean[0]), 0, 255)),
+        int(np.clip(round(mean[1]), 0, 255)),
+        int(np.clip(round(mean[2]), 0, 255)),
+    )
+
+
+def _soft_base_mask(lab: np.ndarray, base_lab: np.ndarray) -> np.ndarray:
+    """Soft mask in [0,1]: 1 = base fabric, 0 = protected print/motif."""
+    dist = np.linalg.norm(lab - base_lab.reshape(1, 1, 3), axis=-1)
+    p30 = float(np.percentile(dist, 30))
+    p65 = float(np.percentile(dist, 65))
+    span = max(p65 - p30, 4.0)
+    # Near base → 1; far from base → 0 (motifs protected).
+    alpha = 1.0 - (dist - p30) / span
+    return np.clip(alpha, 0.0, 1.0).astype(np.float64)
+
+
+def recolor_fabric_base_preserving_motifs(
+    fabric_image: Image.Image,
+    target_color: str,
+) -> FabricBaseRecolorResult:
+    """
+    Recolor only the dominant/base fabric region to ``target_color``.
+
+    Print/motif pixels (far from the base color in LAB) keep original RGB.
+    Local luminance variation in the base region is preserved so weave/folds
+    and print scale remain readable for FLUX Kontext.
+    """
+    target_rgb = resolve_target_rgb(target_color)
+    original = fabric_image.convert("RGB")
+    if target_rgb is None:
+        blank = Image.new("L", original.size, 0)
+        return FabricBaseRecolorResult(
+            image=original,
+            original=original.copy(),
+            base_mask=blank,
+            recolored_base=original.copy(),
+            base_rgb=(0, 0, 0),
+            target_rgb=(0, 0, 0),
+            base_coverage=0.0,
+            target_color=normalize_color_key(target_color),
+        )
+
+    arr = np.asarray(original, dtype=np.uint8)
+    lab = _rgb_to_lab(arr)
+    base_rgb = _estimate_base_rgb(arr)
+    base_lab = _rgb_to_lab(np.array(base_rgb, dtype=np.uint8).reshape(1, 1, 3))[0, 0]
+
+    alpha = _soft_base_mask(lab, base_lab)
+    # Mild blur softens base↔motif transitions without smearing motif geometry.
+    alpha_img = Image.fromarray((alpha * 255.0).astype(np.uint8), mode="L")
+    alpha_img = alpha_img.filter(ImageFilter.GaussianBlur(radius=0.8))
+    alpha = np.asarray(alpha_img, dtype=np.float64) / 255.0
+
+    lum = (
+        0.299 * arr[..., 0].astype(np.float64)
+        + 0.587 * arr[..., 1].astype(np.float64)
+        + 0.114 * arr[..., 2].astype(np.float64)
+    )
+    base_pixels = alpha > 0.55
+    if np.any(base_pixels):
+        base_lum_ref = float(np.median(lum[base_pixels]))
+    else:
+        base_lum_ref = float(np.median(lum))
+    base_lum_ref = max(base_lum_ref, 1.0)
+
+    tr, tg, tb = (float(c) for c in target_rgb)
+    # Relative luminance keeps weave/fold shading on the recolored base.
+    rel = np.clip(lum / base_lum_ref, 0.15, 1.85)
+    recolored = np.stack(
+        [
+            np.clip(tr * rel, 0, 255),
+            np.clip(tg * rel, 0, 255),
+            np.clip(tb * rel, 0, 255),
+        ],
+        axis=-1,
+    )
+
+    a3 = alpha[..., None]
+    out = a3 * recolored + (1.0 - a3) * arr.astype(np.float64)
+    out_u8 = np.clip(out, 0, 255).astype(np.uint8)
+    result = Image.fromarray(out_u8, mode="RGB")
+
+    coverage = float(alpha.mean())
+    logger.info(
+        "Base-only fabric recolor target=%s base_rgb=%s target_rgb=%s "
+        "base_coverage=%.3f (motifs protected)",
+        normalize_color_key(target_color),
+        base_rgb,
+        target_rgb,
+        coverage,
+    )
+    return FabricBaseRecolorResult(
+        image=result,
+        original=original.copy(),
+        base_mask=alpha_img,
+        recolored_base=result.copy(),
+        base_rgb=base_rgb,
+        target_rgb=target_rgb,
+        base_coverage=coverage,
+        target_color=normalize_color_key(target_color),
+    )
+
+
 def tint_fabric_preserving_texture(
     fabric_image: Image.Image,
     target_color: str,
 ) -> Image.Image:
-    """
-    Recolor fabric to ``target_color`` while keeping print/texture luminance.
+    """Backward-compatible alias → base-only recolor (motifs preserved)."""
+    return recolor_fabric_base_preserving_motifs(fabric_image, target_color).image
 
-    Multiplies per-pixel luminance by the target RGB so floral/print contrast
-    survives; chrominance follows the UI color. Pure PIL (no extra model).
-    """
-    rgb = resolve_target_rgb(target_color)
-    if rgb is None:
-        return fabric_image.convert("RGB")
 
-    src = fabric_image.convert("RGB")
-    # Luminance via ITU-R BT.601; scale each channel by target/255.
-    gray = src.convert("L")
-    tr, tg, tb = rgb
-    # Build solid color then multiply with luminance (ImageChops.multiply).
-    solid = Image.new("RGB", src.size, (tr, tg, tb))
-    # Expand gray to RGB so multiply works channel-wise.
-    lum_rgb = Image.merge("RGB", (gray, gray, gray))
-    from PIL import ImageChops
+def save_fabric_recolor_audit(
+    audit: FabricBaseRecolorResult,
+    audit_dir: Any,
+    prefix: str,
+) -> Dict[str, str]:
+    """Persist original / base_mask / recolored_base PNGs for visual QA."""
+    from pathlib import Path
 
-    tinted = ImageChops.multiply(solid, lum_rgb)
-    logger.info(
-        "Tinted fabric for explicit color=%s rgb=%s (luminance-preserving)",
-        normalize_color_key(target_color),
-        rgb,
-    )
-    return tinted
+    out = Path(audit_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    key = normalize_color_key(prefix) or "color"
+    paths = {
+        "original_fabric": str(out / "original_fabric.png"),
+        "base_mask": str(out / "base_mask.png"),
+        f"{key}_recolored_base": str(out / f"{key}_recolored_base.png"),
+    }
+    audit.original.save(paths["original_fabric"])
+    audit.base_mask.save(paths["base_mask"])
+    audit.recolored_base.save(paths[f"{key}_recolored_base"])
+    return paths
+
 
 
 def _cover_fabric(fabric: Image.Image, width: int, height: int) -> Image.Image:
@@ -269,8 +433,8 @@ def build_garment_conditioning_image(
     Hard edges (no mask Gaussian blur): soft masks caused measurable edge halos
     in generated outputs. Kontext still invents folds from the silhouette.
 
-    When ``target_color`` is an explicit UI color (not Match Fabric), the fabric
-    fill is luminance-tinted so Kontext is not anchored to the upload palette.
+    When ``target_color`` is an explicit UI color (not Match Fabric), only the
+    dominant/base fabric region is recolored; print/motif colors are preserved.
     """
     if fabric_image is None:
         raise ValueError("fabric_image is required")
@@ -278,16 +442,18 @@ def build_garment_conditioning_image(
     w, h = int(width), int(height)
     source = fabric_image
     recolored = False
+    last_audit: Optional[FabricBaseRecolorResult] = None
     if target_color and not is_match_fabric_color(target_color):
-        source = tint_fabric_preserving_texture(fabric_image, target_color)
+        last_audit = recolor_fabric_base_preserving_motifs(fabric_image, target_color)
+        source = last_audit.image
         recolored = True
+    # Expose latest audit for pipeline QA (None when Match Fabric).
+    build_garment_conditioning_image.last_recolor_audit = last_audit  # type: ignore[attr-defined]
 
     fabric_fill = _cover_fabric(source, w, h)
     # Mild unsharp on the fabric fill only (not the silhouette edge) to counter
     # LANCZOS softness before Kontext sees the mockup. Radius kept tiny.
     try:
-        from PIL import ImageFilter
-
         fabric_fill = fabric_fill.filter(
             ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=2)
         )
@@ -304,12 +470,18 @@ def build_garment_conditioning_image(
 
     logger.info(
         "Built garment conditioning image: garment=%s sleeve=%s size=%sx%s "
-        "blur=none unsharp=mild conditioning_recolored=%s target_color=%s",
+        "blur=none unsharp=mild conditioning_recolored=%s target_color=%s "
+        "mode=%s",
         garment_type,
         sleeve or "default",
         w,
         h,
         recolored,
         normalize_color_key(target_color) if recolored else "match_fabric",
+        "base_only" if recolored else "match_fabric",
     )
     return canvas
+
+
+# Optional audit from the last explicit-color conditioning build.
+build_garment_conditioning_image.last_recolor_audit = None  # type: ignore[attr-defined]

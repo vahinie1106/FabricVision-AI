@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from src.features.custom_generator.inference.fabric_conditioning import (
     build_garment_conditioning_image,
     is_match_fabric_color,
     normalize_color_key,
-    tint_fabric_preserving_texture,
+    recolor_fabric_base_preserving_motifs,
 )
 from src.features.custom_generator.pipeline.garment_generation_pipeline import (
     normalize_generation_mode,
@@ -88,6 +88,7 @@ def test_kontext_prompt_explicit_blue_applies_target_color():
             "color_source": "ui_recolor",
             "fabric_appearance": "floral textile texture",
             "source_palette": ["white", "red"],
+            "motif_colors": ["red"],
         },
         {
             "gender": "women",
@@ -100,16 +101,17 @@ def test_kontext_prompt_explicit_blue_applies_target_color():
     )
     lower = pos.lower()
     assert "blue" in lower
-    assert "apply" in lower and "color" in lower
-    assert "do not recolor" not in lower
+    assert "base fabric color" in lower
+    assert "do not recolor the printed pattern" in lower
     assert "preserve source fabric look" not in lower
-    # Source palette must not become the authoritative color instruction.
-    assert "white, red" not in lower
+    assert "recolor to blue" not in lower
+    assert "apply blue color" not in lower
+    assert "red" in lower  # motif color called out
     assert builder.last_prompt_stats.get("color_mode") == "explicit"
     assert "blue" in (builder.last_prompt_stats.get("dominant_colors") or "").lower()
     instruction = (builder.last_prompt_stats.get("color_instruction") or "").lower()
-    assert "do not recolor" not in instruction
-    assert "blue" in instruction
+    assert "base fabric color" in instruction
+    assert "printed pattern" in instruction
 
 
 def test_kontext_prompt_explicit_black_no_contradiction():
@@ -120,6 +122,7 @@ def test_kontext_prompt_explicit_black_no_contradiction():
             "pattern": "printed",
             "dominant_colors": ["black"],
             "color_source": "ui_recolor",
+            "motif_colors": ["red"],
         },
         {
             "gender": "women",
@@ -132,7 +135,7 @@ def test_kontext_prompt_explicit_black_no_contradiction():
     )
     lower = pos.lower()
     assert "black" in lower
-    assert "do not recolor" not in lower
+    assert "base fabric color" in lower
     assert "preserve source fabric print/colors" not in lower
     assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS
 
@@ -145,45 +148,139 @@ def test_explicit_color_not_silently_match_fabric():
             "pattern": "floral",
             "dominant_colors": ["green"],
             "color_source": "ui_recolor",
+            "motif_colors": ["blue"],
         },
         {"color": "green", "force_recolor": True, "garment_type": "dress"},
     )
     assert ctx["color_mode"] == "explicit"
     assert "green" in ctx["dominant_colors"]
     assert "match fabric" not in ctx["dominant_colors"]
+    assert "blue" in ctx["motif_colors"]
 
 
-def test_tint_fabric_preserving_texture_changes_mean_toward_target():
-    # White/red checkerboard-like: bright base + red accents
-    img = Image.new("RGB", (64, 64), (240, 240, 240))
-    for y in range(64):
-        for x in range(0, 64, 8):
-            if (x // 8 + y // 8) % 2 == 0:
-                img.putpixel((x, y), (200, 30, 40))
-    blue = tint_fabric_preserving_texture(img, "blue")
-    assert blue.size == img.size
-    # Mean should shift toward blue channel dominance vs original red-ish accents
-    orig_px = list(img.getdata())
-    tint_px = list(blue.getdata())
-    orig_r = sum(p[0] for p in orig_px) / len(orig_px)
-    tint_b = sum(p[2] for p in tint_px) / len(tint_px)
-    tint_r = sum(p[0] for p in tint_px) / len(tint_px)
-    assert tint_b > tint_r
-    assert orig_r > tint_r  # red accents suppressed after blue tint
+def _make_white_red_floral(size: int = 128) -> Image.Image:
+    """Synthetic white base + red floral-like blobs for recolor tests."""
+    img = Image.new("RGB", (size, size), (242, 242, 242))
+    draw = ImageDraw.Draw(img)
+    for cx, cy, r in (
+        (32, 32, 14),
+        (90, 40, 12),
+        (50, 95, 16),
+        (100, 100, 10),
+        (70, 60, 11),
+    ):
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=(200, 30, 40))
+        # Small darker core for motif interior
+        draw.ellipse((cx - r // 2, cy - r // 2, cx + r // 2, cy + r // 2), fill=(170, 20, 30))
+    return img
+
+
+def test_match_fabric_leaves_image_unchanged():
+    img = _make_white_red_floral()
+    match = build_garment_conditioning_image(
+        img, garment_type="dress", width=64, height=64, target_color=None
+    )
+    # Without target_color, fabric fill is original (no base recolor audit).
+    assert getattr(build_garment_conditioning_image, "last_recolor_audit", None) is None
+    # Silhouette center should still be near-white or red from original fabric.
+    px = match.getpixel((32, 32))
+    assert px != (0, 0, 0)
+
+
+def test_blue_recolors_base_but_keeps_red_motifs():
+    img = _make_white_red_floral(160)
+    audit = recolor_fabric_base_preserving_motifs(img, "blue")
+    out = audit.image
+    arr_o = list(img.getdata())
+    arr_n = list(out.getdata())
+    # Classify original red motif pixels and white-ish base pixels.
+    motif_idx = [
+        i
+        for i, (r, g, b) in enumerate(arr_o)
+        if r > 140 and r > g + 40 and r > b + 40
+    ]
+    base_idx = [
+        i
+        for i, (r, g, b) in enumerate(arr_o)
+        if r > 200 and g > 200 and b > 200
+    ]
+    assert len(motif_idx) > 50
+    assert len(base_idx) > 200
+
+    # Base should move toward blue (B channel rises vs R on former white).
+    base_new = [arr_n[i] for i in base_idx]
+    mean_b = sum(p[2] for p in base_new) / len(base_new)
+    mean_r = sum(p[0] for p in base_new) / len(base_new)
+    assert mean_b > mean_r
+
+    # Motifs remain substantially red.
+    motif_new = [arr_n[i] for i in motif_idx]
+    red_kept = sum(1 for r, g, b in motif_new if r > g + 25 and r > b + 25 and r > 100)
+    assert red_kept / len(motif_new) > 0.85
+
+    # Not a solid color; pattern variance remains.
+    std = (
+        sum((p[0] - mean_r) ** 2 for p in base_new) / len(base_new)
+    ) ** 0.5
+    # Use whole-image channel spread
+    vals = [p[0] for p in arr_n]
+    assert max(vals) - min(vals) > 40
+
+
+def test_black_recolors_base_but_keeps_red_motifs():
+    img = _make_white_red_floral(160)
+    audit = recolor_fabric_base_preserving_motifs(img, "black")
+    arr_o = list(img.getdata())
+    arr_n = list(audit.image.getdata())
+    motif_idx = [
+        i
+        for i, (r, g, b) in enumerate(arr_o)
+        if r > 140 and r > g + 40 and r > b + 40
+    ]
+    base_idx = [
+        i
+        for i, (r, g, b) in enumerate(arr_o)
+        if r > 200 and g > 200 and b > 200
+    ]
+    base_new = [arr_n[i] for i in base_idx]
+    mean_lum = sum(sum(p) / 3 for p in base_new) / len(base_new)
+    assert mean_lum < 80  # darkened base
+
+    motif_new = [arr_n[i] for i in motif_idx]
+    red_kept = sum(1 for r, g, b in motif_new if r > g + 25 and r > b + 25 and r > 100)
+    assert red_kept / len(motif_new) > 0.85
+
+    # Not solid black
+    assert max(max(p) for p in arr_n) > 100
 
 
 def test_conditioning_recolors_only_for_explicit_color():
-    fabric = Image.new("RGB", (128, 128), (220, 40, 50))  # red fabric
+    fabric = _make_white_red_floral(128)
     match = build_garment_conditioning_image(
         fabric, garment_type="dress", width=64, height=64, target_color=None
     )
     blue = build_garment_conditioning_image(
         fabric, garment_type="dress", width=64, height=64, target_color="blue"
     )
-    # Sample center pixel inside silhouette — should differ after tint
-    assert match.getpixel((32, 32)) != blue.getpixel((32, 32))
-    br, bg, bb = blue.getpixel((32, 32))
-    assert bb >= br  # blue-ish after tint
+    audit = build_garment_conditioning_image.last_recolor_audit
+    assert audit is not None
+    assert audit.base_coverage > 0.3
+    # Compare mean of high-alpha (base) pixels on the recolored fabric, not a
+    # single silhouette sample that may land on a protected motif.
+    base = audit.recolored_base
+    mask = audit.base_mask
+    base_px = []
+    blueish = 0
+    for y in range(0, base.size[1], 4):
+        for x in range(0, base.size[0], 4):
+            if mask.getpixel((x, y)) > 180:
+                r, g, b = base.getpixel((x, y))
+                base_px.append((r, g, b))
+                if b >= r:
+                    blueish += 1
+    assert len(base_px) > 20
+    assert blueish / len(base_px) > 0.7
+    assert match.size == blue.size
 
 
 def test_kontext_prompt_within_clip_budget():

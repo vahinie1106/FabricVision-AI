@@ -322,6 +322,31 @@ class GarmentPromptBuilder:
         if len(appearance) > 90:
             appearance = appearance[:87].rsplit(" ", 1)[0] + "…"
 
+        motif_raw = (
+            fabric_metadata.get("motif_colors")
+            or fabric_metadata.get("source_palette")
+            or []
+        )
+        if isinstance(motif_raw, list):
+            # Drop the target/base name if it leaked into motif list.
+            motif_names = [
+                self.validate_and_normalize_color(c).replace("_", " ")
+                for c in motif_raw[:3]
+                if c
+                and str(c).lower().replace(" ", "_")
+                not in ("match_fabric", colors_str.replace(" ", "_"))
+            ]
+            # Prefer secondary palette entries (skip first dominant when possible).
+            if (
+                fabric_metadata.get("source_palette")
+                and not fabric_metadata.get("motif_colors")
+                and len(motif_names) > 1
+            ):
+                motif_names = motif_names[1:]
+            motif_str = ", ".join(motif_names) if motif_names else "original print"
+        else:
+            motif_str = str(motif_raw).replace("_", " ") or "original print"
+
         return {
             "gender": gender.replace("_", " "),
             "garment_type": garment_type.replace("_", " "),
@@ -338,6 +363,7 @@ class GarmentPromptBuilder:
             "dominant_colors": colors_str,
             "fabric_appearance": appearance,
             "color_mode": color_mode,
+            "motif_colors": motif_str,
         }
 
     def _build_compact_kontext_layers(self, context: Dict[str, str]) -> list[str]:
@@ -349,7 +375,7 @@ class GarmentPromptBuilder:
 
         Color modes:
         - match_fabric: preserve uploaded textile colors (do not recolor).
-        - explicit: apply UI target color; keep texture/pattern, never "do not recolor".
+        - explicit: change BASE fabric color only; keep original print/motif colors.
         """
         primary = (
             f"Edit fabric-filled {context['garment_type']} mockup into wearable "
@@ -359,12 +385,13 @@ class GarmentPromptBuilder:
         appearance = (context.get("fabric_appearance") or "").strip()
         color_mode = (context.get("color_mode") or "match_fabric").strip()
         target = (context.get("dominant_colors") or "multicolor").strip()
+        motifs = (context.get("motif_colors") or "original print").strip()
         if color_mode == "explicit":
-            # Authoritative UI color — do NOT say "preserve colors" or "do not recolor".
+            # Base-only recolor — never imply whole-palette / motif recoloring.
             fabric = (
-                f"Apply {target} color to the garment while preserving the uploaded "
-                f"fabric's {context['pattern']} textile texture and pattern "
-                f"({context['material']}). Recolor to {target}."
+                f"Change the base fabric color to {target} while preserving the "
+                f"original {context['pattern']} print colors ({motifs}), motif "
+                f"shapes, texture, and print scale. Do not recolor the printed pattern."
             )
         elif appearance:
             fabric = (
@@ -515,7 +542,8 @@ class GarmentPromptBuilder:
         if context.get("color_mode") == "explicit":
             target = context.get("dominant_colors") or "target"
             fabric_fallback = (
-                f"Apply {target} color; preserve textile texture and pattern."
+                f"Change the base fabric color to {target}; keep original print "
+                f"motif colors and pattern scale."
             )
         else:
             fabric_fallback = (

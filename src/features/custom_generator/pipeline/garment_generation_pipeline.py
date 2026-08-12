@@ -13,6 +13,7 @@ from src.features.custom_generator.inference.fabric_conditioning import (
     build_garment_conditioning_image,
     is_match_fabric_color,
     normalize_color_key,
+    save_fabric_recolor_audit,
 )
 from src.features.custom_generator.inference.flux_inference import FLUXInferenceEngine
 from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
@@ -399,6 +400,12 @@ class GarmentGenerationPipeline:
             # Harden: explicit Color field implies recolor even if force_recolor was omitted.
             force_recolor = bool(user_customization.get("force_recolor")) or explicit_color
             source_palette = appearance.get("dominant_color_names") or []
+            fractions = appearance.get("color_fractions") or {}
+            if fractions:
+                base_name = max(fractions.items(), key=lambda kv: kv[1])[0]
+            else:
+                base_name = source_palette[0] if source_palette else None
+            motif_colors = [c for c in source_palette if c != base_name]
             if force_recolor and explicit_color:
                 target = normalize_color_key(str(ui_selected))
                 user_customization = {
@@ -421,10 +428,13 @@ class GarmentGenerationPipeline:
                         else appearance.get("appearance_summary")
                     ),
                     "source_palette": source_palette,
+                    "motif_colors": motif_colors,
+                    "base_color_name": base_name,
                 }
                 self.logger.info(
-                    "[FLUX COLOR] source=ui_recolor palette=%s",
+                    "[FLUX COLOR] source=ui_recolor palette=%s motifs=%s",
                     fabric_metadata.get("dominant_colors"),
+                    motif_colors,
                 )
             else:
                 fabric_metadata = {
@@ -436,6 +446,8 @@ class GarmentGenerationPipeline:
                     "color_source": "fabric_pixels",
                     "fabric_appearance": appearance.get("appearance_summary"),
                     "source_palette": source_palette,
+                    "motif_colors": motif_colors,
+                    "base_color_name": base_name,
                 }
                 user_customization = {
                     k: v for k, v in user_customization.items() if k != "color"
@@ -493,6 +505,9 @@ class GarmentGenerationPipeline:
             target_color=conditioning_target,
         )
         conditioning_recolored = conditioning_target is not None
+        recolor_audit = getattr(
+            build_garment_conditioning_image, "last_recolor_audit", None
+        )
         self.logger.info(
             "[FLUX COLOR DEBUG] conditioning_recolored=%s",
             conditioning_recolored,
@@ -523,6 +538,24 @@ class GarmentGenerationPipeline:
         try:
             fabric_image.save(debug_dir / f"{stage_id}_A_fabric.png")
             conditioning_image.save(debug_dir / f"{stage_id}_B_conditioning.png")
+            if recolor_audit is not None and conditioning_target:
+                color_key = normalize_color_key(conditioning_target)
+                color_audit_dir = debug_dir / f"{stage_id}_color_{color_key}"
+                paths = save_fabric_recolor_audit(
+                    recolor_audit, color_audit_dir, color_key
+                )
+                final_name = f"{color_key}_final_conditioning.png"
+                final_path = color_audit_dir / final_name
+                conditioning_image.save(final_path)
+                paths[f"{color_key}_final_conditioning"] = str(final_path)
+                self.logger.info(
+                    "[FLUX COLOR AUDIT] saved=%s",
+                    paths,
+                )
+                print(
+                    f"[FLUX COLOR AUDIT] {color_key}_final_conditioning={final_path}",
+                    flush=True,
+                )
             self.logger.info(
                 "[FLUX STAGES] fabric=%sx%s conditioning=%sx%s → %s",
                 fabric_image.size[0],
