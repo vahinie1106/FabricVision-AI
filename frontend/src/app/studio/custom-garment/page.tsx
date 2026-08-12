@@ -292,6 +292,11 @@ export default function CustomGarmentGenerator() {
                   Elapsed {Math.round(fluxWarmup.loadDurationS)}s (real API warmup)
                 </p>
               )}
+              {fluxWarmup.error && (
+                <p className="mt-1 text-amber-900/90">
+                  Status check: {fluxWarmup.error}
+                </p>
+              )}
             </div>
           )}
           {fluxWarmup.ready && !fluxWarmup.failed && (
