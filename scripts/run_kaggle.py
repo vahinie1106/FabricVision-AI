@@ -602,16 +602,30 @@ def _frontend_env(base_path: str, *, split_proxy: bool = False) -> dict:
     env = os.environ.copy()
     if split_proxy or not base_path:
         # Split Kaggle ports: UI on :3000 (/proxy/3000), API on :8000 (/proxy/8000).
-        # apiConfig.ts preserves /proxy/8000 when the page is on /proxy/3000.
+        # When Jupyter base_url already ends with /proxy/, public paths are nested:
+        #   /k/<session>/proxy/proxy/8000  → browser API must use /proxy/proxy/8000
+        jupyter_base = (
+            env.get("JUPYTERHUB_BASE_URL")
+            or env.get("JUPYTER_BASE_URL")
+            or ""
+        )
+        try:
+            detected = read_jupyter_base_url() or ""
+        except Exception:
+            detected = ""
+        jupyter_base = (detected or jupyter_base or "").rstrip("/") + "/"
+        nested = jupyter_base.rstrip("/").endswith("/proxy")
+        api_prefix = "/proxy/proxy/8000" if nested else "/proxy/8000"
         env["NEXT_PUBLIC_USE_SAME_ORIGIN"] = "false"
-        env["NEXT_PUBLIC_API_URL"] = "/proxy/8000/api/v1"
-        env["NEXT_PUBLIC_API_BASE_URL"] = "/proxy/8000/api/v1"
-        env["NEXT_PUBLIC_BACKEND_URL"] = "/proxy/8000"
-        env["NEXT_PUBLIC_API_ORIGIN"] = "/proxy/8000"
+        env["NEXT_PUBLIC_API_URL"] = f"{api_prefix}/api/v1"
+        env["NEXT_PUBLIC_API_BASE_URL"] = f"{api_prefix}/api/v1"
+        env["NEXT_PUBLIC_BACKEND_URL"] = api_prefix
+        env["NEXT_PUBLIC_API_ORIGIN"] = api_prefix
         env["NEXT_PUBLIC_FORBID_LOOPBACK"] = "true"
         env.pop("NEXT_PUBLIC_BASE_PATH", None)
         env.pop("NEXT_PUBLIC_LOCAL_API_ROOT", None)
         env.pop("NEXT_PUBLIC_LOCAL_API_ORIGIN", None)
+        env["FABRICVISION_PROXY_NESTING"] = "double" if nested else "single"
     else:
         # Gateway mode: UI+API same public prefix (…/proxy/proxy/8000).
         env["NEXT_PUBLIC_USE_SAME_ORIGIN"] = "true"
@@ -679,10 +693,12 @@ def frontend_dotenv_is_kaggle_safe(*, split_proxy: bool) -> bool:
     if "127.0.0.1" in text or "localhost" in lowered:
         return False
     if split_proxy:
-        if "NEXT_PUBLIC_API_URL=/proxy/8000/api/v1" not in text.replace(" ", ""):
-            # tolerate spaces around =
-            if "/proxy/8000/api/v1" not in text:
-                return False
+        has_api = (
+            "/proxy/8000/api/v1" in text.replace(" ", "")
+            or "/proxy/proxy/8000/api/v1" in text.replace(" ", "")
+        )
+        if not has_api:
+            return False
         if "NEXT_PUBLIC_USE_SAME_ORIGIN=false" not in text.replace(" ", ""):
             if "USE_SAME_ORIGIN=false" not in text.replace(" ", ""):
                 return False
@@ -1081,6 +1097,8 @@ def start_fastapi(base_path: str) -> subprocess.Popen:
     backend_fh.flush()
 
     _log(f"Starting FastAPI/Uvicorn on 0.0.0.0:8000 (log={BACKEND_LOG}) ...")
+    # Single worker, no reload: job_manager BackgroundTasks are process-local.
+    # --reload or multi-workers cause "Job not found" mid-generation on Kaggle.
     proc = subprocess.Popen(
         [
             py,
@@ -1091,6 +1109,8 @@ def start_fastapi(base_path: str) -> subprocess.Popen:
             "0.0.0.0",
             "--port",
             "8000",
+            "--workers",
+            "1",
         ],
         cwd=str(ROOT),
         env=env,
@@ -1760,7 +1780,18 @@ def main() -> int:
 
     backend_up = backend_already_healthy()
     frontend_up = frontend_already_healthy(base_path if not split_proxy else "")
-    if backend_up:
+    if backend_up and (deploy.get("is_kaggle") or split_proxy):
+        # Reusing a leftover uvicorn (especially one started with --reload via
+        # run_api.py) is the #1 cause of mid-job "Job not found" on Kaggle:
+        # POST /generate lands in process A, then reload/restart empties memory
+        # and GET /status 404s. Always take exclusive ownership of :8000 here.
+        _log(
+            "Kaggle/split-proxy: stopping existing :8000 for a clean single-worker "
+            "backend (in-memory jobs + BackgroundTasks require one process)"
+        )
+        backend_up = False
+        stop_port(args.port, "backend")
+    elif backend_up:
         _log("Backend already healthy on :8000 — reusing (not spawning another uvicorn)")
     if frontend_up:
         # Split-proxy / Kaggle: never reuse a Next process that was built with

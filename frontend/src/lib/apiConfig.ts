@@ -171,16 +171,39 @@ export function extractProxyPort(path: string): string | null {
   return null;
 }
 
-/** Rewrite `/proxy/<port>` or `/proxy/proxy/<port>` while preserving session prefix. */
-export function withProxyPort(basePath: string, port: string): string {
+/** Rewrite `/proxy/<port>` or `/proxy/proxy/<port>` while preserving session prefix.
+ *
+ * When ``preferDouble`` is true (configured backend is /proxy/proxy/8000), a
+ * single-nested page path like /k/s/proxy/3000 is upgraded to /k/s/proxy/proxy/8000
+ * so the browser hits the same Jupyter nesting Kaggle exposes for the API.
+ */
+export function withProxyPort(
+  basePath: string,
+  port: string,
+  preferDouble: boolean = false
+): string {
   const trimmed = stripTrailingSlash(basePath);
   if (/\/proxy\/proxy\/\d+$/.test(trimmed)) {
     return trimmed.replace(/\/proxy\/proxy\/\d+$/, `/proxy/proxy/${port}`);
   }
   if (/\/proxy\/\d+$/.test(trimmed)) {
+    if (preferDouble) {
+      return trimmed.replace(/\/proxy\/\d+$/, `/proxy/proxy/${port}`);
+    }
     return trimmed.replace(/\/proxy\/\d+$/, `/proxy/${port}`);
   }
+  // Page has a /k/<session> prefix but no proxy port segment yet.
+  if (preferDouble && /\/k\//.test(trimmed)) {
+    return `${trimmed}/proxy/proxy/${port}`;
+  }
+  if (preferDouble) {
+    return `/proxy/proxy/${port}`;
+  }
   return trimmed;
+}
+
+function configuredPrefersDoubleProxy(configuredBackend: string): boolean {
+  return /\/proxy\/proxy\/\d+/.test(configuredBackend);
 }
 
 /**
@@ -194,21 +217,15 @@ export function resolveBackendDeploymentBase(pageBasePath: string): string {
   if (configuredBackend && !isAbsoluteHttpUrl(configuredBackend)) {
     const backendPort = extractProxyPort(configuredBackend);
     const pagePort = extractProxyPort(pageBasePath);
+    const preferDouble = configuredPrefersDoubleProxy(configuredBackend);
     // Prefer explicit backend proxy when page is on the frontend port.
     if (
       backendPort &&
       (!pagePort || pagePort !== backendPort || FRONTEND_PROXY_PORTS.has(pagePort))
     ) {
-      if (pageBasePath.includes("/k/") && configuredBackend === `/proxy/${backendPort}`) {
-        // Refresh session prefix onto host-root /proxy/8000 config.
-        return withProxyPort(pageBasePath, backendPort);
-      }
-      if (
-        pageBasePath.includes("/k/") &&
-        extractProxyPort(configuredBackend) === backendPort &&
-        !configuredBackend.includes("/k/")
-      ) {
-        return withProxyPort(pageBasePath, backendPort);
+      if (pageBasePath.includes("/k/") && extractProxyPort(configuredBackend) === backendPort) {
+        // Refresh session prefix; honor /proxy/proxy nesting when configured.
+        return withProxyPort(pageBasePath, backendPort, preferDouble);
       }
       return configuredBackend;
     }
@@ -216,7 +233,11 @@ export function resolveBackendDeploymentBase(pageBasePath: string): string {
 
   const pagePort = extractProxyPort(pageBasePath);
   if (pagePort && FRONTEND_PROXY_PORTS.has(pagePort)) {
-    return withProxyPort(pageBasePath, DEFAULT_BACKEND_PROXY_PORT);
+    const preferDouble =
+      configuredPrefersDoubleProxy(
+        process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_API_ORIGIN || ""
+      ) || /\/proxy\/proxy\/\d+/.test(pageBasePath);
+    return withProxyPort(pageBasePath, DEFAULT_BACKEND_PROXY_PORT, preferDouble);
   }
   return pageBasePath;
 }
@@ -314,6 +335,7 @@ export function resolveApiBaseUrl(): string {
     if (/\/proxy\/(?:proxy\/)?\d+\/api\/v1\/?$/.test(normalized)) {
       const configuredPort = extractProxyPort(normalized);
       const pagePort = extractProxyPort(pageBasePath);
+      const preferDouble = configuredPrefersDoubleProxy(normalized);
       if (
         configuredPort &&
         pagePort &&
@@ -322,7 +344,13 @@ export function resolveApiBaseUrl(): string {
       ) {
         // Keep backend port; refresh /k/<session> prefix from the live page when needed.
         if (pageBasePath.includes("/k/") && !normalized.includes("/k/")) {
-          return sameOriginApiRoot(withProxyPort(pageBasePath, configuredPort));
+          return sameOriginApiRoot(
+            withProxyPort(pageBasePath, configuredPort, preferDouble)
+          );
+        }
+        // Prefer configured nesting (/proxy/proxy/8000) over a bare host-root path.
+        if (preferDouble) {
+          return stripTrailingSlash(normalized);
         }
         return stripTrailingSlash(normalized);
       }
@@ -401,7 +429,8 @@ export function resolveApiOrigin(): string {
       FRONTEND_PROXY_PORTS.has(pagePort)
     ) {
       if (pageBasePath.includes("/k/") && !normalizedOrigin.includes("/k/")) {
-        return withProxyPort(pageBasePath, configuredPort);
+        const preferDouble = configuredPrefersDoubleProxy(normalizedOrigin);
+        return withProxyPort(pageBasePath, configuredPort, preferDouble);
       }
       return normalizedOrigin;
     }

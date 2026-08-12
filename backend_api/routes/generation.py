@@ -66,6 +66,14 @@ async def get_generation_status(job_id: str):
     """
     job = job_manager.get_job(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Job not found "
+                f"(job_id={job_id}, pid={__import__('os').getpid()}). "
+                "If generation was in progress, the backend process likely restarted "
+                "— retry Generate on a single uvicorn worker without --reload."
+            ),
+        )
         
     return job

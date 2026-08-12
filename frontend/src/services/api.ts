@@ -157,6 +157,12 @@ export class ApiClient {
             setTimeout(poll, pollInterval);
           }
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          // Definitive backend miss — do not mask as a transient blip.
+          if (/job not found/i.test(message)) {
+            reject(error);
+            return;
+          }
           consecutiveErrors += 1;
           if (consecutiveErrors >= maxConsecutiveErrors) {
             reject(error);
