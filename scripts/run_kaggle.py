@@ -1145,9 +1145,14 @@ def print_banner(
 def configure_kaggle_flux_runtime() -> None:
     """Set completion-first FLUX env defaults and warm CUDA on the main thread.
 
+    Primary heavy-inference target: Kaggle NVIDIA T4 (often T4×2).
+    Local RTX 3050 remains a light/dev path only.
+
     Do NOT force 768×12 GPU-resident — that path OOMs on T4-class cards when
     NF4 + Kontext activations exceed free headroom. Prefer measured policy:
     512 Standard + VAE tiling; opt into 768 only via FLUX_ALLOW_HIGH_RES.
+
+    On dual T4: pin FLUX → cuda:0, CatVTON → cuda:1 and enable dual residency.
     """
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -1166,32 +1171,64 @@ def configure_kaggle_flux_runtime() -> None:
         _log(f"HF cache env setup skipped: {exc}")
     try:
         import torch
+        from src.common.models.device_manager import DeviceManager
 
         if not torch.cuda.is_available():
             _log("CUDA not available — FLUX will fail on this runtime")
             return
-        # Initialize CUDA context on the main process before worker threads.
-        _ = torch.zeros(1, device="cuda")
-        props = torch.cuda.get_device_properties(0)
+
+        gpus = DeviceManager.inventory_gpus()
+        _log(f"CUDA device_count={torch.cuda.device_count()}")
+        for g in gpus:
+            _log(
+                f"  GPU[{g['index']}] {g['name']} "
+                f"total_mb={g['total_memory_mb']:.0f} sm={g['major']}.{g['minor']}"
+            )
+
+        # Dual T4×2 (or any 2+ CUDA devices): pin roles so FLUX and CatVTON
+        # do not fight for the same card.
+        if torch.cuda.device_count() >= 2:
+            os.environ.setdefault("FABRICVISION_PROFILE", "kaggle_t4x2")
+            os.environ.setdefault("FABRICVISION_DUAL_GPU", "1")
+            os.environ.setdefault("FLUX_CUDA_DEVICE", "0")
+            os.environ.setdefault("CATVTON_CUDA_DEVICE", "1")
+            os.environ.setdefault("QWEN_CUDA_DEVICE", "0")
+            _log(
+                "Dual-GPU profile: FLUX→cuda:0 CatVTON→cuda:1 "
+                f"(FABRICVISION_DUAL_GPU={os.environ.get('FABRICVISION_DUAL_GPU')})"
+            )
+        else:
+            os.environ.setdefault("FABRICVISION_PROFILE", "kaggle_t4" if gpus else "cpu")
+
+        # Initialize CUDA context on the FLUX role device before worker threads.
+        flux_dev = DeviceManager.resolve_role_device("flux", "cuda:0")
+        flux_idx = DeviceManager.cuda_device_index(flux_dev) or 0
+        _ = torch.zeros(1, device=f"cuda:{flux_idx}")
+        props = torch.cuda.get_device_properties(flux_idx)
         vram_mb = props.total_memory / (1024**2)
-        name = torch.cuda.get_device_name(0)
-        allocated = torch.cuda.memory_allocated() / (1024**2)
-        reserved = torch.cuda.memory_reserved() / (1024**2)
+        name = torch.cuda.get_device_name(flux_idx)
+        allocated = torch.cuda.memory_allocated(flux_idx) / (1024**2)
+        reserved = torch.cuda.memory_reserved(flux_idx) / (1024**2)
         free = max(0.0, vram_mb - reserved)
         _log(
-            f"GPU={name} total_mb={vram_mb:.0f} alloc_mb={allocated:.0f} "
+            f"FLUX GPU[{flux_idx}]={name} total_mb={vram_mb:.0f} alloc_mb={allocated:.0f} "
             f"reserved_mb={reserved:.0f} free_mb={free:.0f} torch={torch.__version__}"
         )
         if vram_mb >= 14000:
-            # Completion-first defaults. Operators may set FLUX_ALLOW_HIGH_RES=true
-            # and/or FLUX_GENERATION_RESOLUTION=768 after a successful smoke.
+            # Kaggle T4 / T4×2 — primary Production inference environment.
+            # Production minimum is 700+ px (704/720/768). Do NOT default to 512.
+            # Standard stays on its own policy (typically 512×8) unless
+            # FLUX_GENERATION_RESOLUTION is set explicitly.
             os.environ.setdefault("FLUX_VAE_TILING", "true")
-            os.environ.setdefault("FLUX_GENERATION_RESOLUTION", "512")
             os.environ.setdefault("FLUX_STANDARD_STEPS", "8")
-            # Tesla T4 (sm_75): prefer model_cpu_offload + FP16. GPU-resident NF4
-            # + park_on_cpu left the VAE on CPU and triggered CUDA_ERROR at ~50%.
+            # Interim Production defaults until ladder benchmark picks a winner.
+            os.environ.setdefault("FLUX_PRODUCTION_RESOLUTION", "704")
+            os.environ.setdefault("FLUX_PRODUCTION_SIZE", "704")
+            os.environ.setdefault("FLUX_PRODUCTION_STEPS", "10")
+            # Leave FLUX_GENERATION_RESOLUTION unset so Preview/Standard are not
+            # forced to 700+; Production uses FLUX_PRODUCTION_* above.
             try:
-                major, _ = torch.cuda.get_device_capability(0)
+                major, _ = torch.cuda.get_device_capability(flux_idx)
             except Exception:
                 major = 8
             if int(major) < 8:
@@ -1202,41 +1239,38 @@ def configure_kaggle_flux_runtime() -> None:
                     "FLUX_TORCH_DTYPE=float16 (transformer/compute); "
                     "VAE is upcast to float32 at load/generate to avoid fp16 NaN/black"
                 )
-            # Demote the previous unsafe notebook default (768 + GPU-resident) unless
-            # the operator explicitly opts into high-res.
-            allow_hi = os.environ.get("FLUX_ALLOW_HIGH_RES", "").strip().lower() in (
-                "1",
-                "true",
-                "yes",
-                "on",
-            )
-            if (
-                not allow_hi
-                and os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip() == "768"
-            ):
-                os.environ["FLUX_GENERATION_RESOLUTION"] = "512"
+            # Never silently demote Production 700+/768 → 512 on T4.
+            prod_res = (
+                os.environ.get("FLUX_PRODUCTION_RESOLUTION")
+                or os.environ.get("FLUX_PRODUCTION_SIZE")
+                or ""
+            ).strip()
+            if prod_res.isdigit() and int(prod_res) < 700:
+                os.environ["FLUX_PRODUCTION_RESOLUTION"] = "704"
+                os.environ["FLUX_PRODUCTION_SIZE"] = "704"
                 _log(
-                    "Demoted legacy FLUX_GENERATION_RESOLUTION=768 → 512 "
-                    "(set FLUX_ALLOW_HIGH_RES=true to keep 768)"
+                    f"Raised Production resolution {prod_res} → 704 "
+                    "(Kaggle Production minimum is 700+)"
                 )
-            if (
-                not allow_hi
-                and os.environ.get("FLUX_STANDARD_STEPS", "").strip() == "12"
-                and os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip() in ("", "512")
-            ):
-                # 12 steps @ 512 is fine; leave it. Only demote when paired with 768 intent.
-                pass
             _log(
-                "High-VRAM completion-first defaults: "
-                f"FLUX_GENERATION_RESOLUTION={os.environ.get('FLUX_GENERATION_RESOLUTION')} "
+                "High-VRAM (T4-class) Production defaults: "
+                f"FLUX_PRODUCTION_RESOLUTION="
+                f"{os.environ.get('FLUX_PRODUCTION_RESOLUTION')} "
+                f"FLUX_PRODUCTION_STEPS={os.environ.get('FLUX_PRODUCTION_STEPS')} "
                 f"FLUX_STANDARD_STEPS={os.environ.get('FLUX_STANDARD_STEPS')} "
                 f"FLUX_MODEL_CPU_OFFLOAD={os.environ.get('FLUX_MODEL_CPU_OFFLOAD', 'auto')} "
-                "FLUX_VAE_TILING=true (768 gated behind free headroom / FLUX_ALLOW_HIGH_RES)"
+                "FLUX_VAE_TILING=true "
+                "(benchmark 704/720/768 × 8/10/12 via "
+                "scripts/kaggle_flux_production_benchmark.py)"
             )
         else:
+            os.environ.setdefault("FABRICVISION_PROFILE", "local_low_vram")
             os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")
             os.environ.setdefault("FLUX_VAE_TILING", "true")
-            _log("Low-VRAM defaults: FLUX_MODEL_CPU_OFFLOAD=true FLUX_VAE_TILING=true")
+            _log(
+                "Low-VRAM / local-dev defaults: FLUX_MODEL_CPU_OFFLOAD=true "
+                "FLUX_VAE_TILING=true (heavy Production validation belongs on Kaggle T4)"
+            )
     except Exception as exc:
         _log(f"GPU runtime probe skipped: {exc}")
 

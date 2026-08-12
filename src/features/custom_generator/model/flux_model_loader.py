@@ -568,12 +568,14 @@ class FLUXModelLoader:
             (os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN") or "").strip()
         )
 
-    def _gpu_vram_mb(self) -> float:
+    def _gpu_vram_mb(self, device_index: int = 0) -> float:
         if torch is None:
             return 0.0
         try:
             if torch.cuda.is_available():
-                return float(torch.cuda.get_device_properties(0).total_memory) / (1024**2)
+                idx = int(device_index) if device_index is not None else 0
+                idx = max(0, min(idx, torch.cuda.device_count() - 1))
+                return float(torch.cuda.get_device_properties(idx).total_memory) / (1024**2)
         except Exception:
             return 0.0
         return 0.0
@@ -1445,7 +1447,7 @@ class FLUXModelLoader:
 
             self._used_bnb_4bit = used_bnb_4bit
 
-            if target_device == "cuda":
+            if DeviceManager.is_cuda_device(target_device):
                 if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
                     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
                     self.logger.info(
@@ -1453,7 +1455,7 @@ class FLUXModelLoader:
                     )
 
                 # Offload policy:
-                # - FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB path)
+                # - FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB / T4-safe path)
                 # - FLUX_MODEL_CPU_OFFLOAD=false → GPU-resident
                 # - auto: offload on <14GB OR pre-Ampere (Tesla T4 sm_75).
                 #   GPU-resident NF4 on T4 parks VAE to CPU then fails during
@@ -1461,14 +1463,17 @@ class FLUXModelLoader:
                 #   Generation resolution is gated separately by flux_vram_policy
                 #   (completion-first; 768 is NOT assumed safe on T4).
                 offload_env = os.environ.get("FLUX_MODEL_CPU_OFFLOAD", "").strip().lower()
-                physical_mb = self._gpu_vram_mb()
+                gpu_idx = DeviceManager.cuda_device_index(target_device) or 0
+                physical_mb = self._gpu_vram_mb(device_index=gpu_idx)
                 prefer_offload = True
                 if offload_env in ("0", "false", "no", "off"):
                     prefer_offload = False
                 elif offload_env in ("1", "true", "yes", "on"):
                     prefer_offload = True
                 else:
-                    prefer_offload = physical_mb < 14000 or self._is_pre_ampere_gpu()
+                    prefer_offload = physical_mb < 14000 or self._is_pre_ampere_gpu(
+                        device_index=gpu_idx
+                    )
 
                 self._progress("Configuring device / offload", 16)
                 t_dev = self._mark("PIPELINE_DEVICE_SETUP", time.perf_counter())
@@ -1476,22 +1481,27 @@ class FLUXModelLoader:
                 # WHY model_cpu_offload (not sequential): sequential + bnb NF4 previously
                 # raised "Cannot copy out of meta tensor; no data!" on this stack.
                 if prefer_offload and hasattr(pipeline, "enable_model_cpu_offload"):
-                    pipeline.enable_model_cpu_offload()
+                    try:
+                        pipeline.enable_model_cpu_offload(gpu_id=gpu_idx)
+                    except TypeError:
+                        pipeline.enable_model_cpu_offload()
                     self._offload_strategy = "model_cpu_offload"
                     self.logger.info(
-                        "Kontext model CPU offload enabled (%s, vram=%.0fMB)",
+                        "Kontext model CPU offload enabled (%s, vram=%.0fMB, gpu_id=%s)",
                         "bnb-safe" if used_bnb_4bit else "standard",
                         physical_mb,
+                        gpu_idx,
                     )
                 else:
                     if hasattr(pipeline, "to"):
                         pipeline.to(target_device)
                     self._offload_strategy = "gpu_resident" if not prefer_offload else "none"
                     self.logger.info(
-                        "Kontext GPU-resident load (offload=%s, nf4=%s, vram=%.0fMB)",
+                        "Kontext GPU-resident load (offload=%s, nf4=%s, vram=%.0fMB, device=%s)",
                         self._offload_strategy,
                         used_bnb_4bit,
                         physical_mb,
+                        target_device,
                     )
 
                 if hasattr(pipeline, "vae") and pipeline.vae is not None:
@@ -1583,12 +1593,14 @@ class FLUXModelLoader:
     def pipeline(self) -> Any | None:
         return self._pipeline
 
-    def _is_pre_ampere_gpu(self) -> bool:
+    def _is_pre_ampere_gpu(self, device_index: int = 0) -> bool:
         """True for Turing/Volta (e.g. Tesla T4 sm_75) where BF16 kernels are weak."""
         if torch is None or not torch.cuda.is_available():
             return False
         try:
-            major, _minor = torch.cuda.get_device_capability(0)
+            idx = int(device_index) if device_index is not None else 0
+            idx = max(0, min(idx, torch.cuda.device_count() - 1))
+            major, _minor = torch.cuda.get_device_capability(idx)
             return int(major) < 8
         except Exception:
             return False
@@ -1749,7 +1761,9 @@ class FLUXModelLoader:
                 pass
             return info
 
-        target = torch.device("cuda")
+        target_str = self.device_manager.resolve_device(self.device_setting)
+        idx = DeviceManager.cuda_device_index(target_str)
+        target = torch.device(f"cuda:{idx}" if idx is not None else "cuda")
         for name in ("vae",):
             mod = getattr(pipe, name, None)
             if mod is None or not hasattr(mod, "to"):

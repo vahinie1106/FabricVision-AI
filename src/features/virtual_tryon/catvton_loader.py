@@ -119,14 +119,32 @@ class CatVTONModelLoader:
                     torch_dtype=dtype,
                 )
 
-            if target_device == "cuda":
-                self.logger.info("Moving model to CUDA")
-                if hasattr(pipeline, "enable_sequential_cpu_offload"):
-                    pipeline.enable_sequential_cpu_offload()
-                    self.logger.info("CPU offloading enabled")
-                if hasattr(pipeline, "enable_attention_slicing"):
-                    pipeline.enable_attention_slicing()
-                    self.logger.info("Attention slicing enabled")
+            if DeviceManager.is_cuda_device(target_device):
+                self.logger.info("Moving CatVTON to %s", target_device)
+                dual = DeviceManager.dual_gpu_residency_enabled()
+                gpu_idx = DeviceManager.cuda_device_index(target_device) or 0
+                # On a dedicated second T4, keep the pipeline GPU-resident.
+                # Sequential offload is for single-GPU / 6GB sharing with FLUX.
+                if dual or gpu_idx > 0:
+                    if hasattr(pipeline, "to"):
+                        pipeline.to(target_device)
+                    self.logger.info(
+                        "CatVTON GPU-resident on %s (dual_gpu=%s)",
+                        target_device,
+                        dual,
+                    )
+                    if hasattr(pipeline, "enable_attention_slicing"):
+                        pipeline.enable_attention_slicing()
+                else:
+                    if hasattr(pipeline, "enable_sequential_cpu_offload"):
+                        try:
+                            pipeline.enable_sequential_cpu_offload(gpu_id=gpu_idx)
+                        except TypeError:
+                            pipeline.enable_sequential_cpu_offload()
+                        self.logger.info("CPU offloading enabled")
+                    if hasattr(pipeline, "enable_attention_slicing"):
+                        pipeline.enable_attention_slicing()
+                        self.logger.info("Attention slicing enabled")
             else:
                 if hasattr(pipeline, "to"):
                     pipeline.to(target_device)

@@ -29,18 +29,21 @@ ProgressCallback = Optional[Callable[[str, int], None]]
 # under model_cpu_offload on RTX 3050. 128 preserves full prompt semantics with far less work.
 DEFAULT_MAX_SEQUENCE_LENGTH = 128
 
-# Safe completion-first default. 768 is opt-in via FLUX_GENERATION_RESOLUTION /
-# FLUX_ALLOW_HIGH_RES when free headroom is measured.
-ALLOWED_FLUX_GENERATION_RESOLUTIONS = (384, 512, 640, 768, 1024)
+# Safe completion-first defaults. Production on Kaggle T4 targets 700+ px
+# (704 / 720 / 768). Local low-VRAM stays at 512 unless explicitly overridden.
+ALLOWED_FLUX_GENERATION_RESOLUTIONS = (384, 512, 640, 704, 720, 768, 1024)
 DEFAULT_FLUX_GENERATION_RESOLUTION = 512
+# Interim Kaggle Production default until ladder benchmark picks a winner.
+DEFAULT_KAGGLE_PRODUCTION_RESOLUTION = 704
+MIN_KAGGLE_PRODUCTION_RESOLUTION = 700
 
 
 def resolve_flux_generation_resolution(default: Optional[int] = None) -> int:
-    """Single square resolution for FLUX Kontext generation / smoke."""
+    """Square resolution for FLUX Kontext (global / Standard / Preview override)."""
     fallback = (
         DEFAULT_FLUX_GENERATION_RESOLUTION if default is None else int(default)
     )
-    for key in ("FLUX_GENERATION_RESOLUTION", "FLUX_PRODUCTION_SIZE"):
+    for key in ("FLUX_GENERATION_RESOLUTION",):
         raw = os.environ.get(key, "").strip()
         if not raw.isdigit():
             continue
@@ -50,6 +53,37 @@ def resolve_flux_generation_resolution(default: Optional[int] = None) -> int:
     if fallback in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
         return fallback
     return DEFAULT_FLUX_GENERATION_RESOLUTION
+
+
+def resolve_flux_production_resolution(default: Optional[int] = None) -> int:
+    """
+    Production-only square resolution.
+
+    Priority: FLUX_PRODUCTION_RESOLUTION → FLUX_PRODUCTION_SIZE →
+    FLUX_GENERATION_RESOLUTION → default (≥700 preferred on Kaggle T4).
+    """
+    fallback = (
+        DEFAULT_KAGGLE_PRODUCTION_RESOLUTION if default is None else int(default)
+    )
+    for key in (
+        "FLUX_PRODUCTION_RESOLUTION",
+        "FLUX_PRODUCTION_SIZE",
+        "FLUX_GENERATION_RESOLUTION",
+    ):
+        raw = os.environ.get(key, "").strip()
+        if not raw.isdigit():
+            continue
+        size = int(raw)
+        if size in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
+            return size
+    if fallback in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
+        return fallback
+    # Snap upward to nearest allowed ≥700 when caller passes e.g. 700.
+    if fallback >= MIN_KAGGLE_PRODUCTION_RESOLUTION:
+        for size in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
+            if size >= fallback:
+                return size
+    return DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
 
 
 class FLUXInferenceEngine:

@@ -203,20 +203,25 @@ class GarmentGenerationPipeline:
                 mode_cfg.get("guidance_scale", self.config.guidance_scale)
             )
 
-        # Single FLUX Kontext resolution knob (yaml mode defaults + optional env).
-        # FLUX_GENERATION_RESOLUTION preferred; FLUX_PRODUCTION_SIZE kept as alias.
+        # Resolution knobs:
+        # - FLUX_GENERATION_RESOLUTION → Preview/Standard (and Production fallback)
+        # - FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_SIZE → Production only (≥700 on T4)
         from src.features.custom_generator.inference.flux_inference import (
             resolve_flux_generation_resolution,
+            resolve_flux_production_resolution,
         )
 
-        res_env = (
-            os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip()
-            or os.environ.get("FLUX_PRODUCTION_SIZE", "").strip()
-        )
-        if res_env.isdigit():
-            size = resolve_flux_generation_resolution(default=self.config.height)
+        if mode_key == "production":
+            size = resolve_flux_production_resolution(default=self.config.height)
+            # On low-VRAM the production VRAM policy will clamp to 512 later.
             self.config.height = size
             self.config.width = size
+        else:
+            res_env = os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip()
+            if res_env.isdigit():
+                size = resolve_flux_generation_resolution(default=self.config.height)
+                self.config.height = size
+                self.config.width = size
 
         if mode_key == "production":
             prod_steps = os.environ.get("FLUX_PRODUCTION_STEPS", "").strip()
@@ -234,6 +239,8 @@ class GarmentGenerationPipeline:
         # T4 / 16GB+ quality path: Standard UI mode must not stay at the RTX 3050
         # 512×3 preset (known soft/blurry). Prefer 768 / 12 steps unless overridden.
         self._apply_high_vram_standard_defaults(mode_key)
+        # Production: 700+ on Kaggle T4; 512 clamp on local low-VRAM.
+        self._apply_production_vram_defaults(mode_key)
 
         gen_cfg_path = Path(self.config.config_dir) / "generation_config.yaml"
         if not gen_cfg_path.exists():
@@ -315,6 +322,61 @@ class GarmentGenerationPipeline:
 
         self.logger.info(
             "[FLUX] Standard policy profile=%s %sx%s steps=%s guidance=%s "
+            "prefer_offload=%s reason=%s gpu=%s",
+            policy.profile,
+            self.config.width,
+            self.config.height,
+            self.config.num_inference_steps,
+            self.config.guidance_scale,
+            policy.prefer_model_cpu_offload,
+            policy.reason,
+            diag.gpu_name,
+        )
+        try:
+            self._vram_policy = {
+                **policy.__dict__,
+                "diagnostics": diag.as_dict(),
+            }
+        except Exception:
+            self._vram_policy = {"profile": policy.profile, "reason": policy.reason}
+
+    def _apply_production_vram_defaults(self, mode_key: str) -> None:
+        """VRAM-aware Production policy: 512² / 12–16 on 6GB; never silent 768."""
+        if mode_key != "production":
+            return
+
+        from src.features.custom_generator.inference.flux_vram_policy import (
+            log_vram,
+            select_production_generation_policy,
+        )
+
+        diag = log_vram("before_production_policy")
+        offload = None
+        loader = getattr(self, "model_loader", None) or getattr(
+            getattr(self, "inference_engine", None), "model_loader", None
+        )
+        if loader is not None:
+            offload = getattr(loader, "_offload_strategy", None)
+
+        policy = select_production_generation_policy(
+            physical_mb=diag.physical_total_mb or self._gpu_vram_mb(),
+            free_mb=diag.free_mb,
+            offload_strategy=offload,
+            yaml_height=int(self.config.height),
+            yaml_steps=int(self.config.num_inference_steps),
+            yaml_guidance=float(self.config.guidance_scale),
+        )
+
+        self.config.height = int(policy.height)
+        self.config.width = int(policy.width)
+        self.config.num_inference_steps = int(policy.num_inference_steps)
+        self.config.guidance_scale = float(policy.guidance_scale)
+
+        if policy.enable_vae_tiling:
+            os.environ.setdefault("FLUX_VAE_TILING", "true")
+
+        self.logger.info(
+            "[FLUX] Production policy profile=%s %sx%s steps=%s guidance=%s "
             "prefer_offload=%s reason=%s gpu=%s",
             policy.profile,
             self.config.width,

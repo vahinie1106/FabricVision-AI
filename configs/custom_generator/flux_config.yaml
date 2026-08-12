@@ -35,24 +35,25 @@ default_generation_mode: standard
 # <2.5 min / 5-min catalog-quality is NOT achievable on this hardware path.
 # =============================================================================
 
-# Preview — structure check (measured class ~6–8 min cold at 384/few steps)
+# Preview — structure check (usable fabric check; still soft vs Production)
 preview:
   height: 384
   width: 384
-  num_inference_steps: 3
+  num_inference_steps: 4
   guidance_scale: 2.5
-  measured_runtime_note: "~6-8 min cold (Day-17 class); not <2.5 min"
+  measured_runtime_note: "~7-10 min cold on RTX 3050; override FLUX_PREVIEW_STEPS"
 
 fast_preview:
   height: 384
   width: 384
   num_inference_steps: 3
   guidance_scale: 2.5
-  measured_runtime_note: "~6-8 min cold (Day-17 class); not <2.5 min"
+  measured_runtime_note: "alias for fastest structure check (3 steps)"
 
-# Standard — RTX 3050 6GB measured default (soft at 3 steps; keep for low-VRAM).
-# On Tesla T4 / 16GB+, GarmentGenerationPipeline auto-upgrades Standard to
-# 768×768 / 12 steps unless FLUX_GENERATION_RESOLUTION / FLUX_STANDARD_STEPS set.
+# Standard — low-VRAM / local-dev default (RTX 3050 6GB).
+# On Kaggle Tesla T4 (~15GB), GarmentGenerationPipeline + flux_vram_policy
+# select Standard 512×8 (or 768×12 only with FLUX_ALLOW_HIGH_RES / headroom).
+# Primary heavy inference target is Kaggle T4 / T4×2 via scripts/run_kaggle.py.
 standard:
   height: 512
   width: 512
@@ -70,20 +71,23 @@ standard_t4:
   guidance_scale: 3.0
   measured_runtime_note: "opt-in only; GPU-resident 768 OOM'd without free headroom"
 
-# Production — Kaggle T4-safe square size (1024 OOMs; override via FLUX_GENERATION_RESOLUTION)
+# Production — Kaggle T4 / T4×2 quality-first (minimum 700+ px).
+# Allowed ladder: 704 / 720 / 768 at 8–12 steps. Interim default 704×10
+# until scripts/kaggle_flux_production_benchmark.py selects a winner.
+# Local RTX 3050 is clamped to 512 by flux_vram_policy (low-VRAM path).
 production:
-  height: 768
-  width: 768
-  num_inference_steps: 4
-  guidance_scale: 2.5
-  measured_runtime_note: "~12-20 min depending on thermal/session load; 768 for ~16GB T4"
+  height: 704
+  width: 704
+  num_inference_steps: 10
+  guidance_scale: 3.0
+  measured_runtime_note: "Kaggle T4 production target ≥700; benchmark 704/720/768 × 8/10/12"
 
 high_quality:
-  height: 768
-  width: 768
-  num_inference_steps: 4
-  guidance_scale: 2.5
-  measured_runtime_note: "alias of production on this GPU"
+  height: 704
+  width: 704
+  num_inference_steps: 10
+  guidance_scale: 3.0
+  measured_runtime_note: "alias of production"
 
 # =============================================================================
 # QUALITY-FIRST presets for ~16GB+ VRAM GPUs

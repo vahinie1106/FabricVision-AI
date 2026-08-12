@@ -41,7 +41,11 @@ class StandardGenPolicy:
     profile: str
 
 
-def collect_vram_diagnostics() -> VramDiagnostics:
+# Production uses the same shape; kept as an alias for call-site clarity.
+ProductionGenPolicy = StandardGenPolicy
+
+
+def collect_vram_diagnostics(device: str | None = None) -> VramDiagnostics:
     """Read live GPU / CUDA allocator state. Never raises."""
     try:
         import torch
@@ -69,20 +73,29 @@ def collect_vram_diagnostics() -> VramDiagnostics:
             cuda_available=False,
         )
 
+    from src.common.models.device_manager import DeviceManager
+
+    if device is None:
+        device = DeviceManager.resolve_role_device("flux", "cuda:0")
+    idx = DeviceManager.cuda_device_index(device)
+    if idx is None:
+        idx = 0
+    idx = max(0, min(idx, torch.cuda.device_count() - 1))
+
     try:
-        props = torch.cuda.get_device_properties(0)
+        props = torch.cuda.get_device_properties(idx)
         total = float(props.total_memory) / (1024**2)
-        name = torch.cuda.get_device_name(0)
+        name = torch.cuda.get_device_name(idx)
     except Exception:
         total = 0.0
         name = "unknown"
 
     try:
-        allocated = float(torch.cuda.memory_allocated() / (1024**2))
-        reserved = float(torch.cuda.memory_reserved() / (1024**2))
-        max_alloc = float(torch.cuda.max_memory_allocated() / (1024**2))
+        allocated = float(torch.cuda.memory_allocated(idx) / (1024**2))
+        reserved = float(torch.cuda.memory_reserved(idx) / (1024**2))
+        max_alloc = float(torch.cuda.max_memory_allocated(idx) / (1024**2))
         try:
-            max_res = float(torch.cuda.max_memory_reserved() / (1024**2))
+            max_res = float(torch.cuda.max_memory_reserved(idx) / (1024**2))
         except Exception:
             max_res = reserved
     except Exception:
@@ -90,7 +103,7 @@ def collect_vram_diagnostics() -> VramDiagnostics:
 
     free = max(0.0, total - reserved)
     return VramDiagnostics(
-        gpu_name=name,
+        gpu_name=f"{name}[cuda:{idx}]",
         physical_total_mb=round(total, 1),
         allocated_mb=round(allocated, 1),
         reserved_mb=round(reserved, 1),
@@ -152,7 +165,8 @@ def select_standard_generation_policy(
     gpu_resident = offload in ("gpu_resident", "none", "")
 
     # Explicit env wins (operators / smoke tests).
-    forced_res = _env_int("FLUX_GENERATION_RESOLUTION") or _env_int("FLUX_PRODUCTION_SIZE")
+    # Standard must NOT inherit FLUX_PRODUCTION_SIZE (Production-only 700+ target).
+    forced_res = _env_int("FLUX_GENERATION_RESOLUTION")
     forced_steps = _env_int("FLUX_STANDARD_STEPS")
     allow_high_res = _env_truthy("FLUX_ALLOW_HIGH_RES")
     offload_env = _env_truthy("FLUX_MODEL_CPU_OFFLOAD")
@@ -225,6 +239,108 @@ def select_standard_generation_policy(
     )
 
 
+def select_production_generation_policy(
+    *,
+    physical_mb: Optional[float] = None,
+    free_mb: Optional[float] = None,
+    offload_strategy: Optional[str] = None,
+    yaml_height: int = 704,
+    yaml_steps: int = 10,
+    yaml_guidance: float = 3.0,
+) -> ProductionGenPolicy:
+    """
+    Production / High-Quality policy.
+
+    - Local / low-VRAM (<14GB): lock 512² (3050-safe).
+    - Kaggle T4 / high-VRAM: Production minimum 700+ px (704 / 720 / 768).
+      Default interim: 704² / 8–12 steps until ladder benchmark selects a winner.
+    """
+    from src.features.custom_generator.inference.flux_inference import (
+        ALLOWED_FLUX_GENERATION_RESOLUTIONS,
+        DEFAULT_KAGGLE_PRODUCTION_RESOLUTION,
+        MIN_KAGGLE_PRODUCTION_RESOLUTION,
+        resolve_flux_production_resolution,
+    )
+
+    diag = collect_vram_diagnostics()
+    phys = float(physical_mb if physical_mb is not None else diag.physical_total_mb)
+    free = float(free_mb if free_mb is not None else diag.free_mb)
+    offload = (offload_strategy or "").strip().lower()
+
+    forced_steps = _env_int("FLUX_PRODUCTION_STEPS")
+    allow_high_res = _env_truthy("FLUX_ALLOW_HIGH_RES")
+    offload_env = _env_truthy("FLUX_MODEL_CPU_OFFLOAD")
+
+    # Steps: honor env; otherwise keep Production in the 8–12 quality band.
+    if forced_steps is not None:
+        base_steps = int(forced_steps)
+    else:
+        base_steps = int(yaml_steps or 10)
+        base_steps = max(8, min(12, base_steps))
+
+    guidance = float(yaml_guidance or 3.0)
+    if guidance < 3.0:
+        guidance = 3.0
+    if guidance > 3.5:
+        guidance = 3.5
+
+    prefer_offload = True if offload_env is None else offload_env
+
+    # RTX 3050 / <14GB: never default to 700+ Production (local-dev only).
+    if phys > 0 and phys < 14000:
+        forced_low = _env_int("FLUX_GENERATION_RESOLUTION") or _env_int(
+            "FLUX_PRODUCTION_RESOLUTION"
+        ) or _env_int("FLUX_PRODUCTION_SIZE")
+        res = forced_low or 512
+        if res > 512 and allow_high_res is not True:
+            res = 512
+        return ProductionGenPolicy(
+            height=int(res),
+            width=int(res),
+            num_inference_steps=int(base_steps if forced_steps is not None else max(12, min(16, base_steps))),
+            guidance_scale=float(guidance),
+            prefer_model_cpu_offload=True if offload_env is None else offload_env,
+            enable_vae_tiling=True,
+            reason=f"production_low_vram phys={phys:.0f}MB steps={base_steps}",
+            profile="production_low_vram",
+        )
+
+    # Kaggle T4-class: Production must be ≥700 px.
+    res = resolve_flux_production_resolution(
+        default=int(yaml_height)
+        if int(yaml_height) >= MIN_KAGGLE_PRODUCTION_RESOLUTION
+        else DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
+    )
+    if res < MIN_KAGGLE_PRODUCTION_RESOLUTION:
+        res = DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
+    if res not in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
+        res = DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
+
+    # Prefer 768 only when free headroom is large or operator opts in.
+    if res >= 768 and allow_high_res is False and free < 6500:
+        # Fall back within 700+ band rather than demoting to 512.
+        res = 720 if free >= 4500 else 704
+        profile = "production_t4_700plus_safe"
+        reason = (
+            f"production_t4_700plus_safe free={free:.0f}MB phys={phys:.0f}MB "
+            f"(768 deferred; min production is 700+)"
+        )
+    else:
+        profile = "production_t4_700plus"
+        reason = f"production_t4_700plus free={free:.0f}MB phys={phys:.0f}MB res={res}"
+
+    return ProductionGenPolicy(
+        height=int(res),
+        width=int(res),
+        num_inference_steps=int(base_steps),
+        guidance_scale=float(guidance),
+        prefer_model_cpu_offload=bool(prefer_offload),
+        enable_vae_tiling=True,
+        reason=reason,
+        profile=profile,
+    )
+
+
 def recommend_oom_fallback(
     *,
     height: int,
@@ -234,6 +350,18 @@ def recommend_oom_fallback(
     """Return a smaller config to retry after diffusion OOM, or None if already minimal."""
     area = int(height) * int(width)
     if area >= 768 * 768:
+        return {
+            "height": 720,
+            "width": 720,
+            "num_inference_steps": max(8, min(int(num_inference_steps), 10)),
+        }
+    if area >= 720 * 720:
+        return {
+            "height": 704,
+            "width": 704,
+            "num_inference_steps": max(8, min(int(num_inference_steps), 10)),
+        }
+    if area >= 704 * 704:
         return {
             "height": 512,
             "width": 512,
