@@ -1053,7 +1053,8 @@ def configure_kaggle_flux_runtime() -> None:
                 os.environ.setdefault("FLUX_TORCH_DTYPE", "float16")
                 _log(
                     "Pre-Ampere T4-class defaults: FLUX_MODEL_CPU_OFFLOAD=true "
-                    "FLUX_TORCH_DTYPE=float16 (VAE restore still applied if resident)"
+                    "FLUX_TORCH_DTYPE=float16 (transformer/compute); "
+                    "VAE is upcast to float32 at load/generate to avoid fp16 NaN/black"
                 )
             # Demote the previous unsafe notebook default (768 + GPU-resident) unless
             # the operator explicitly opts into high-res.

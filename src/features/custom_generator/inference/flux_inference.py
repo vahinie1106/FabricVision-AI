@@ -136,6 +136,114 @@ class FLUXInferenceEngine:
             "max_reserved_mb": max_reserved,
         }
 
+    def _log_tensor_stats(self, name: str, tensor: Any) -> None:
+        """Compact tensor diagnostics — never dump full tensors."""
+        if tensor is None or torch is None:
+            self.logger.info("[FLUX DEBUG] %s: <none>", name)
+            print(f"[FLUX DEBUG] {name}: <none>", flush=True)
+            return
+        try:
+            t = tensor.detach()
+            if t.is_cuda:
+                t = t.float()
+            else:
+                t = t.float()
+            total = t.numel()
+            finite = int(torch.isfinite(t).sum().item()) if total else 0
+            nan_n = int(torch.isnan(t).sum().item()) if total else 0
+            inf_n = int(torch.isinf(t).sum().item()) if total else 0
+            zero_n = int((t == 0).sum().item()) if total else 0
+            line = (
+                f"[FLUX DEBUG] {name} shape={tuple(t.shape)} dtype={tensor.dtype} "
+                f"device={tensor.device} min={float(t.min()):.6g} max={float(t.max()):.6g} "
+                f"mean={float(t.mean()):.6g} std={float(t.std()):.6g} "
+                f"finite%={(100.0 * finite / total) if total else 0:.2f} "
+                f"nan%={(100.0 * nan_n / total) if total else 0:.2f} "
+                f"inf%={(100.0 * inf_n / total) if total else 0:.2f} "
+                f"zero%={(100.0 * zero_n / total) if total else 0:.2f}"
+            )
+            self.logger.info(line)
+            print(line, flush=True)
+        except Exception as exc:
+            self.logger.info("[FLUX DEBUG] %s: inspect_failed=%s", name, exc)
+
+    def _log_pil_stats(self, name: str, image: Any) -> dict[str, float]:
+        import numpy as np
+
+        stats = {
+            "min": -1.0,
+            "max": -1.0,
+            "mean": -1.0,
+            "std": -1.0,
+            "zero_pct": -1.0,
+        }
+        try:
+            arr = np.asarray(image)
+            stats = {
+                "min": float(arr.min()),
+                "max": float(arr.max()),
+                "mean": float(arr.mean()),
+                "std": float(arr.std()),
+                "zero_pct": float(np.mean(arr == 0) * 100.0),
+            }
+            line = (
+                f"[FLUX DEBUG] {name} mode={getattr(image, 'mode', None)} "
+                f"size={getattr(image, 'size', None)} dtype={arr.dtype} "
+                f"min={stats['min']} max={stats['max']} mean={stats['mean']:.4f} "
+                f"std={stats['std']:.4f} zero%={stats['zero_pct']:.2f}"
+            )
+            self.logger.info(line)
+            print(line, flush=True)
+        except Exception as exc:
+            self.logger.info("[FLUX DEBUG] %s: inspect_failed=%s", name, exc)
+        return stats
+
+    @staticmethod
+    def _assert_non_black_pil(image: Any, *, stage: str) -> None:
+        import numpy as np
+
+        arr = np.asarray(image)
+        if arr.size == 0:
+            raise RuntimeError(f"FLUX produced an empty image at stage={stage}")
+        if int(arr.max()) == 0 or (float(arr.std()) == 0.0 and float(arr.mean()) == 0.0):
+            raise RuntimeError(
+                f"FLUX produced a completely black image before save "
+                f"(stage={stage}, shape={arr.shape}, max={arr.max()}, "
+                f"mean={arr.mean()}, std={arr.std()}). "
+                f"Likely VAE fp16 NaN decode on T4 — VAE must run in float32."
+            )
+
+    def _install_vae_decode_probe(self, pipeline: Any) -> None:
+        """Log latent/decode tensor stats once around VAE.decode (temporary probe)."""
+        vae = getattr(pipeline, "vae", None)
+        if vae is None or getattr(vae, "_fabricvision_decode_probe", False):
+            return
+        # Prefer the underlying decode if we already wrapped for dtype matching.
+        original = vae.decode
+
+        def _probed_decode(latents, *args, **kwargs):  # noqa: ANN001
+            self._log_tensor_stats("LATENTS_BEFORE_VAE", latents)
+            try:
+                p = next(vae.parameters())
+                self.logger.info(
+                    "[FLUX DEBUG] VAE_AT_DECODE device=%s dtype=%s",
+                    p.device,
+                    p.dtype,
+                )
+                print(
+                    f"[FLUX DEBUG] VAE_AT_DECODE device={p.device} dtype={p.dtype}",
+                    flush=True,
+                )
+            except Exception:
+                pass
+            out = original(latents, *args, **kwargs)
+            sample = out[0] if isinstance(out, (tuple, list)) else getattr(out, "sample", out)
+            self._log_tensor_stats("VAE_DECODE_OUTPUT", sample)
+            return out
+
+        vae.decode = _probed_decode  # type: ignore[method-assign]
+        vae._fabricvision_decode_probe = True
+
     def _park_pipeline(self, pipeline: Any) -> None:
         loader = self.model_loader
         if loader is not None and hasattr(loader, "park_on_cpu"):
@@ -497,6 +605,7 @@ class FLUXInferenceEngine:
                 cond_image = reference_image
             resize_time = round(time.perf_counter() - t_resize, 3)
             _flux_mark("conditioning resize", t_resize, end=True)
+            self._log_pil_stats("IMAGE_CONDITIONING", cond_image)
 
             self.logger.info("=== FLUX KONTEXT CALL PROMPT ===\n%s", prompt)
             if negative_prompt:
@@ -678,6 +787,15 @@ class FLUXInferenceEngine:
             log_vram("before generation")
             self._log_generation_stage("START")
             self._ensure_generation_devices(pipeline)
+            if self.model_loader is not None and hasattr(self.model_loader, "stabilize_flux_vae"):
+                stab = self.model_loader.stabilize_flux_vae(pipeline)
+                self._log_generation_stage(
+                    "VAE_STABILIZED",
+                    upcasted=stab.get("upcasted"),
+                    vae_dtype=stab.get("vae_dtype_after"),
+                    vae_device=stab.get("vae_device"),
+                )
+            self._install_vae_decode_probe(pipeline)
             self._log_component_dtypes(pipeline)
             self._maybe_cuda_sync("DEVICES_READY")
             _progress("Generating", 50)
@@ -843,7 +961,20 @@ class FLUXInferenceEngine:
             _progress("Decoding image", 88)
             t_dec = _flux_mark("decoding", time.perf_counter())
             try:
+                self.logger.info(
+                    "[FLUX DEBUG] PIPELINE_OUTPUT type=%s attrs=%s",
+                    type(output).__name__,
+                    [a for a in ("images", "nsfw_content_detected") if hasattr(output, a)],
+                )
+                images = getattr(output, "images", None)
+                self.logger.info(
+                    "[FLUX DEBUG] images type=%s count=%s",
+                    type(images).__name__ if images is not None else None,
+                    len(images) if images is not None else 0,
+                )
                 image = output.images[0]
+                self._log_pil_stats("PIL_ARRAY", image)
+                self._assert_non_black_pil(image, stage="pipeline_output")
             except Exception as dec_exc:
                 self._log_generation_stage(
                     "FAILED",
@@ -870,9 +1001,14 @@ class FLUXInferenceEngine:
                     raw_p = Path(save_raw_path)
                     raw_p.parent.mkdir(parents=True, exist_ok=True)
                     self._log_generation_stage("SAVE_START", path=str(raw_p))
+                    self._log_pil_stats("RAW_SAVE", image)
+                    self._assert_non_black_pil(image, stage="raw_save")
                     image.save(raw_p, format="PNG", compress_level=3)
                     self.logger.info("[FLUX] Saved raw model output → %s (%sx%s)", raw_p, image.size[0], image.size[1])
                 except Exception as raw_exc:
+                    # Black-image / hard failures must not be swallowed.
+                    if "completely black image" in str(raw_exc).lower():
+                        raise
                     self.logger.warning("Raw output save failed: %s", raw_exc)
 
             self._log_generation_stage("COMPLETE")

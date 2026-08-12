@@ -1260,9 +1260,12 @@ class FLUXModelLoader:
                 self._offload_config_time_s = round(time.perf_counter() - t_off, 2)
                 self._mark("OFFLOAD_SETUP", t_off, end=True)
                 self._mark("PIPELINE_DEVICE_SETUP", t_dev, end=True)
+                # After device/offload: keep VAE in fp32 when pipeline dtype is fp16.
+                self.stabilize_flux_vae(pipeline)
             elif hasattr(pipeline, "to"):
                 pipeline.to(target_device)
                 self._offload_strategy = "none"
+                self.stabilize_flux_vae(pipeline)
 
             self._configure_attention(pipeline)
             self._maybe_torch_compile(pipeline)
@@ -1340,6 +1343,77 @@ class FLUXModelLoader:
             return torch.bfloat16
         return torch.float16
 
+    def stabilize_flux_vae(self, pipeline: Any | None = None) -> dict[str, Any]:
+        """
+        Keep Flux VAE in float32 when the pipeline compute dtype is float16.
+
+        Evidence (Kaggle T4): raw+final PNGs were completely black (max=0, 3512 B)
+        after the pre-Ampere float16 compute path. Flux VAE in fp16 is a known
+        NaN→black failure (Diffusers #9096 / InvokeAI #7208). Transformer stays
+        NF4 + float16; only the VAE is upcast.
+        """
+        info: dict[str, Any] = {
+            "vae_dtype_before": None,
+            "vae_dtype_after": None,
+            "vae_device": None,
+            "upcasted": False,
+            "decode_wrapped": False,
+        }
+        pipe = pipeline if pipeline is not None else self._pipeline
+        if pipe is None or torch is None:
+            return info
+        vae = getattr(pipe, "vae", None)
+        if vae is None:
+            return info
+
+        try:
+            param = next(vae.parameters())
+            info["vae_dtype_before"] = str(param.dtype)
+            info["vae_device"] = str(param.device)
+        except Exception:
+            param = None
+
+        try:
+            if param is not None and param.dtype == torch.float16:
+                vae.to(dtype=torch.float32)
+                info["upcasted"] = True
+                self.logger.info(
+                    "[FLUX] VAE upcast float16→float32 "
+                    "(Flux VAE fp16 yields NaN/black images on T4-class GPUs)"
+                )
+                print(
+                    "[FLUX] VAE upcast float16→float32 (black-image mitigation)",
+                    flush=True,
+                )
+        except Exception as exc:
+            self.logger.warning("[FLUX] VAE fp32 upcast failed: %s", exc)
+
+        # Ensure decode latents match VAE dtype (pipeline may pass float16 latents).
+        if hasattr(vae, "decode") and not getattr(
+            vae, "_fabricvision_fp32_decode_wrapped", False
+        ):
+            original_decode = vae.decode
+
+            def _decode_matching_dtype(latents, *args, **kwargs):  # noqa: ANN001
+                try:
+                    target = next(vae.parameters()).dtype
+                    if hasattr(latents, "to") and getattr(latents, "dtype", None) != target:
+                        latents = latents.to(dtype=target)
+                except Exception:
+                    pass
+                return original_decode(latents, *args, **kwargs)
+
+            vae.decode = _decode_matching_dtype  # type: ignore[method-assign]
+            vae._fabricvision_fp32_decode_wrapped = True
+            info["decode_wrapped"] = True
+
+        try:
+            info["vae_dtype_after"] = str(next(vae.parameters()).dtype)
+            info["vae_device"] = str(next(vae.parameters()).device)
+        except Exception:
+            pass
+        return info
+
     def ensure_generation_devices(self) -> dict[str, Any]:
         """
         Restore modules required for Kontext generation after ``park_on_cpu``.
@@ -1348,18 +1422,32 @@ class FLUXModelLoader:
         FluxKontext image conditioning + VAE decode require the VAE on CUDA.
         Leaving VAE on CPU after park caused deferred CUDA failures at ~50%
         (right as ``pipeline()`` starts conditioning encode / first denoise).
+
+        Always runs ``stabilize_flux_vae`` (including model_cpu_offload) so T4
+        float16 pipelines do not leave the VAE in the NaN/black fp16 path.
         """
         info: dict[str, Any] = {
             "offload_strategy": self._offload_strategy,
             "vae_device": None,
             "transformer_device": None,
             "restored": [],
+            "vae_stabilized": None,
         }
         pipe = self._pipeline
-        if pipe is None or torch is None or not torch.cuda.is_available():
+        if pipe is None or torch is None:
+            return info
+
+        # VAE dtype stability is independent of offload strategy.
+        info["vae_stabilized"] = self.stabilize_flux_vae(pipe)
+
+        if not torch.cuda.is_available():
             return info
         if self._offload_strategy == "model_cpu_offload":
             # Accelerate hooks move modules on demand — do not fight them.
+            try:
+                info["vae_device"] = str(next(pipe.vae.parameters()).device)
+            except Exception:
+                pass
             return info
 
         target = torch.device("cuda")
@@ -1373,7 +1461,8 @@ class FLUXModelLoader:
                     before = next(mod.parameters()).device
                 except Exception:
                     before = None
-                mod.to(target)
+                # Preserve float32 after stabilize_flux_vae (do not cast back to fp16).
+                mod.to(device=target)
                 info["restored"].append(name)
                 info[f"{name}_device_before"] = str(before)
                 try:
@@ -1381,10 +1470,11 @@ class FLUXModelLoader:
                 except Exception:
                     info[f"{name}_device"] = "cuda"
                 self.logger.info(
-                    "[FLUX GENERATION] Restored %s → CUDA (was %s, strategy=%s)",
+                    "[FLUX GENERATION] Restored %s → CUDA (was %s, strategy=%s, dtype=%s)",
                     name,
                     before,
                     self._offload_strategy,
+                    next(mod.parameters()).dtype,
                 )
             except Exception as exc:
                 self.logger.warning(

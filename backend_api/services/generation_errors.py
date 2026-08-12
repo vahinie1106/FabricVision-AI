@@ -125,6 +125,9 @@ def classify_generation_error(exc: BaseException) -> Tuple[str, str, str]:
     if any(k in lower for k in ("encode_prompt", "prompt encoding", "tokenizer", "t5", "clip")):
         return "ENCODING_ERROR", "preencode", combined
 
+    if "completely black image" in lower or ("black image" in lower and "flux" in lower):
+        return "BLACK_IMAGE_ERROR", "vae", combined
+
     if any(k in lower for k in ("vae", "decode", "decoder", "vae_decode")):
         return "VAE_ERROR", "vae", combined
 
