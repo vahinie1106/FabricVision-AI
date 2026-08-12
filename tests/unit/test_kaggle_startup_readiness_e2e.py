@@ -109,6 +109,8 @@ def test_wait_logs_progress_while_starting(monkeypatch):
     class _Resp:
         def __init__(self, body: bytes):
             self._body = body
+            self.headers = {"Content-Type": "application/json"}
+            self.status = 200
 
         def __enter__(self):
             return self
@@ -150,6 +152,9 @@ def test_failed_flux_raises_before_application_ready(monkeypatch):
     }
 
     class _Resp:
+        headers = {"Content-Type": "application/json"}
+        status = 200
+
         def __enter__(self):
             return self
 

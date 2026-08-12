@@ -87,7 +87,10 @@ def update_warmup_progress(
     with _lock:
         if _state["state"] not in ("loading", "ready"):
             return
-        _state["progress"] = max(0, min(100, int(pct)))
+        # Keep /flux-status monotonic so download vs load heartbeats cannot
+        # flicker (e.g. 17% ↔ 29%) even if a callback races.
+        prev = int(_state.get("progress") or 0)
+        _state["progress"] = max(prev, max(0, min(100, int(pct))))
         _state["current_step"] = step
         if stage:
             _state["stage"] = stage

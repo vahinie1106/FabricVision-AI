@@ -1306,14 +1306,64 @@ def wait_api_flux_ready(*, timeout_s: float = 900.0) -> Dict[str, Any]:
     url = "http://127.0.0.1:8000/api/v1/flux-status"
     deadline = time.perf_counter() + timeout_s
     last: Dict[str, Any] = {}
+    consecutive_errors = 0
+
+    def _useful_status(payload: Dict[str, Any]) -> bool:
+        st = str((payload or {}).get("state") or "").upper()
+        return bool(payload) and st not in ("", "UNKNOWN")
+
     while time.perf_counter() < deadline:
         try:
             req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                body = resp.read(64_000).decode("utf-8", errors="replace")
-                last = json.loads(body)
+            # Large downloads can slow the event loop briefly; allow a longer read.
+            with urllib.request.urlopen(req, timeout=30.0) as resp:
+                status = int(getattr(resp, "status", 200))
+                ctype = resp.headers.get("Content-Type") or ""
+                raw = resp.read(256_000)
+                body = raw.decode("utf-8", errors="replace")
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError as exc:
+                consecutive_errors += 1
+                preview = body[:240].replace("\n", "\\n")
+                _log(
+                    "⚠️ Could not parse FLUX status JSON: "
+                    f"{type(exc).__name__}: {exc} | HTTP {status} "
+                    f"ctype={ctype!r} bytes={len(raw)} preview={preview!r}"
+                )
+                # Preserve last useful STARTING/READY/FAILED — never overwrite
+                # a real FLUX state with silent UNKNOWN/warming.
+                if not _useful_status(last):
+                    last = {
+                        "error": f"JSONDecodeError: {exc}",
+                        "ready": False,
+                        "state": "UNKNOWN",
+                        "current_step": "warming",
+                        "poll_error": True,
+                    }
+                else:
+                    last = dict(last)
+                    last["poll_error"] = f"JSONDecodeError: {exc}"
+            else:
+                consecutive_errors = 0
+                last = parsed
         except Exception as exc:
-            last = {"error": str(exc), "ready": False, "state": "UNKNOWN"}
+            consecutive_errors += 1
+            _log(
+                f"⚠️ FLUX status poll failed: {type(exc).__name__}: {exc} "
+                f"(consecutive={consecutive_errors})"
+            )
+            if not _useful_status(last):
+                last = {
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "ready": False,
+                    "state": "UNKNOWN",
+                    "current_step": "warming",
+                    "poll_error": True,
+                }
+            else:
+                last = dict(last)
+                last["poll_error"] = f"{type(exc).__name__}: {exc}"
         state = str(last.get("state") or "").upper()
         if last.get("ready") or last.get("in_memory") or state == "READY":
             _log(
@@ -1335,10 +1385,12 @@ def wait_api_flux_ready(*, timeout_s: float = 900.0) -> Dict[str, Any]:
             )
             return last
         step = last.get("current_step") or last.get("stage") or "warming"
+        pe = last.get("poll_error")
         _log(
             f"Waiting for API-process FLUX... state={state} "
             f"progress={last.get('progress')}% step={step!r} "
             f"elapsed_s={last.get('load_duration_s')}"
+            + (f" poll_error={pe!r}" if pe else "")
         )
         time.sleep(2.0)
     raise TimeoutError(

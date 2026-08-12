@@ -78,6 +78,8 @@ class FLUXModelLoader:
         self._progress_callback: ProgressCallback = None
         self._load_phase: str = "idle"
         self._load_phase_pct: int = 0
+        self._progress_floor: int = 0
+        self._download_in_progress: bool = False
         # Quantization profile: nf4 (default / low-VRAM) | full (bf16/fp16, quality path)
         quant_env = os.environ.get("FLUX_QUANTIZATION", "").strip().lower()
         disable_nf4 = os.environ.get("FLUX_DISABLE_NF4", "").strip().lower() in (
@@ -113,14 +115,29 @@ class FLUXModelLoader:
         self._progress_callback = callback
 
     def _progress(self, step: str, pct: int) -> None:
+        """Publish progress. Percentages are monotonic (never jump backwards)."""
+        try:
+            raw = int(pct)
+        except Exception:
+            raw = 0
+        floor = int(getattr(self, "_progress_floor", 0) or 0)
+        # Allow intentional small resets only when entering a new high-level phase
+        # that is clearly past download (READY / reuse). Otherwise keep monotonic.
+        step_l = (step or "").lower()
+        if raw >= floor or "ready" in step_l or "reusing" in step_l:
+            applied = max(0, min(100, raw if raw >= floor else floor))
+            if raw >= floor:
+                self._progress_floor = applied
+        else:
+            applied = floor
         self._load_phase = step
-        self._load_phase_pct = int(pct)
-        msg = f"[FLUX] {step} ({pct}%)"
+        self._load_phase_pct = int(applied)
+        msg = f"[FLUX] {step} ({applied}%)"
         self.logger.info(msg)
         print(msg, flush=True)
         if self._progress_callback is not None:
             try:
-                self._progress_callback(step, int(pct))
+                self._progress_callback(step, int(applied))
             except Exception as exc:
                 self.logger.warning("progress_callback failed: %s", exc)
 
@@ -570,11 +587,20 @@ class FLUXModelLoader:
         Resolution order:
         1. Complete local ``models/flux-kontext`` → CACHE HIT
         2. Complete HF hub snapshot for ``repo_id`` → CACHE HIT (no network)
-        3. Download into ``models/flux-kontext`` (resume; do not wipe good weights)
+        3. Download into the HF hub cache (default) OR ``models/flux-kontext``
+           when resuming a partial local tree / FLUX_DOWNLOAD_TO_LOCAL_DIR=1
+
+        IMPORTANT (huggingface_hub ≥0.23): ``snapshot_download(local_dir=...)``
+        does NOT populate ``HUGGINGFACE_HUB_CACHE`` blobs. Prefer hub-cache
+        downloads on Kaggle so ``/kaggle/working/.cache/huggingface/hub`` grows
+        and survives `rm -rf FabricVision-AI` + re-clone.
         """
         import threading
 
-        from src.common.utils.hf_cache_env import ensure_huggingface_cache_env
+        from src.common.utils.hf_cache_env import (
+            ensure_huggingface_cache_env,
+            huggingface_hub_cache_dir,
+        )
 
         cache_env = ensure_huggingface_cache_env()
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -587,11 +613,13 @@ class FLUXModelLoader:
             os.environ.pop("HF_HUB_OFFLINE", None)
 
         self._progress("Checking FLUX model cache", 5)
+        hub_cache = huggingface_hub_cache_dir()
         print(
             f"[FLUX CACHE] CHECKING_CACHE model_path={self.model_path} "
             f"HF_HOME={cache_env.get('HF_HOME') or os.environ.get('HF_HOME')!r} "
             f"HUGGINGFACE_HUB_CACHE="
-            f"{cache_env.get('HUGGINGFACE_HUB_CACHE') or os.environ.get('HUGGINGFACE_HUB_CACHE')!r}",
+            f"{cache_env.get('HUGGINGFACE_HUB_CACHE') or os.environ.get('HUGGINGFACE_HUB_CACHE')!r} "
+            f"resolved_hub_cache={hub_cache}",
             flush=True,
         )
 
@@ -619,6 +647,8 @@ class FLUXModelLoader:
             f"[FLUX CACHE] MISS path={download_root} missing={preflight.get('missing')}",
             flush=True,
         )
+        print("[FLUX MODEL CACHE: MISS]", flush=True)
+        print("[FLUX DOWNLOAD: STARTING]", flush=True)
         self._cache_status = "miss"
         self._progress(f"CACHE MISS — downloading FLUX weights ({repo_id})", 9)
 
@@ -635,15 +665,38 @@ class FLUXModelLoader:
                 flush=True,
             )
 
+        force_local = os.environ.get("FLUX_DOWNLOAD_TO_LOCAL_DIR", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        # Resume into local_dir only when we already have a real multi-GB transformer
+        # there (interrupted prior local download). Otherwise use the durable hub cache.
+        resume_local = bool(
+            download_root.exists()
+            and preflight.get("transformer_weights")
+            and int(preflight.get("transformer_bytes") or 0)
+            >= self._MIN_TRANSFORMER_WEIGHT_BYTES
+        )
+        use_local_dir = force_local or resume_local
+
         print(f"[FLUX DOWNLOAD] repo={repo_id}", flush=True)
-        print(f"[FLUX DOWNLOAD] local_dir={download_root.resolve()}", flush=True)
+        print(
+            f"[FLUX DOWNLOAD] mode={'local_dir' if use_local_dir else 'hub_cache'} "
+            f"local_dir={download_root.resolve() if use_local_dir else '(unused)'} "
+            f"hub_cache={hub_cache}",
+            flush=True,
+        )
         self.logger.info(
-            "[FLUX DOWNLOAD] starting repo=%s -> %s (HF_TOKEN present: %s)",
+            "[FLUX DOWNLOAD] starting repo=%s mode=%s hub_cache=%s "
+            "local_dir=%s hf_token_present=%s",
             repo_id,
-            download_root,
+            "local_dir" if use_local_dir else "hub_cache",
+            hub_cache,
+            download_root if use_local_dir else None,
             self._hf_token_present(),
         )
-        download_root.mkdir(parents=True, exist_ok=True)
         try:
             from huggingface_hub import snapshot_download
         except ImportError as exc:
@@ -656,54 +709,82 @@ class FLUXModelLoader:
         )
         t_dl = self._mark("MODEL_DOWNLOAD", time.perf_counter())
         stop_hb = threading.Event()
-        # Approx size of eramth/flux-kontext-4bit Diffusers tree (transformer alone ~6.7GiB).
+        # Approx size of eramth/flux-kontext-4bit Diffusers tree (~6.3–7 GiB).
         expected_bytes = float(
-            os.environ.get("FLUX_EXPECTED_PACKAGE_BYTES", str(12 * 1024**3))
+            os.environ.get("FLUX_EXPECTED_PACKAGE_BYTES", str(int(6.5 * 1024**3)))
         )
+        measure_root = download_root if use_local_dir else hub_cache
 
         def _heartbeat() -> None:
             started = time.perf_counter()
+            last_pct = 9
             while not stop_hb.wait(15.0):
                 elapsed = int(time.perf_counter() - started)
-                on_disk = self._dir_weight_bytes(download_root)
+                on_disk = self._dir_weight_bytes(measure_root) if use_local_dir else self._hub_repo_bytes(
+                    repo_id
+                )
                 if expected_bytes > 0 and on_disk > 0:
                     frac = min(1.0, on_disk / expected_bytes)
                     # Download window: 9% → 48% based on measured bytes on disk.
-                    pct = 9 + int(39 * frac)
+                    pct = max(last_pct, 9 + int(39 * frac))
                     gb = on_disk / (1024**3)
+                    dest = "local_dir" if use_local_dir else "hub_cache"
                     self._progress(
-                        f"Downloading FLUX weights ({gb:.2f} GiB on disk, "
+                        f"Downloading FLUX weights ({gb:.2f} GiB in {dest}, "
                         f"{elapsed}s elapsed)",
                         pct,
                     )
+                    last_pct = pct
                 else:
-                    pct = min(20, 9 + elapsed // 60)
+                    pct = max(last_pct, min(20, 9 + elapsed // 60))
                     self._progress(
-                        f"Downloading FLUX weights ({elapsed}s elapsed, CACHE MISS)",
+                        f"Downloading FLUX weights ({elapsed}s elapsed, "
+                        f"CACHE MISS, dest={'local_dir' if use_local_dir else 'hub_cache'})",
                         pct,
                     )
+                    last_pct = pct
 
+        self._download_in_progress = True
         hb = threading.Thread(target=_heartbeat, name="flux-download-hb", daemon=True)
         hb.start()
         try:
-            # Explicit local_dir keeps a flat Diffusers tree under models/flux-kontext.
-            # Hub blobs still land under HUGGINGFACE_HUB_CACHE for later CACHE HITs.
-            snapshot_kwargs = {
-                "repo_id": repo_id,
-                "local_dir": str(download_root),
-                "max_workers": 2,
-                "token": token,
-            }
+            hub_cache.mkdir(parents=True, exist_ok=True)
+            if use_local_dir:
+                download_root.mkdir(parents=True, exist_ok=True)
+                snapshot_kwargs: dict[str, Any] = {
+                    "repo_id": repo_id,
+                    "local_dir": str(download_root),
+                    "max_workers": 2,
+                    "token": token,
+                }
+            else:
+                # Hub cache download — blobs land under HUGGINGFACE_HUB_CACHE.
+                # Do NOT pass local_dir (that bypasses the hub cache by design).
+                snapshot_kwargs = {
+                    "repo_id": repo_id,
+                    "cache_dir": str(hub_cache),
+                    "max_workers": 2,
+                    "token": token,
+                }
             # resume_download deprecated but still accepted on older hub; ignore TypeError.
             try:
-                snapshot_download(**snapshot_kwargs, resume_download=True)  # type: ignore[call-arg]
+                snap_path = snapshot_download(
+                    **snapshot_kwargs, resume_download=True
+                )  # type: ignore[call-arg]
             except TypeError:
-                snapshot_download(**snapshot_kwargs)
+                snap_path = snapshot_download(**snapshot_kwargs)
         except Exception as exc:
             err = str(exc).lower()
             print(
+                f"[FLUX DOWNLOAD: FAILED] repo={repo_id} "
+                f"path={download_root if use_local_dir else hub_cache} "
+                f"exc={type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            print(
                 f"[FLUX ERROR] download failed repo={repo_id} "
-                f"path={download_root} exc={type(exc).__name__}: {exc}",
+                f"path={download_root if use_local_dir else hub_cache} "
+                f"exc={type(exc).__name__}: {exc}",
                 flush=True,
             )
             if any(k in err for k in ("401", "403", "unauthorized", "gated", "access")):
@@ -718,18 +799,26 @@ class FLUXModelLoader:
                 ) from exc
             raise RuntimeError(
                 f"MODEL_DOWNLOAD_FAILED: Could not download '{repo_id}' into "
-                f"'{download_root}': {type(exc).__name__}: {exc}"
+                f"'{download_root if use_local_dir else hub_cache}': "
+                f"{type(exc).__name__}: {exc}"
             ) from exc
         finally:
+            self._download_in_progress = False
             stop_hb.set()
             hb.join(timeout=2.0)
 
         self._download_time_s = round(time.perf_counter() - t_dl, 2)
         self._mark("MODEL_DOWNLOAD", t_dl, end=True)
         print("[FLUX DOWNLOAD] completed", flush=True)
+        print(f"[FLUX DOWNLOAD] snapshot_path={snap_path}", flush=True)
         print("[FLUX PREFLIGHT] validating package", flush=True)
 
-        post = self.preflight_validate_package(download_root, source=repo_id)
+        if use_local_dir:
+            candidate = download_root
+        else:
+            candidate = Path(snap_path)
+
+        post = self.preflight_validate_package(candidate, source=repo_id)
         if not post["ready"]:
             # Prefer a hub snapshot if local_dir materialization is incomplete but
             # the hub cache already has a full tree (common after interrupted copy).
@@ -750,15 +839,48 @@ class FLUXModelLoader:
             )
             raise RuntimeError(
                 f"MODEL_DOWNLOAD_FAILED: Download of '{repo_id}' completed but package at "
-                f"'{download_root}' is still incomplete "
+                f"'{candidate}' is still incomplete "
                 f"(missing={post.get('missing')}, "
                 f"transformer_bytes={post.get('transformer_bytes')}, "
                 f"lfs_pointer={post.get('transformer_lfs_pointer')})."
             )
         print("[FLUX PREFLIGHT] PASS", flush=True)
-        self.logger.info("FLUX hub package ready at %s", download_root.resolve())
+        self.logger.info("FLUX hub package ready at %s", Path(candidate).resolve())
         self._progress("FLUX weights downloaded — initializing pipeline", 12)
-        return str(download_root)
+        return str(candidate)
+
+    def _hub_repo_bytes(self, repo_id: str) -> int:
+        """Approximate bytes present for a repo under the HF hub cache (blobs/snapshots)."""
+        try:
+            from src.common.utils.hf_cache_env import hub_repo_cache_dir
+
+            root = hub_repo_cache_dir(repo_id)
+        except Exception:
+            return 0
+        if not root.is_dir():
+            return 0
+        total = 0
+        # Prefer measuring snapshot trees (resolved package layout).
+        snaps = root / "snapshots"
+        if snaps.is_dir():
+            for snap in snaps.iterdir():
+                if snap.is_dir():
+                    total = max(total, self._dir_weight_bytes(snap))
+        if total > 0:
+            return total
+        # Fallback: sum blob files (incomplete downloads still show growth).
+        blobs = root / "blobs"
+        if blobs.is_dir():
+            try:
+                for p in blobs.rglob("*"):
+                    if p.is_file():
+                        try:
+                            total += p.stat().st_size
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+        return total
 
     def _resolve_model_source(self) -> tuple[str, Optional[str]]:
         """
@@ -1010,14 +1132,29 @@ class FLUXModelLoader:
         stop_hb = threading.Event()
 
         def _load_heartbeat() -> None:
+            """Keep status alive during long from_pretrained gaps.
+
+            CRITICAL: Do NOT clamp progress to 17% while a download heartbeat is
+            publishing higher percentages — that caused the Kaggle 17%↔29% flicker
+            and made operators think the download was regressing / stuck.
+            """
             started = time.perf_counter()
             while not stop_hb.wait(15.0):
+                # Download has its own heartbeat; avoid fighting it.
+                if getattr(self, "_download_in_progress", False):
+                    continue
                 elapsed = int(time.perf_counter() - started)
                 phase = self._load_phase or "Loading FLUX"
-                pct = max(8, min(17, int(self._load_phase_pct or 8)))
-                # Keep /status polls alive during multi-minute from_pretrained gaps.
+                # Strip previously appended "(Ns elapsed)" so we don't nest them.
+                base = phase
+                marker = " ("
+                if " elapsed)" in base:
+                    idx = base.rfind(marker)
+                    if idx > 0 and base.endswith(" elapsed)"):
+                        base = base[:idx]
+                pct = max(8, int(self._load_phase_pct or 8))
                 try:
-                    self._progress(f"{phase} ({elapsed}s elapsed)", pct)
+                    self._progress(f"{base} ({elapsed}s elapsed)", pct)
                 except Exception:
                     pass
 
