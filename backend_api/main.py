@@ -49,7 +49,7 @@ if _extra:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_origin_regex=r"https://.*\.kaggle\.net",
+    allow_origin_regex=r"https://.*\.(kaggle\.net|kaggleusercontent\.com)|https://.*jupyter-proxy\.kaggle\.net",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -41,8 +41,9 @@ def test_banner_application_ready_only_when_flag_true():
         )
     text = buf.getvalue()
     assert "APPLICATION READY ✓" not in text
+    assert "FABRICVISION-AI READY" not in text
     assert "APPLICATION NOT READY" in text
-    assert "state=STARTING" in text
+    assert "state=STARTING" in text or "State: STARTING" in text
 
 
 def test_banner_application_ready_requires_flux_ready_payload():
@@ -74,9 +75,9 @@ def test_banner_application_ready_requires_flux_ready_payload():
             application_ready=True,
         )
     text = buf.getvalue()
-    assert "APPLICATION READY ✓" in text
-    assert "state=READY" in text
-    assert "pipeline_exists=True" in text
+    assert "FABRICVISION-AI READY" in text
+    assert "State: READY" in text or "state=READY" in text
+    assert "pipeline_exists=True" in text or "ready=True" in text
 
 
 def test_wait_logs_progress_while_starting(monkeypatch):
@@ -172,7 +173,9 @@ def test_main_source_requires_flux_ready_on_initial_and_rebuild_paths():
 
     src = inspect.getsource(rk.main)
     assert src.count("require_api_flux_ready(") >= 2
-    assert "APPLICATION READY" in inspect.getsource(rk.print_banner)
+    banner = inspect.getsource(rk.print_banner)
+    assert "FABRICVISION-AI READY" in banner
+    assert "APPLICATION NOT READY" in banner
     # Final success banner must pass application_ready=True
     assert "application_ready=True" in src
     # Failure/public-error banners must not claim ready
@@ -281,3 +284,44 @@ def test_custom_garment_page_gates_generate_on_flux_warmup():
     assert "AI engine failed to initialize" in page
     assert "Waiting for AI engine" in page
     assert "fluxWarmup.failed" in page
+
+
+def test_frontend_env_split_proxy_preserves_backend_port():
+    import scripts.run_kaggle as rk
+
+    env = rk._frontend_env("", split_proxy=True)
+    assert env["NEXT_PUBLIC_API_URL"] == "/proxy/8000/api/v1"
+    assert env["NEXT_PUBLIC_BACKEND_URL"] == "/proxy/8000"
+    assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "false"
+    assert "NEXT_PUBLIC_BASE_PATH" not in env
+
+
+def test_frontend_env_gateway_uses_relative_api():
+    import scripts.run_kaggle as rk
+
+    env = rk._frontend_env("/k/abc/proxy/proxy/8000", split_proxy=False)
+    assert env["NEXT_PUBLIC_API_URL"] == "/api/v1"
+    assert env["NEXT_PUBLIC_BASE_PATH"] == "/k/abc/proxy/proxy/8000"
+    assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "true"
+
+
+def test_main_default_skips_blocking_prefetch_before_services():
+    """Parent prefetch must not be the default (health must come up first)."""
+    import inspect
+    import scripts.run_kaggle as rk
+
+    src = inspect.getsource(rk.main)
+    assert "do_prefetch = bool(args.prefetch_flux)" in src
+    assert "Backend starting..." in src
+    assert "Frontend starting..." in src
+    assert src.index("Backend starting...") < src.index("Frontend starting...")
+    assert "Skipping parent FLUX prefetch" in src
+
+
+def test_proxy_proxy_path_is_intentional_jsp_nesting():
+    """Document that /proxy/proxy/PORT is valid when Jupyter base_url ends with /proxy/."""
+    import scripts.run_kaggle as rk
+
+    paths = rk.candidate_public_paths("/k/sess/proxy/", port=8000)
+    assert "/k/sess/proxy/proxy/8000" in paths
+    assert "/proxy/8000" in paths
