@@ -17,11 +17,23 @@ from fastapi.testclient import TestClient
 
 
 def _join_media(url: str, origin: str) -> str:
-    """Mirror frontend/src/lib/resolveMediaUrl.ts (path-origin branch)."""
+    """Mirror frontend/src/lib/resolveMediaUrl.ts (path-origin + loopback rewrite)."""
     if not url:
         return ""
-    if url.startswith(("blob:", "data:", "http://", "https://")):
+    if url.startswith(("blob:", "data:")):
         return url
+    if url.startswith(("http://", "https://")):
+        lower = url.lower()
+        if "://127.0.0.1" in lower or "://localhost" in lower:
+            # Strip absolute loopback → path, then apply origin (Kaggle-safe).
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            url = parsed.path or "/"
+            if parsed.query:
+                url = f"{url}?{parsed.query}"
+        else:
+            return url
     path = url if url.startswith("/") else f"/{url}"
     if not origin:
         return path
@@ -59,11 +71,19 @@ def test_resolve_media_url_local_dev_absolute_origin():
     )
 
 
+def test_resolve_media_url_rewrites_loopback_absolute_for_proxy():
+    """Kaggle browser must not keep http://127.0.0.1:8000/outputs/..."""
+    loopback = f"http://127.0.0.1:8000{BACKEND_RESULT}"
+    assert _join_media(loopback, "/proxy/8000") == f"/proxy/8000{BACKEND_RESULT}"
+    assert _join_media(loopback, BASE) == f"{BASE}{BACKEND_RESULT}"
+
+
 def test_typescript_resolve_media_url_is_idempotent():
     src = Path("frontend/src/lib/resolveMediaUrl.ts").read_text(encoding="utf-8")
     assert "Idempotent" in src or "idempotent" in src.lower()
     assert "path.startsWith(`${base}/`)" in src or 'path.startsWith(`${base}/`)' in src
     assert "resolveApiOrigin" in src
+    assert "isLoopbackHttpUrl" in src or "127.0.0.1" in src
 
 
 def test_outputs_static_endpoint_serves_png(tmp_path, monkeypatch):

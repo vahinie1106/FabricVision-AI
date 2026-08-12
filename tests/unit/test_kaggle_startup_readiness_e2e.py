@@ -330,3 +330,79 @@ def test_proxy_proxy_path_is_intentional_jsp_nesting():
     paths = rk.candidate_public_paths("/k/sess/proxy/", port=8000)
     assert "/k/sess/proxy/proxy/8000" in paths
     assert "/proxy/8000" in paths
+
+
+def test_write_frontend_dotenv_rejects_loopback(tmp_path, monkeypatch):
+    import scripts.run_kaggle as rk
+
+    fe = tmp_path / "frontend"
+    fe.mkdir()
+    monkeypatch.setattr(rk, "FRONTEND", fe)
+
+    def bad_env(base_path, *, split_proxy=False):
+        return {
+            "NEXT_PUBLIC_API_URL": "http://127.0.0.1:8000/api/v1",
+            "NEXT_PUBLIC_API_BASE_URL": "http://127.0.0.1:8000/api/v1",
+            "NEXT_PUBLIC_BACKEND_URL": "http://127.0.0.1:8000",
+            "NEXT_PUBLIC_API_ORIGIN": "http://127.0.0.1:8000",
+            "NEXT_PUBLIC_USE_SAME_ORIGIN": "false",
+        }
+
+    monkeypatch.setattr(rk, "_frontend_env", bad_env)
+    try:
+        rk.write_frontend_dotenv("", split_proxy=True)
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "127.0.0.1" in str(exc) or "loopback" in str(exc).lower()
+
+
+def test_frontend_dotenv_is_kaggle_safe(tmp_path, monkeypatch):
+    import scripts.run_kaggle as rk
+
+    fe = tmp_path / "frontend"
+    fe.mkdir()
+    monkeypatch.setattr(rk, "FRONTEND", fe)
+    dotenv = fe / ".env.local"
+    dotenv.write_text(
+        "NEXT_PUBLIC_API_URL=/proxy/8000/api/v1\n"
+        "NEXT_PUBLIC_USE_SAME_ORIGIN=false\n"
+        "NEXT_PUBLIC_FORBID_LOOPBACK=true\n",
+        encoding="utf-8",
+    )
+    assert rk.frontend_dotenv_is_kaggle_safe(split_proxy=True) is True
+    dotenv.write_text(
+        "NEXT_PUBLIC_API_URL=http://127.0.0.1:8000/api/v1\n",
+        encoding="utf-8",
+    )
+    assert rk.frontend_dotenv_is_kaggle_safe(split_proxy=True) is False
+
+
+def test_home_page_contains_fabricvision_20_markers():
+    from pathlib import Path
+
+    page = Path("frontend/src/app/page.tsx").read_text(encoding="utf-8")
+    for marker in (
+        "FabricVision-AI 2.0",
+        "Transform Fabrics Into",
+        "Intelligent Fashion",
+        "Start Creating",
+        "Explore Technology",
+        "Input Concept",
+        "Raw Linen Fabric",
+        "FLUX Synthesis Active",
+        "Generated AI Garment",
+        "AI Fashion Intelligence",
+        "Virtual Try-On",
+        "Semantic Extraction",
+    ):
+        assert marker in page
+
+
+def test_studio_index_is_redirect_only():
+    from pathlib import Path
+
+    page = Path("frontend/src/app/studio/page.tsx").read_text(encoding="utf-8")
+    assert "redirect(" in page
+    assert "/studio/custom-garment" in page
+    assert "dashboard" not in page.lower()
+    assert "sidebar" not in page.lower()

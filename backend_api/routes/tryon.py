@@ -13,7 +13,8 @@ async def virtual_tryon(
     garment_image: UploadFile = File(...),
     person_image: UploadFile = File(...),
     fit_preference: str = Form(...),
-    background_action: str = Form(...)
+    background_action: str = Form(...),
+    garment_type: str = Form("garment"),
 ):
     """
     Submit a virtual try-on job.
@@ -32,7 +33,8 @@ async def virtual_tryon(
         g_path,
         p_path,
         fit_preference,
-        background_action
+        background_action,
+        garment_type,
     )
     
     return JobCreationResponse(job_id=job_id)

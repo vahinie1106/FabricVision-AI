@@ -12,6 +12,7 @@ async def process_tryon(
     person_image_path: str,
     fit_preference: str,
     background_action: str,
+    garment_type: str = "garment",
 ):
     """
     Background worker for CatVTON try-on.
@@ -39,6 +40,7 @@ async def process_tryon(
             PersonConditioningInput,
         )
         from PIL import Image
+        from backend_api.config.settings import settings
 
         # Free FLUX / Qwen VRAM before CatVTON residency.
         model_manager.switch_to("catvton")
@@ -54,6 +56,10 @@ async def process_tryon(
             "on",
         )
         steps = int(os.environ.get("CATVTON_STEPS", "30"))
+        # Prefer AutoMasker when DensePose/SCHP are present; GrabCut remains fallback.
+        os.environ.setdefault("CATVTON_USE_AUTOMASKER", "auto")
+        os.environ.setdefault("CATVTON_MASK_STRATEGY", "auto")
+        tryon_root = str(settings.OUTPUT_DIR / "virtual_tryon")
         config = TryOnConfig(
             height=512,
             width=384,
@@ -61,20 +67,29 @@ async def process_tryon(
             num_inference_steps=steps,
             guidance_scale=2.5,
             attn_ckpt_version="vitonhd",
+            output_root=tryon_root,
         )
         pipeline = VirtualTryOnPipeline(config=config, model_loader=loader)
 
         loop = asyncio.get_running_loop()
+        resolved_garment_type = (garment_type or "garment").strip() or "garment"
 
         def run_sync_tryon():
             g_img = Image.open(garment_image_path).convert("RGB")
             p_img = Image.open(person_image_path).convert("RGB")
 
-            garment_in = GarmentConditioningInput(garment_image=g_img)
+            garment_in = GarmentConditioningInput(
+                garment_image=g_img,
+                garment_type=resolved_garment_type,
+            )
             person_in = PersonConditioningInput(person_image=p_img)
 
             _ = (fit_preference, background_action)
-            return pipeline.run(person_in, garment_in)
+            return pipeline.run(
+                person_in,
+                garment_in,
+                output_filename=f"tryon_{job_id}",
+            )
 
         job_manager.update_job(
             job_id,
@@ -92,13 +107,11 @@ async def process_tryon(
         if img_path:
             p = Path(img_path)
             try:
-                from backend_api.config.settings import settings
                 import shutil
 
                 rel_path = p.relative_to(settings.OUTPUT_DIR)
                 result_url_val = f"/outputs/{rel_path.as_posix()}"
             except ValueError:
-                from backend_api.config.settings import settings
                 import shutil
 
                 filename = p.name
@@ -125,6 +138,13 @@ async def process_tryon(
         mask_source = extra_meta.get("mask_source")
         inference_backend = extra_meta.get("inference_backend")
 
+        from src.common.models.device_manager import DeviceManager
+
+        cat_device = (
+            extra_meta.get("model_device")
+            or DeviceManager.resolve_role_device("catvton", "cuda:1")
+        )
+
         honesty = {
             "mask_source": mask_source,
             "was_fallback_used": was_fallback,
@@ -136,9 +156,14 @@ async def process_tryon(
             "inference_time_s": extra_meta.get("inference_time_s"),
             "resolution": extra_meta.get("resolution"),
             "num_inference_steps": extra_meta.get("num_inference_steps"),
+            "garment_type": resolved_garment_type,
+            "cloth_type": extra_meta.get("cloth_type"),
             "fit_preference": fit_preference,
             "background_action": background_action,
             "controls_applied": False,
+            "device": cat_device,
+            "gpu": cat_device,
+            "model_device": extra_meta.get("model_device") or cat_device,
         }
 
         # Never present blend / fallback as a successful production try-on.

@@ -103,6 +103,14 @@ export default function VirtualTryOn() {
         (pct, step) => progress.update(pct, step)
       );
 
+      const meta = response.metadata || {};
+      if (!meta.was_real_catvton_used || meta.was_fallback_used) {
+        throw Object.assign(
+          new Error("Virtual try-on did not use real CatVTON inference."),
+          { errorType: "CATVTON_FALLBACK", metadata: meta }
+        );
+      }
+
       const elapsed = progress.complete();
       const url = response.resultUrl || null;
       const ts = new Date().toISOString();
@@ -110,16 +118,8 @@ export default function VirtualTryOn() {
       setResultUrl(url);
       setGeneratedAt(ts);
       setDurationMs(elapsed);
-      setIsDone(true);
-
-      const meta = response.metadata || {};
       setTryonMeta(meta);
-      if (!meta.was_real_catvton_used || meta.was_fallback_used) {
-        throw Object.assign(
-          new Error("Virtual try-on did not use real CatVTON inference."),
-          { errorType: "CATVTON_FALLBACK", metadata: meta }
-        );
-      }
+      setIsDone(true);
 
       if (meta.mask_quality_warning || meta.mask_source === "grabcut") {
         toast.info(
@@ -146,6 +146,9 @@ export default function VirtualTryOn() {
     } catch (err) {
       console.error(err);
       progress.fail();
+      setIsDone(false);
+      setResultUrl(null);
+      setTryonMeta(null);
       const fe = toFriendlyError(err);
       setFriendlyError(fe);
       toast.error(fe.title, fe.message);

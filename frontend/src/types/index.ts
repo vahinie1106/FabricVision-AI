@@ -52,6 +52,8 @@ export interface TryOnRequest {
   personImage: File;
   fitPreference: string;
   backgroundAction: string;
+  /** Optional cloth identity for CatVTON mask region (upper/overall/dress/…). */
+  garmentType?: string;
 }
 
 export interface TryOnResponse {

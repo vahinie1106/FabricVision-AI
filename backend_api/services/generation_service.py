@@ -479,6 +479,10 @@ def _process_generation_sync(
         meta_result = result.get("metadata") or {}
         prompt_stats = meta_result.get("prompt_stats") or stats.get("prompt_stats") or {}
 
+        from src.common.models.device_manager import DeviceManager
+
+        flux_device = DeviceManager.resolve_role_device("flux", "cuda:0")
+
         metadata = {
             "category": garment_type,
             "fabric": fabric.capitalize(),
@@ -490,6 +494,8 @@ def _process_generation_sync(
             "was_real_flux_used": bool(stats.get("was_real_flux_used", True)),
             "model_reused": bool(stats.get("model_reused", already_loaded)),
             "has_image": True,
+            "device": flux_device,
+            "gpu": flux_device,
             "offload_strategy": getattr(loader, "_offload_strategy", None),
             "attention_backend": getattr(loader, "_attention_backend", None),
             "torch_compile": getattr(loader, "_torch_compile_enabled", False),
@@ -498,6 +504,8 @@ def _process_generation_sync(
                 "model_init_time_s": getattr(loader, "_init_time_s", None),
                 "model_download_time_s": getattr(loader, "_download_time_s", None),
                 "generation_time_s": stats.get("generation_time_s"),
+            "model_load_time_s": stats.get("model_load_time_s")
+            or getattr(loader, "_init_time_s", None),
             "peak_vram_mb": stats.get("peak_vram_mb"),
             "height": pipeline.config.height,
             "width": pipeline.config.width,

@@ -38,9 +38,23 @@ export const GenerationService = {
       const err = new Error(finalStatus.error || "Generation failed") as Error & {
         errorType?: string;
         failedStage?: string;
+        metadata?: Record<string, unknown>;
       };
       err.errorType = finalStatus.error_type || finalStatus.metadata?.error_type;
       err.failedStage = finalStatus.failed_stage || finalStatus.metadata?.failed_stage;
+      err.metadata = finalStatus.metadata;
+      throw err;
+    }
+
+    const meta = finalStatus.metadata || {};
+    // Never treat mock/fallback FLUX as success (Kaggle + local).
+    if (meta.was_fallback_used || meta.was_real_flux_used === false) {
+      const err = new Error(
+        "Garment generation did not use real FLUX inference (fallback/mock rejected)."
+      ) as Error & { errorType?: string; failedStage?: string; metadata?: Record<string, unknown> };
+      err.errorType = "FLUX_FALLBACK";
+      err.failedStage = meta.failed_stage || "fallback";
+      err.metadata = meta;
       throw err;
     }
 
@@ -61,6 +75,9 @@ export const GenerationService = {
     formData.append("person_image", req.personImage);
     formData.append("fit_preference", req.fitPreference);
     formData.append("background_action", req.backgroundAction);
+    if (req.garmentType) {
+      formData.append("garment_type", req.garmentType);
+    }
 
     const initRes = await ApiClient.postFormData<{ job_id: string }>("/tryon", formData);
 

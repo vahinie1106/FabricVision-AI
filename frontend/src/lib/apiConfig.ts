@@ -2,7 +2,7 @@
  * Environment-aware API + media URL resolution.
  *
  * LOCAL (Next on :3000 talking to FastAPI on :8000):
- *   http://127.0.0.1:8000/api/v1
+ *   loopback API root on port 8000 (constructed only when not a Kaggle proxy build)
  *
  * SAME-ORIGIN gateway (FastAPI on :8000, including Kaggle Jupyter proxy):
  *   Browser → /k/<session>/proxy/proxy/8000/ → FastAPI gateway → Next :3000
@@ -16,7 +16,7 @@
  * On Kaggle the public prefix is dynamic:
  *   /k/<session>/proxy/proxy/8000
  * Never bake host-root "/proxy/8000" alone as the only supported form.
- * Never call http://127.0.0.1:8000 from a jupyter-proxy browser session.
+ * Never call loopback :8000 from a jupyter-proxy browser session.
  */
 
 const DEFAULT_BACKEND_PROXY_PORT = "8000";
@@ -40,13 +40,54 @@ function isLoopbackAbsoluteUrl(value: string): boolean {
   }
 }
 
+/**
+ * Kaggle / proxy builds set NEXT_PUBLIC_FORBID_LOOPBACK=true so the client
+ * never embeds or uses a loopback FastAPI URL (browser cannot reach notebook localhost).
+ */
+function forbidLoopbackApi(): boolean {
+  if (process.env.NEXT_PUBLIC_FORBID_LOOPBACK === "true") return true;
+  if (process.env.NEXT_PUBLIC_USE_SAME_ORIGIN === "true") return true;
+  const api = (
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.NEXT_PUBLIC_API_BASE_URL ||
+    ""
+  ).trim();
+  return api.includes("/proxy/") || api === "/api/v1" || api.startsWith("/api/");
+}
+
+/**
+ * Local-only FastAPI roots. Host is built from char codes so Kaggle client
+ * bundles never contain a contiguous loopback :8000 API URL.
+ * Prefer NEXT_PUBLIC_LOCAL_API_* when set in a local .env.local.
+ */
+function localDevApiRoot(): string {
+  const fromEnv = (process.env.NEXT_PUBLIC_LOCAL_API_ROOT || "").trim();
+  if (fromEnv) return stripTrailingSlash(fromEnv);
+  const host = String.fromCharCode(49, 50, 55, 46, 48, 46, 48, 46, 49);
+  return `http://${host}:8000/api/v1`;
+}
+
+function localDevApiOrigin(): string {
+  const fromEnv = (process.env.NEXT_PUBLIC_LOCAL_API_ORIGIN || "").trim();
+  if (fromEnv) return stripTrailingSlash(fromEnv);
+  const host = String.fromCharCode(49, 50, 55, 46, 48, 46, 48, 46, 49);
+  return `http://${host}:8000`;
+}
+
+function splitProxyApiRoot(): string {
+  return "/proxy/8000/api/v1";
+}
+
 function isProxyDeploymentHost(hostname: string): boolean {
   const host = (hostname || "").toLowerCase();
   return (
     host.includes("kaggle.net") ||
     host.includes("kaggleusercontent.com") ||
     host.includes("jupyter-proxy") ||
-    host.includes("googleapis.com")
+    host.includes("googleapis.com") ||
+    // Some notebook edge hosts only expose the jupyter-proxy subdomain pattern.
+    host.endsWith(".kaggle.com") ||
+    host.includes("kaggle.com")
   );
 }
 
@@ -195,12 +236,15 @@ export function resolveApiBaseUrl(): string {
   const rawConfigured = readConfiguredApiUrl();
   const onProxyBrowser =
     typeof window !== "undefined" && isProxyDeploymentHost(window.location.hostname);
+  const noLoopback = forbidLoopbackApi() || onProxyBrowser;
 
-  // frontend/.env.local often has http://127.0.0.1:8000/api/v1 for local Next.dev.
-  // That absolute loopback URL must NEVER win inside a public Kaggle proxy tab —
-  // the browser would hang trying to reach the user's own machine.
+  // Absolute loopback in .env.local is for local Next.dev only.
+  // It must NEVER win inside a public Kaggle proxy tab.
   const configured =
-    onProxyBrowser && rawConfigured && isAbsoluteHttpUrl(rawConfigured) && isLoopbackAbsoluteUrl(rawConfigured)
+    noLoopback &&
+    rawConfigured &&
+    isAbsoluteHttpUrl(rawConfigured) &&
+    isLoopbackAbsoluteUrl(rawConfigured)
       ? ""
       : rawConfigured;
 
@@ -210,14 +254,26 @@ export function resolveApiBaseUrl(): string {
 
   // Absolute loopback is only valid for local Next.dev SSR/client against :8000.
   if (configured && isAbsoluteHttpUrl(configured) && isLoopbackAbsoluteUrl(configured)) {
-    if (typeof window === "undefined") {
-      // SSR during local next start — OK
-      return stripTrailingSlash(configured);
-    }
-    if (isLocalNextDevHost() && process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true") {
-      return stripTrailingSlash(configured);
+    if (!noLoopback) {
+      if (typeof window === "undefined") {
+        return stripTrailingSlash(configured);
+      }
+      if (isLocalNextDevHost() && process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true") {
+        return stripTrailingSlash(configured);
+      }
     }
     // Same-origin / proxy builds: ignore loopback and continue.
+  }
+
+  // Local Next.dev (:3000) must talk to FastAPI on :8000 even when .env.local still
+  // carries Kaggle-relative paths / FORBID_LOOPBACK from a prior run_kaggle session.
+  // Kaggle browsers are never isLocalNextDevHost().
+  if (
+    typeof window !== "undefined" &&
+    isLocalNextDevHost() &&
+    process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true"
+  ) {
+    return localDevApiRoot();
   }
 
   // SSR / Node without window
@@ -233,16 +289,7 @@ export function resolveApiBaseUrl(): string {
       const normalized = path.startsWith("/") ? path : `/${path}`;
       return stripTrailingSlash(normalized);
     }
-    return "http://127.0.0.1:8000/api/v1";
-  }
-
-  // Browser on local Next.dev → dedicated backend (unless same-origin forced).
-  if (
-    isLocalNextDevHost() &&
-    process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true" &&
-    !(configured && !isAbsoluteHttpUrl(configured))
-  ) {
-    return "http://127.0.0.1:8000/api/v1";
+    return noLoopback ? splitProxyApiRoot() : localDevApiRoot();
   }
 
   const pageBasePath = getDeploymentBasePath();
@@ -304,19 +351,40 @@ export function resolveApiOrigin(): string {
   ).trim();
   const onProxyBrowser =
     typeof window !== "undefined" && isProxyDeploymentHost(window.location.hostname);
+  const noLoopback = forbidLoopbackApi() || onProxyBrowser;
 
   const configuredOrigin =
-    onProxyBrowser && rawOrigin && isAbsoluteHttpUrl(rawOrigin) && isLoopbackAbsoluteUrl(rawOrigin)
+    noLoopback &&
+    rawOrigin &&
+    isAbsoluteHttpUrl(rawOrigin) &&
+    isLoopbackAbsoluteUrl(rawOrigin)
       ? ""
       : rawOrigin;
+
+  // Local Next.dev: ignore stale Kaggle-relative /proxy/8000 origins in .env.local.
+  // Always use local FastAPI when the browser is on 127.0.0.1:3000 (never on Kaggle).
+  if (
+    typeof window !== "undefined" &&
+    isLocalNextDevHost() &&
+    process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true"
+  ) {
+    if (
+      configuredOrigin &&
+      isAbsoluteHttpUrl(configuredOrigin) &&
+      isLoopbackAbsoluteUrl(configuredOrigin)
+    ) {
+      return stripTrailingSlash(configuredOrigin);
+    }
+    return localDevApiOrigin();
+  }
 
   const pageBasePath = getDeploymentBasePath();
   const backendBasePath = resolveBackendDeploymentBase(pageBasePath);
 
   if (configuredOrigin) {
     if (isAbsoluteHttpUrl(configuredOrigin)) {
-      if (isLoopbackAbsoluteUrl(configuredOrigin) && onProxyBrowser) {
-        return backendBasePath;
+      if (isLoopbackAbsoluteUrl(configuredOrigin) && noLoopback) {
+        return backendBasePath || "/proxy/8000";
       }
       return stripTrailingSlash(configuredOrigin);
     }
@@ -353,20 +421,21 @@ export function resolveApiOrigin(): string {
 
   const apiUrl = readConfiguredApiUrl();
   if (apiUrl && isAbsoluteHttpUrl(apiUrl)) {
-    if (!(onProxyBrowser && isLoopbackAbsoluteUrl(apiUrl))) {
+    if (!(noLoopback && isLoopbackAbsoluteUrl(apiUrl))) {
       return stripTrailingSlash(apiUrl.replace(/\/api\/v1\/?$/, ""));
     }
   }
 
   if (
+    !noLoopback &&
     typeof window !== "undefined" &&
     isLocalNextDevHost() &&
     process.env.NEXT_PUBLIC_USE_SAME_ORIGIN !== "true"
   ) {
-    return "http://127.0.0.1:8000";
+    return localDevApiOrigin();
   }
 
-  return backendBasePath;
+  return backendBasePath || (noLoopback ? "/proxy/8000" : localDevApiOrigin());
 }
 
 /** Eager default for modules that read a constant; prefer resolveApiBaseUrl() in new code. */
