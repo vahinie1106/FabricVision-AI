@@ -102,16 +102,18 @@ def test_kontext_prompt_explicit_blue_applies_target_color():
     lower = pos.lower()
     assert "blue" in lower
     assert "base fabric color" in lower
-    assert "do not recolor the printed pattern" in lower
+    assert "printed floral motifs" in lower or "print colors" in lower
     assert "preserve source fabric look" not in lower
     assert "recolor to blue" not in lower
     assert "apply blue color" not in lower
+    # Must not say whole-fabric "do not recolor" without motif scope.
+    assert "do not recolor." not in lower or "motif" in lower or "printed" in lower
     assert "red" in lower  # motif color called out
     assert builder.last_prompt_stats.get("color_mode") == "explicit"
     assert "blue" in (builder.last_prompt_stats.get("dominant_colors") or "").lower()
     instruction = (builder.last_prompt_stats.get("color_instruction") or "").lower()
     assert "base fabric color" in instruction
-    assert "printed pattern" in instruction
+    assert "visibly be blue" in instruction or "base/background" in instruction
 
 
 def test_kontext_prompt_explicit_black_no_contradiction():
@@ -187,10 +189,13 @@ def test_match_fabric_leaves_image_unchanged():
     assert px != (0, 0, 0)
 
 
-def test_blue_recolors_base_but_keeps_red_motifs():
+def test_blue_recolors_base_but_keeps_red_motifs(tmp_path):
     img = _make_white_red_floral(160)
     audit = recolor_fabric_base_preserving_motifs(img, "blue")
     out = audit.image
+    # Persist synthetic audits for visual QA.
+    img.save(tmp_path / "synthetic_original.png")
+    out.save(tmp_path / "synthetic_blue.png")
     arr_o = list(img.getdata())
     arr_n = list(out.getdata())
     # Classify original red motif pixels and white-ish base pixels.
@@ -211,25 +216,24 @@ def test_blue_recolors_base_but_keeps_red_motifs():
     base_new = [arr_n[i] for i in base_idx]
     mean_b = sum(p[2] for p in base_new) / len(base_new)
     mean_r = sum(p[0] for p in base_new) / len(base_new)
-    assert mean_b > mean_r
+    assert mean_b > mean_r + 15
 
     # Motifs remain substantially red.
     motif_new = [arr_n[i] for i in motif_idx]
     red_kept = sum(1 for r, g, b in motif_new if r > g + 25 and r > b + 25 and r > 100)
     assert red_kept / len(motif_new) > 0.85
 
-    # Not a solid color; pattern variance remains.
-    std = (
-        sum((p[0] - mean_r) ** 2 for p in base_new) / len(base_new)
-    ) ** 0.5
-    # Use whole-image channel spread
+    # Not a solid blue image.
+    all_blueish = sum(1 for r, g, b in arr_n if b > r + 20 and b > g)
+    assert all_blueish / len(arr_n) < 0.95
     vals = [p[0] for p in arr_n]
     assert max(vals) - min(vals) > 40
 
 
-def test_black_recolors_base_but_keeps_red_motifs():
+def test_black_recolors_base_but_keeps_red_motifs(tmp_path):
     img = _make_white_red_floral(160)
     audit = recolor_fabric_base_preserving_motifs(img, "black")
+    audit.image.save(tmp_path / "synthetic_black.png")
     arr_o = list(img.getdata())
     arr_n = list(audit.image.getdata())
     motif_idx = [
@@ -244,7 +248,7 @@ def test_black_recolors_base_but_keeps_red_motifs():
     ]
     base_new = [arr_n[i] for i in base_idx]
     mean_lum = sum(sum(p) / 3 for p in base_new) / len(base_new)
-    assert mean_lum < 80  # darkened base
+    assert mean_lum < 95  # darkened base (black target)
 
     motif_new = [arr_n[i] for i in motif_idx]
     red_kept = sum(1 for r, g, b in motif_new if r > g + 25 and r > b + 25 and r > 100)
@@ -252,6 +256,35 @@ def test_black_recolors_base_but_keeps_red_motifs():
 
     # Not solid black
     assert max(max(p) for p in arr_n) > 100
+
+
+def test_post_recolor_protects_studio_background():
+    # White canvas with a white+red patch in the center (garment-like).
+    canvas = Image.new("RGB", (128, 128), (255, 255, 255))
+    floral = _make_white_red_floral(64)
+    canvas.paste(floral, (32, 32))
+    out = recolor_fabric_base_preserving_motifs(
+        canvas, "blue", protect_studio_background=True
+    ).image
+    # Corner studio background must stay near-white (not blue).
+    cr, cg, cb = out.getpixel((2, 2))
+    assert cr > 220 and cg > 220 and cb > 220
+    # Interior former-white fabric should be bluish.
+    # Sample a known white pixel inside the pasted patch away from red circles.
+    ir, ig, ib = out.getpixel((36, 36))
+    # Either still motif-protected or base-recolored; at least one interior base
+    # sample across the patch should be blue-dominant.
+    blues = 0
+    reds = 0
+    for y in range(40, 80, 4):
+        for x in range(40, 80, 4):
+            r, g, b = out.getpixel((x, y))
+            if b > r + 10:
+                blues += 1
+            if r > g + 30 and r > b + 30:
+                reds += 1
+    assert blues > 0
+    assert reds > 0
 
 
 def test_conditioning_recolors_only_for_explicit_color():

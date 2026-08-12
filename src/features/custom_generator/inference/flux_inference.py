@@ -481,6 +481,8 @@ class FLUXInferenceEngine:
         seed: Optional[int] = 42,
         progress_callback: ProgressCallback = None,
         save_raw_path: Optional[str] = None,
+        flux_input_audit_path: Optional[str] = None,
+        color_trace: Optional[Dict[str, Any]] = None,
     ) -> Image.Image:
         """Generate a garment with FLUX.1-Kontext image conditioning."""
         t_start = time.perf_counter()
@@ -651,7 +653,48 @@ class FLUXInferenceEngine:
                 cond_image = reference_image
             resize_time = round(time.perf_counter() - t_resize, 3)
             _flux_mark("conditioning resize", t_resize, end=True)
-            self._log_pil_stats("IMAGE_CONDITIONING", cond_image)
+            cond_stats = self._log_pil_stats("IMAGE_CONDITIONING", cond_image)
+
+            # Exact image that will be passed as pipeline(image=...) — not an earlier stage.
+            flux_input_saved = None
+            if flux_input_audit_path and hasattr(cond_image, "save"):
+                try:
+                    from pathlib import Path as _Path
+
+                    _p = _Path(flux_input_audit_path)
+                    _p.parent.mkdir(parents=True, exist_ok=True)
+                    # Copy so later mutations cannot rewrite the audit artifact.
+                    audit_img = cond_image.copy() if hasattr(cond_image, "copy") else cond_image
+                    audit_img.save(_p)
+                    flux_input_saved = str(_p)
+                    self.logger.info(
+                        "[FLUX COLOR TRACE] saved exact FluxKontext image= arg → %s",
+                        flux_input_saved,
+                    )
+                    print(
+                        f"[FLUX COLOR TRACE] conditioning_source_path={flux_input_saved}",
+                        flush=True,
+                    )
+                except Exception as audit_exc:
+                    self.logger.warning("flux_input audit save failed: %s", audit_exc)
+
+            trace = color_trace or {}
+            for line in (
+                "[FLUX COLOR TRACE]",
+                f"selected_ui_color={trace.get('selected_ui_color')}",
+                f"color_mode={trace.get('color_mode')}",
+                f"force_recolor={trace.get('force_recolor')}",
+                f"target_color={trace.get('target_color')}",
+                f"conditioning_recolored={trace.get('conditioning_recolored')}",
+                f"conditioning_source_path={flux_input_saved}",
+                f"conditioning_min={cond_stats.get('min')}",
+                f"conditioning_max={cond_stats.get('max')}",
+                f"conditioning_mean={cond_stats.get('mean')}",
+                f"conditioning_std={cond_stats.get('std')}",
+                f"flux_image_arg_is_recolored_conditioning={bool(trace.get('conditioning_recolored'))}",
+            ):
+                self.logger.info(line)
+                print(line, flush=True)
 
             self.logger.info("=== FLUX KONTEXT CALL PROMPT ===\n%s", prompt)
             if negative_prompt:

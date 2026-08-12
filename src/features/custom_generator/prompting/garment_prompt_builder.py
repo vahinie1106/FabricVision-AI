@@ -389,9 +389,10 @@ class GarmentPromptBuilder:
         if color_mode == "explicit":
             # Base-only recolor — never imply whole-palette / motif recoloring.
             fabric = (
-                f"Change the base fabric color to {target} while preserving the "
-                f"original {context['pattern']} print colors ({motifs}), motif "
-                f"shapes, texture, and print scale. Do not recolor the printed pattern."
+                f"Change only the base fabric color to {target}. The base/background "
+                f"textile must visibly be {target} while preserving original "
+                f"{context['pattern']} print colors ({motifs}), motif shapes, texture, "
+                f"and print scale. Do not recolor the printed floral motifs."
             )
         elif appearance:
             fabric = (
@@ -542,8 +543,8 @@ class GarmentPromptBuilder:
         if context.get("color_mode") == "explicit":
             target = context.get("dominant_colors") or "target"
             fabric_fallback = (
-                f"Change the base fabric color to {target}; keep original print "
-                f"motif colors and pattern scale."
+                f"Change only the base fabric color to {target}; keep original "
+                f"print motif colors."
             )
         else:
             fabric_fallback = (

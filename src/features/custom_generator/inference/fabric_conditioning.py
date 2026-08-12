@@ -114,6 +114,35 @@ def _rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=-1)
 
 
+def _lab_to_rgb(lab: np.ndarray) -> np.ndarray:
+    """Convert CIE LAB (D65) array (..., 3) to uint8 RGB."""
+    L, a, b = lab[..., 0], lab[..., 1], lab[..., 2]
+    fy = (L + 16.0) / 116.0
+    fx = a / 500.0 + fy
+    fz = fy - b / 200.0
+
+    def _f_inv(t: np.ndarray) -> np.ndarray:
+        t3 = t**3
+        return np.where(t3 > 0.008856, t3, (t - 16.0 / 116.0) / 7.787)
+
+    xyz = np.stack([_f_inv(fx) * 0.95047, _f_inv(fy), _f_inv(fz) * 1.08883], axis=-1)
+    m_inv = np.array(
+        [
+            [3.2404542, -1.5371385, -0.4985314],
+            [-0.9692660, 1.8760108, 0.0415560],
+            [0.0556434, -0.2040259, 1.0572252],
+        ],
+        dtype=np.float64,
+    )
+    linear = xyz @ m_inv.T
+    linear = np.clip(linear, 0.0, None)
+    mask = linear > 0.0031308
+    srgb = np.empty_like(linear)
+    srgb[~mask] = linear[~mask] * 12.92
+    srgb[mask] = 1.055 * np.power(linear[mask], 1.0 / 2.4) - 0.055
+    return np.clip(np.round(srgb * 255.0), 0, 255).astype(np.uint8)
+
+
 def _estimate_base_rgb(arr: np.ndarray) -> Tuple[int, int, int]:
     """Estimate dominant/base fabric RGB via quantized mode (not motif accents)."""
     # Coarse quantization keeps print accents from winning the mode on florals.
@@ -140,27 +169,86 @@ def _estimate_base_rgb(arr: np.ndarray) -> Tuple[int, int, int]:
     )
 
 
+def _chroma(lab: np.ndarray) -> np.ndarray:
+    return np.sqrt(lab[..., 1] ** 2 + lab[..., 2] ** 2)
+
+
 def _soft_base_mask(lab: np.ndarray, base_lab: np.ndarray) -> np.ndarray:
-    """Soft mask in [0,1]: 1 = base fabric, 0 = protected print/motif."""
+    """
+    Soft mask in [0,1]: 1 = base fabric, 0 = protected print/motif.
+
+    Uses LAB distance from the base cluster, then further protects high-chroma
+    pixels that differ from the base (printed motifs), without hardcoding hues.
+    """
     dist = np.linalg.norm(lab - base_lab.reshape(1, 1, 3), axis=-1)
-    p30 = float(np.percentile(dist, 30))
-    p65 = float(np.percentile(dist, 65))
-    span = max(p65 - p30, 4.0)
-    # Near base → 1; far from base → 0 (motifs protected).
-    alpha = 1.0 - (dist - p30) / span
-    return np.clip(alpha, 0.0, 1.0).astype(np.float64)
+    # Aggressive base membership: most near-base pixels should recolor.
+    p35 = float(np.percentile(dist, 35))
+    p70 = float(np.percentile(dist, 70))
+    span = max(p70 - p35, 6.0)
+    alpha = 1.0 - (dist - p35) / span
+    alpha = np.clip(alpha, 0.0, 1.0)
+
+    # Protect chromatic print accents that diverge from the base chroma.
+    base_c = float(np.sqrt(base_lab[1] ** 2 + base_lab[2] ** 2))
+    pix_c = _chroma(lab)
+    # Motif-like: much more chromatic than base OR far in ab-plane.
+    ab_dist = np.sqrt((lab[..., 1] - base_lab[1]) ** 2 + (lab[..., 2] - base_lab[2]) ** 2)
+    motif_score = np.clip((pix_c - (base_c + 8.0)) / 20.0, 0.0, 1.0)
+    motif_score = np.maximum(motif_score, np.clip((ab_dist - 18.0) / 25.0, 0.0, 1.0))
+    alpha = alpha * (1.0 - 0.95 * motif_score)
+    # Harden confident base pixels so explicit colors read clearly after blend.
+    hard = (alpha >= 0.40).astype(np.float64)
+    alpha = np.clip(0.20 * alpha + 0.80 * hard, 0.0, 1.0)
+    return alpha.astype(np.float64)
+
+
+def _studio_background_mask(arr: np.ndarray) -> np.ndarray:
+    """True for border-connected near-pure-white studio background pixels."""
+    h, w = arr.shape[:2]
+    lum = arr.astype(np.float64).mean(axis=2)
+    chroma = arr.astype(np.float64).max(axis=2) - arr.astype(np.float64).min(axis=2)
+    # Strict threshold so off-white fabric bases (e.g. 242) are NOT flood-eaten.
+    near_bg = (lum >= 250.0) & (chroma <= 12.0)
+    visited = np.zeros((h, w), dtype=bool)
+    from collections import deque
+
+    q: deque = deque()
+    for x in range(w):
+        for y in (0, h - 1):
+            if near_bg[y, x]:
+                visited[y, x] = True
+                q.append((y, x))
+    for y in range(h):
+        for x in (0, w - 1):
+            if near_bg[y, x] and not visited[y, x]:
+                visited[y, x] = True
+                q.append((y, x))
+    while q:
+        y, x = q.popleft()
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            ny, nx = y + dy, x + dx
+            if 0 <= ny < h and 0 <= nx < w and not visited[ny, nx] and near_bg[ny, nx]:
+                visited[ny, nx] = True
+                q.append((ny, nx))
+    return visited
 
 
 def recolor_fabric_base_preserving_motifs(
     fabric_image: Image.Image,
     target_color: str,
+    *,
+    protect_studio_background: bool = False,
+    strength: float = 1.0,
 ) -> FabricBaseRecolorResult:
     """
     Recolor only the dominant/base fabric region to ``target_color``.
 
-    Print/motif pixels (far from the base color in LAB) keep original RGB.
-    Local luminance variation in the base region is preserved so weave/folds
-    and print scale remain readable for FLUX Kontext.
+    Print/motif pixels (far from the base color in LAB / high chroma delta)
+    keep original RGB. Base pixels transfer target chrominance in LAB while
+    preserving local lightness (texture/folds).
+
+    When ``protect_studio_background`` is True (post-generation product shots),
+    border-connected near-white pixels stay white so the canvas is not tinted.
     """
     target_rgb = resolve_target_rgb(target_color)
     original = fabric_image.convert("RGB")
@@ -181,36 +269,36 @@ def recolor_fabric_base_preserving_motifs(
     lab = _rgb_to_lab(arr)
     base_rgb = _estimate_base_rgb(arr)
     base_lab = _rgb_to_lab(np.array(base_rgb, dtype=np.uint8).reshape(1, 1, 3))[0, 0]
+    target_lab = _rgb_to_lab(np.array(target_rgb, dtype=np.uint8).reshape(1, 1, 3))[0, 0]
 
     alpha = _soft_base_mask(lab, base_lab)
+    if protect_studio_background:
+        bg = _studio_background_mask(arr)
+        alpha = np.where(bg, 0.0, alpha)
+
     # Mild blur softens base↔motif transitions without smearing motif geometry.
     alpha_img = Image.fromarray((alpha * 255.0).astype(np.uint8), mode="L")
-    alpha_img = alpha_img.filter(ImageFilter.GaussianBlur(radius=0.8))
+    alpha_img = alpha_img.filter(ImageFilter.GaussianBlur(radius=0.6))
     alpha = np.asarray(alpha_img, dtype=np.float64) / 255.0
+    strength = float(np.clip(strength, 0.0, 1.0))
+    alpha = np.clip(alpha * strength, 0.0, 1.0)
 
-    lum = (
-        0.299 * arr[..., 0].astype(np.float64)
-        + 0.587 * arr[..., 1].astype(np.float64)
-        + 0.114 * arr[..., 2].astype(np.float64)
-    )
-    base_pixels = alpha > 0.55
-    if np.any(base_pixels):
-        base_lum_ref = float(np.median(lum[base_pixels]))
+    # LAB chrominance transfer: keep local L (texture), set a/b toward target.
+    # Scale L toward target L so black/white bases read correctly.
+    out_lab = lab.copy()
+    target_L = float(target_lab[0])
+    base_L = max(float(base_lab[0]), 1.0)
+    L_scaled = np.clip(lab[..., 0] * (target_L / base_L), 2.0, 98.0)
+    if target_L < 35.0:
+        # Dark targets need a decisive L pull or blends stay gray.
+        out_lab[..., 0] = np.clip(0.10 * lab[..., 0] + 0.90 * L_scaled, 2.0, 55.0)
+    elif target_L > 85.0:
+        out_lab[..., 0] = np.clip(0.45 * lab[..., 0] + 0.55 * L_scaled, 40.0, 98.0)
     else:
-        base_lum_ref = float(np.median(lum))
-    base_lum_ref = max(base_lum_ref, 1.0)
-
-    tr, tg, tb = (float(c) for c in target_rgb)
-    # Relative luminance keeps weave/fold shading on the recolored base.
-    rel = np.clip(lum / base_lum_ref, 0.15, 1.85)
-    recolored = np.stack(
-        [
-            np.clip(tr * rel, 0, 255),
-            np.clip(tg * rel, 0, 255),
-            np.clip(tb * rel, 0, 255),
-        ],
-        axis=-1,
-    )
+        out_lab[..., 0] = 0.30 * lab[..., 0] + 0.70 * L_scaled
+    out_lab[..., 1] = target_lab[1]
+    out_lab[..., 2] = target_lab[2]
+    recolored = _lab_to_rgb(out_lab).astype(np.float64)
 
     a3 = alpha[..., None]
     out = a3 * recolored + (1.0 - a3) * arr.astype(np.float64)
@@ -220,11 +308,12 @@ def recolor_fabric_base_preserving_motifs(
     coverage = float(alpha.mean())
     logger.info(
         "Base-only fabric recolor target=%s base_rgb=%s target_rgb=%s "
-        "base_coverage=%.3f (motifs protected)",
+        "base_coverage=%.3f protect_bg=%s (motifs protected)",
         normalize_color_key(target_color),
         base_rgb,
         target_rgb,
         coverage,
+        protect_studio_background,
     )
     return FabricBaseRecolorResult(
         image=result,

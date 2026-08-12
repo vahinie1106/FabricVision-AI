@@ -13,6 +13,7 @@ from src.features.custom_generator.inference.fabric_conditioning import (
     build_garment_conditioning_image,
     is_match_fabric_color,
     normalize_color_key,
+    recolor_fabric_base_preserving_motifs,
     save_fabric_recolor_audit,
 )
 from src.features.custom_generator.inference.flux_inference import FLUXInferenceEngine
@@ -381,6 +382,9 @@ class GarmentGenerationPipeline:
 
         _progress("Preparing fabric", 22)
         t0 = _mark("FABRIC PREPROCESS", time.perf_counter())
+        color_trace_ui = normalize_color_key(
+            str(user_customization.get("color") or fabric_metadata.get("color") or "")
+        ) or "match_fabric"
         try:
             from src.features.custom_generator.inference.fabric_appearance import (
                 describe_fabric_appearance,
@@ -396,6 +400,7 @@ class GarmentGenerationPipeline:
                 or fabric_metadata.get("color")
                 or ""
             )
+            color_trace_ui = normalize_color_key(str(ui_selected)) or "match_fabric"
             explicit_color = not is_match_fabric_color(str(ui_selected))
             # Harden: explicit Color field implies recolor even if force_recolor was omitted.
             force_recolor = bool(user_customization.get("force_recolor")) or explicit_color
@@ -534,7 +539,8 @@ class GarmentGenerationPipeline:
         # Persist stage images for A/B audits (original already in uploads; save cond)
         debug_dir = Path(self.config.output_root) / "audit_stages"
         debug_dir.mkdir(parents=True, exist_ok=True)
-        stage_id = output_filename or f"stage_{uuid.uuid4().hex[:8]}"
+        garment_id = output_filename or f"garment_{uuid.uuid4().hex[:8]}"
+        stage_id = garment_id
         try:
             fabric_image.save(debug_dir / f"{stage_id}_A_fabric.png")
             conditioning_image.save(debug_dir / f"{stage_id}_B_conditioning.png")
@@ -576,9 +582,9 @@ class GarmentGenerationPipeline:
             self.config.guidance_scale,
         )
 
-        garment_id = output_filename or f"garment_{uuid.uuid4().hex[:8]}"
         raw_dir = Path(self.config.output_root) / "raw"
         raw_path = raw_dir / f"{garment_id}_raw.png"
+        flux_input_path = debug_dir / f"{garment_id}_flux_input.png"
 
         image = self.inference_engine.generate(
             prompt=positive_prompt,
@@ -591,6 +597,14 @@ class GarmentGenerationPipeline:
             seed=self.config.seed,
             progress_callback=progress_callback,
             save_raw_path=str(raw_path),
+            flux_input_audit_path=str(flux_input_path),
+            color_trace={
+                "selected_ui_color": color_trace_ui,
+                "color_mode": "explicit" if conditioning_recolored else "match_fabric",
+                "force_recolor": bool(user_customization.get("force_recolor")),
+                "target_color": conditioning_target or "match_fabric",
+                "conditioning_recolored": conditioning_recolored,
+            },
         )
 
         # Apply contour-guided detail refiner (sharpens neckline, sleeves, seams; preserves fabric identity)
@@ -603,6 +617,36 @@ class GarmentGenerationPipeline:
             image = refiner.refine(image, mask_fabric_interior=True, enabled=True)
         except Exception as ref_exc:
             self.logger.warning("Garment detail refiner skipped: %s", ref_exc)
+
+        # Deterministic UI color: FLUX often preserves original base hues even when
+        # the conditioning image is correctly recolored. Apply the same base-only
+        # motif-preserving recolor to the generated garment (studio bg protected).
+        if conditioning_target:
+            try:
+                post = recolor_fabric_base_preserving_motifs(
+                    image,
+                    conditioning_target,
+                    protect_studio_background=True,
+                    strength=1.0,
+                )
+                image = post.image
+                post_dir = debug_dir / f"{garment_id}_post_{normalize_color_key(conditioning_target)}"
+                save_fabric_recolor_audit(
+                    post, post_dir, normalize_color_key(conditioning_target)
+                )
+                image.save(post_dir / f"{normalize_color_key(conditioning_target)}_post_final.png")
+                self.logger.info(
+                    "[FLUX COLOR] post-generation base recolor applied target=%s "
+                    "coverage=%.3f",
+                    conditioning_target,
+                    post.base_coverage,
+                )
+                print(
+                    f"[FLUX COLOR] post_generation_recolor=true target={conditioning_target}",
+                    flush=True,
+                )
+            except Exception as post_exc:
+                self.logger.warning("Post-generation base recolor skipped: %s", post_exc)
 
         color_val = fabric_metadata.get("dominant_colors") or user_customization.get("color")
         val_result = self.validator.validate(
