@@ -154,6 +154,17 @@ def read_jupyter_token() -> Optional[str]:
     return token or None
 
 
+def _collapse_extra_proxy_segments(path: str) -> str:
+    """Never emit /proxy/proxy/proxy/<port> — cap nesting at /proxy/proxy/<port>."""
+    import re
+
+    out = (path or "").rstrip("/")
+    extra = re.compile(r"(/proxy){3,}/(\d+)$")
+    while extra.search(out):
+        out = extra.sub(r"/proxy/proxy/\2", out)
+    return out
+
+
 def candidate_public_paths(jupyter_base_url: str, port: int = 8000) -> List[str]:
     """
     Ordered public path candidates for a local port behind Kaggle/Jupyter.
@@ -172,7 +183,7 @@ def candidate_public_paths(jupyter_base_url: str, port: int = 8000) -> List[str]
     ordered: List[str] = []
 
     def add(path: str) -> None:
-        norm = _normalize_public_path(path)
+        norm = _collapse_extra_proxy_segments(_normalize_public_path(path))
         if norm and norm not in ordered:
             ordered.append(norm)
 
@@ -398,6 +409,80 @@ def discover_working_public_path(
     return {"public_path": None, "proxy_host": host, "urls": None, "report": report}
 
 
+def discover_working_frontend_public_path(
+    jupyter_base_url: str,
+    port: int = 3000,
+    proxy_host: Optional[str] = None,
+    token: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Probe PORT 3000 public candidates for the Next.js website (not FastAPI).
+
+    Does NOT require /docs or /api/v1/health — those belong to PORT 8000.
+    """
+    host = (
+        proxy_host
+        or os.environ.get("KAGGLE_JUPYTER_PROXY_HOST")
+        or KAGGLE_PROXY_HOST_DEFAULT
+    ).rstrip("/")
+    token = token or read_jupyter_token()
+    suffixes = [
+        ("root", ""),
+        ("about", "about"),
+        ("studio_garment", "studio/custom-garment"),
+    ]
+    report: List[Dict[str, Any]] = []
+
+    for path in candidate_public_paths(jupyter_base_url, port=port):
+        urls = _urls_for_public_path(host, path)
+        _log(f"PUBLIC FRONTEND probe candidate: {urls['public_url']}")
+        endpoint_status: Dict[str, int] = {}
+        ok_all = True
+        details: Dict[str, Any] = {}
+        for name, suffix in suffixes:
+            base = urls["public_url"] if not suffix else f"{host}{path}/{suffix}"
+            probe = _http_probe(base, timeout=15.0, token=token)
+            status = int(probe.get("status") or 0)
+            body = probe.get("body") or ""
+            ctype = probe.get("content_type") or ""
+            endpoint_status[name] = status
+            details[name] = {
+                "status": status,
+                "content_type": ctype,
+                "location": probe.get("location"),
+                "body_preview": body[:160],
+                "edge_404": _is_kaggle_edge_404(status, body),
+            }
+            if status != 200 or _is_kaggle_edge_404(status, body):
+                ok_all = False
+            elif not _looks_like_app_response(status, body, ctype):
+                ok_all = False
+            _log(
+                f"  {name}: HTTP {status} "
+                f"edge404={details[name]['edge_404']} ctype={ctype!r}"
+            )
+
+        entry = {
+            "path": path,
+            "urls": urls,
+            "endpoint_status": endpoint_status,
+            "ok": ok_all,
+            "details": details,
+        }
+        report.append(entry)
+        if ok_all:
+            _log(f"PUBLIC FRONTEND winner: {path}")
+            return {
+                "public_path": path,
+                "proxy_host": host,
+                "urls": urls,
+                "endpoint_status": endpoint_status,
+                "report": report,
+            }
+
+    _log("No public PORT 3000 candidate reached the Next.js website.")
+    return {"public_path": None, "proxy_host": host, "urls": None, "report": report}
+
+
 def detect_deployment(port: int = 8000) -> Dict[str, Any]:
     """
     Decide base_path + optional public Kaggle URLs for this runtime.
@@ -466,6 +551,68 @@ def detect_deployment(port: int = 8000) -> Dict[str, Any]:
         }
     )
     return info
+
+
+def apply_split_proxy_public_urls(deploy: Dict[str, Any]) -> Dict[str, Any]:
+    """Split mode: website is PORT 3000; API is PORT 8000. Never advertise 8000 as the site."""
+    jupyter_base = str(deploy.get("jupyter_base_url") or "").strip()
+    host = deploy.get("proxy_host")
+    if not jupyter_base:
+        deploy["website_url"] = None
+        deploy["api_public_url"] = None
+        deploy["api_origin_url"] = None
+        # Do not leave detect_deployment's PORT 8000 URL labeled as the website.
+        deploy["public_url"] = None
+        return deploy
+
+    frontend = build_public_proxy_info(jupyter_base, port=3000, proxy_host=host)
+    backend = build_public_proxy_info(jupyter_base, port=8000, proxy_host=host)
+    deploy["website_url"] = frontend["public_url"]
+    deploy["public_url"] = frontend["public_url"]
+    deploy["about_url"] = frontend.get("about_url")
+    deploy["projects_url"] = frontend.get("projects_url")
+    deploy["studio_garment_url"] = frontend.get("studio_garment_url")
+    deploy["studio_tryon_url"] = frontend.get("studio_tryon_url")
+    deploy["studio_semantic_url"] = frontend.get("studio_semantic_url")
+    deploy["api_origin_url"] = backend["public_url"]
+    deploy["api_public_url"] = backend["public_url"].rstrip("/") + "/api/v1/"
+    deploy["docs_url"] = backend.get("docs_url")
+    deploy["health_url"] = backend.get("health_url")
+    return deploy
+
+
+def _is_frontend_public_url(url: Optional[str]) -> bool:
+    """True only for Kaggle jupyter-proxy URLs that target PORT 3000."""
+    if not url:
+        return False
+    text = str(url)
+    return "/proxy/3000" in text or "/proxy/proxy/3000" in text
+
+
+def _is_backend_public_url(url: Optional[str]) -> bool:
+    if not url:
+        return False
+    text = str(url)
+    return "/proxy/8000" in text or "/proxy/proxy/8000" in text
+
+
+def public_website_url(deploy: Dict[str, Any]) -> Optional[str]:
+    """Website URL is PORT 3000 only — never advertise FastAPI :8000 as the site."""
+    for key in ("website_url", "public_url"):
+        url = str(deploy.get(key) or "").strip()
+        if url and _is_frontend_public_url(url):
+            return url
+    return None
+
+
+def public_api_url(deploy: Dict[str, Any]) -> Optional[str]:
+    url = str(deploy.get("api_public_url") or "").strip()
+    if url and _is_backend_public_url(url):
+        return url
+    origin = str(deploy.get("api_origin_url") or "").strip()
+    if origin and _is_backend_public_url(origin):
+        return origin.rstrip("/") + "/api/v1/"
+    return None
 
 
 def apply_public_path(deploy: Dict[str, Any], public_path: str) -> Dict[str, Any]:
@@ -997,12 +1144,15 @@ def start_next(base_path: str, *, split_proxy: bool = False) -> subprocess.Popen
     write_frontend_dotenv(base_path, split_proxy=split_proxy)
     env = _frontend_env(base_path, split_proxy=split_proxy)
     env["PORT"] = "3000"
-    env["HOSTNAME"] = "127.0.0.1"
+    # Bind all interfaces so Kaggle jupyter-server-proxy can reach Next.
+    # Do not set HOSTNAME=127.0.0.1 — Next would advertise loopback and the
+    # browser (or Kaggle "Open") tries 127.0.0.1 → ERR_CONNECTION_REFUSED.
+    env.pop("HOSTNAME", None)
     FRONTEND_LOG.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(FRONTEND_LOG, "w", encoding="utf-8", errors="replace", buffering=1)
-    _log(f"Starting Next.js production server on 127.0.0.1:3000 (log={FRONTEND_LOG}) ...")
+    _log(f"Starting Next.js production server on 0.0.0.0:3000 (log={FRONTEND_LOG}) ...")
     proc = subprocess.Popen(
-        ["npm", "run", "start", "--", "-H", "127.0.0.1", "-p", "3000"],
+        ["npm", "run", "start", "--", "-H", "0.0.0.0", "-p", "3000"],
         cwd=str(FRONTEND),
         env=env,
         stdout=subprocess.PIPE,
@@ -1254,28 +1404,47 @@ def print_banner(
             flush=True,
         )
     print("", flush=True)
-    print("Backend:", flush=True)
-    print(f"    http://127.0.0.1:8000/api/v1/health → {health_code}", flush=True)
-    print(f"    http://127.0.0.1:8000/docs", flush=True)
-    print(f"    log: {BACKEND_LOG}", flush=True)
-    print("", flush=True)
-    print("Frontend:", flush=True)
-    print(f"    http://127.0.0.1:3000/ → {next_code}", flush=True)
-    print(f"    gateway / → {root_code}", flush=True)
+    fe_pids = _pids_on_port(3000)
+    be_pids = _pids_on_port(8000)
+    print("FRONTEND:", flush=True)
+    print("    PORT 3000", flush=True)
+    print(f"    PID {fe_pids or '(unknown)'} bind 0.0.0.0:3000", flush=True)
+    print(f"    local http://127.0.0.1:3000/ → {next_code}", flush=True)
     print(f"    log: {FRONTEND_LOG}", flush=True)
     print("    AI Studio (Custom Garment): /studio/custom-garment", flush=True)
     print("    Virtual Try-On:             /studio/virtual-tryon", flush=True)
     print("    Semantic Analysis:          /studio/semantic-analysis", flush=True)
     print("    /studio redirects → /studio/custom-garment", flush=True)
     print("", flush=True)
+    print("PUBLIC WEBSITE:", flush=True)
+    website = public_website_url(deploy)
+    if website:
+        print(f"    {website}", flush=True)
+        print("    Paste this URL in Chrome (Kaggle PORT 3000 — NOT PORT 8000).", flush=True)
+    else:
+        print("    Open Kaggle PORT 3000 (Notebook → Ports / Interface).", flush=True)
+        print("    Do NOT open PORT 8000 as the website.", flush=True)
+    if public_status:
+        print(f"    HTTP {public_status.get('root', 'n/a')}", flush=True)
+    print("", flush=True)
+    print("BACKEND:", flush=True)
+    print("    PORT 8000", flush=True)
+    print(f"    PID {be_pids or '(unknown)'} bind 0.0.0.0:8000", flush=True)
+    print(f"    local http://127.0.0.1:8000/api/v1/health → {health_code}", flush=True)
+    print(f"    log: {BACKEND_LOG}", flush=True)
+    print("", flush=True)
+    print("API:", flush=True)
+    api_url = public_api_url(deploy)
+    if api_url:
+        print(f"    {api_url}", flush=True)
+    else:
+        print("    /proxy/8000/api/v1/  (or /proxy/proxy/8000/api/v1/ if Jupyter nests /proxy/)", flush=True)
+    print("    Browser must NOT call http://127.0.0.1:8000.", flush=True)
+    print("", flush=True)
     print("Proxy:", flush=True)
     print("    Frontend UI:  Kaggle → Open PORT 3000  (/proxy/3000/)", flush=True)
     print("    Backend API:  Kaggle → Open PORT 8000  (/proxy/8000/)", flush=True)
-    print("    API base:     /proxy/8000/api/v1/", flush=True)
-    print(
-        "    Browser must NOT call http://127.0.0.1:8000 (use /proxy/8000).",
-        flush=True,
-    )
+    print("    API base:     /proxy/8000/api/v1/  (nested: /proxy/proxy/8000/api/v1/)", flush=True)
     if deploy.get("base_path"):
         print(
             f"    Gateway basePath (optional): {deploy.get('base_path')}",
@@ -1300,12 +1469,6 @@ def print_banner(
     else:
         print("    (not confirmed)", flush=True)
     print("", flush=True)
-    if deploy.get("public_url"):
-        print("PUBLIC WEBSITE (gateway discovery, if available):", flush=True)
-        print(f"    {deploy.get('public_url')}", flush=True)
-        if public_status:
-            print(f"    HTTP {public_status.get('root', 'n/a')}", flush=True)
-        print("", flush=True)
     print(f"Next/FastAPI base_path in use: {deploy.get('base_path') or '(none — split proxy)'}", flush=True)
     print("", flush=True)
     if application_ready:
@@ -1701,6 +1864,12 @@ def main() -> int:
         base_path = ""
         deploy["base_path"] = ""
         deploy["deploy_mode"] = "split_proxy"
+        apply_split_proxy_public_urls(deploy)
+        _log(
+            "Split-proxy public URLs: "
+            f"website={deploy.get('website_url')!r} "
+            f"api={deploy.get('api_public_url')!r}"
+        )
 
     _log(
         f"Deployment mode: kaggle={deploy['is_kaggle']} "
@@ -1780,33 +1949,28 @@ def main() -> int:
 
     backend_up = backend_already_healthy()
     frontend_up = frontend_already_healthy(base_path if not split_proxy else "")
-    if backend_up and (deploy.get("is_kaggle") or split_proxy):
-        # Reusing a leftover uvicorn (especially one started with --reload via
-        # run_api.py) is the #1 cause of mid-job "Job not found" on Kaggle:
-        # POST /generate lands in process A, then reload/restart empties memory
-        # and GET /status 404s. Always take exclusive ownership of :8000 here.
+    if deploy.get("is_kaggle") or split_proxy:
+        # Exclusive ownership: one Next on :3000, one uvicorn on :8000.
         _log(
-            "Kaggle/split-proxy: stopping existing :8000 for a clean single-worker "
-            "backend (in-memory jobs + BackgroundTasks require one process)"
+            "Kaggle/split-proxy: stopping stale :3000 and :8000 for a clean start "
+            "(exactly one frontend + one backend)"
         )
-        backend_up = False
         stop_port(args.port, "backend")
+        stop_port(3000, "frontend")
+        backend_up = False
+        frontend_up = False
     elif backend_up:
         _log("Backend already healthy on :8000 — reusing (not spawning another uvicorn)")
-    if frontend_up:
-        # Split-proxy / Kaggle: never reuse a Next process that was built with
-        # loopback API URLs (browser would call the user's machine).
+    if frontend_up and not (deploy.get("is_kaggle") or split_proxy):
         unsafe_dotenv = not frontend_dotenv_is_kaggle_safe(split_proxy=split_proxy)
         unsafe_bundle = False
-        if split_proxy or deploy.get("is_kaggle"):
-            try:
-                assert_client_bundle_has_no_loopback_api()
-            except RuntimeError:
-                unsafe_bundle = True
-        if (deploy.get("is_kaggle") or split_proxy) and (unsafe_dotenv or unsafe_bundle):
+        try:
+            assert_client_bundle_has_no_loopback_api()
+        except RuntimeError:
+            unsafe_bundle = True
+        if unsafe_dotenv or unsafe_bundle:
             _log(
-                "Frontend :3000 is up but env/bundle is unsafe for proxy browsers "
-                "(loopback API or missing /proxy/8000) — stopping for clean rebuild"
+                "Frontend :3000 is up but env/bundle is unsafe — stopping for clean rebuild"
             )
             frontend_up = False
             stop_port(3000, "frontend")
@@ -2130,6 +2294,49 @@ def main() -> int:
                         _shutdown()
                         return 1
                 time.sleep(1.0)
+
+        if split_proxy and deploy.get("jupyter_base_url"):
+            apply_split_proxy_public_urls(deploy)
+            _log("Discovering PUBLIC website on PORT 3000 (never PORT 8000)...")
+            fe_disc = discover_working_frontend_public_path(
+                str(deploy["jupyter_base_url"]),
+                port=3000,
+                proxy_host=deploy.get("proxy_host"),
+            )
+            winner = (fe_disc or {}).get("public_path")
+            if winner:
+                host = (
+                    deploy.get("proxy_host") or KAGGLE_PROXY_HOST_DEFAULT
+                ).rstrip("/")
+                urls = _urls_for_public_path(host, winner)
+                deploy["website_url"] = urls["public_url"]
+                deploy["public_url"] = urls["public_url"]
+                deploy["about_url"] = urls.get("about_url")
+                deploy["projects_url"] = urls.get("projects_url")
+                deploy["studio_garment_url"] = urls.get("studio_garment_url")
+                deploy["studio_tryon_url"] = urls.get("studio_tryon_url")
+                deploy["studio_semantic_url"] = urls.get("studio_semantic_url")
+                public_status.update((fe_disc or {}).get("endpoint_status") or {})
+                _log(f"PUBLIC WEBSITE winner: {urls['public_url']}")
+            else:
+                _log(
+                    "PORT 3000 public probe did not confirm a winner; "
+                    "printing constructed PORT 3000 URL from Jupyter base_url."
+                )
+            website = public_website_url(deploy)
+            if website:
+                token = read_jupyter_token()
+                probe = _http_probe(website, timeout=20.0, token=token)
+                public_status["root"] = int(probe.get("status") or 0)
+                loc = probe.get("location") or ""
+                if "127.0.0.1" in loc or "localhost" in loc.lower():
+                    _log(
+                        f"WARNING: public PORT 3000 redirected to loopback "
+                        f"Location={loc!r} — browser would get ERR_CONNECTION_REFUSED"
+                    )
+                _log(
+                    f"PUBLIC WEBSITE verify: HTTP {public_status['root']} ({website})"
+                )
 
         print_banner(
             health_code=health_code,

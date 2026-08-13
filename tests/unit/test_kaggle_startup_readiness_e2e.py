@@ -433,3 +433,103 @@ def test_run_api_does_not_enable_reload_by_default():
     src = Path("run_api.py").read_text(encoding="utf-8")
     assert "UVICORN_RELOAD" in src
     assert 'reload=True' not in src.replace("reload=reload_flag", "")
+
+
+def test_split_proxy_public_urls_use_port_3000_for_website():
+    import scripts.run_kaggle as rk
+
+    deploy = {
+        "jupyter_base_url": "/k/342038368/proxy/",
+        "proxy_host": "https://kkb-production.jupyter-proxy.kaggle.net",
+        "public_url": "https://kkb-production.jupyter-proxy.kaggle.net/k/342038368/proxy/proxy/8000/",
+    }
+    rk.apply_split_proxy_public_urls(deploy)
+    website = rk.public_website_url(deploy)
+    api = rk.public_api_url(deploy)
+    assert website is not None
+    assert "/proxy/proxy/3000" in website
+    assert "/proxy/8000" not in website.replace("/proxy/proxy/3000", "")
+    assert website.endswith("/proxy/proxy/3000/") or website.rstrip("/").endswith(
+        "/proxy/proxy/3000"
+    )
+    assert api is not None
+    assert "/proxy/proxy/8000/api/v1" in api
+    assert (
+        rk.public_website_url(
+            {
+                "public_url": (
+                    "https://kkb-production.jupyter-proxy.kaggle.net"
+                    "/k/342038368/proxy/proxy/8000/"
+                )
+            }
+        )
+        is None
+    )
+
+
+def test_banner_never_advertises_port_8000_as_website(monkeypatch):
+    import scripts.run_kaggle as rk
+
+    monkeypatch.setattr(rk, "_pids_on_port", lambda _p: [])
+    deploy = {
+        "jupyter_base_url": "/k/sess/proxy/",
+        "public_url": "https://example.kaggle.net/k/sess/proxy/proxy/8000/",
+        "website_url": "https://example.kaggle.net/k/sess/proxy/proxy/3000/",
+        "api_public_url": "https://example.kaggle.net/k/sess/proxy/proxy/8000/api/v1/",
+        "base_path": "",
+        "deploy_mode": "split_proxy",
+        "is_kaggle": True,
+    }
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rk.print_banner(
+            health_code=200,
+            root_code=200,
+            next_code=200,
+            deploy=deploy,
+            application_ready=True,
+        )
+    text = buf.getvalue()
+    assert "PUBLIC WEBSITE:" in text
+    assert "FRONTEND:" in text
+    assert "PORT 3000" in text
+    assert "BACKEND:" in text
+    assert "PORT 8000" in text
+    website_block = text.split("PUBLIC WEBSITE:")[1].split("BACKEND:")[0]
+    assert "/proxy/proxy/3000/" in website_block
+    assert "/proxy/proxy/8000/" not in website_block
+    api_block = text.split("API:")[1].split("Proxy:")[0]
+    assert "/proxy/proxy/8000/api/v1/" in api_block
+
+
+def test_start_next_binds_all_interfaces():
+    import inspect
+    import scripts.run_kaggle as rk
+
+    src = inspect.getsource(rk.start_next)
+    assert '"-H", "0.0.0.0"' in src or "'-H', '0.0.0.0'" in src
+    assert '"-p", "3000"' in src or "'-p', '3000'" in src
+    assert "HOSTNAME" not in src or 'env.pop("HOSTNAME"' in src
+    assert '"127.0.0.1"' not in src.replace("http://127.0.0.1", "")
+
+
+def test_collapse_extra_proxy_segments_caps_nesting():
+    import scripts.run_kaggle as rk
+
+    assert (
+        rk._collapse_extra_proxy_segments("/k/s/proxy/proxy/proxy/8000")
+        == "/k/s/proxy/proxy/8000"
+    )
+    paths = rk.candidate_public_paths("/k/s/proxy/", port=3000)
+    assert "/k/s/proxy/proxy/3000" in paths
+    assert not any(p.count("/proxy") >= 3 and p.endswith("/3000") for p in paths)
+
+
+def test_main_split_proxy_applies_port_3000_website():
+    import inspect
+    import scripts.run_kaggle as rk
+
+    src = inspect.getsource(rk.main)
+    assert "apply_split_proxy_public_urls" in src
+    assert "discover_working_frontend_public_path" in src
+    assert "stopping stale :3000 and :8000" in src
