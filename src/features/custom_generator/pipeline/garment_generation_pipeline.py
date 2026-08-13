@@ -67,29 +67,27 @@ def assert_production_config_lock(
     guidance: float,
     physical_vram_mb: float = 0.0,
 ) -> None:
-    """Fail before FLUX inference if Production collapsed to Standard 512×3."""
+    """Fail before FLUX inference if Production is not exactly 768×768 / 12 / 3.0."""
     if str(mode_key).strip().lower() != "production":
         return
-    h = int(height)
-    w = int(width)
-    n = int(steps)
+    resolved_mode = "production"
+    resolved_steps = int(steps)
+    resolved_resolution = (int(width), int(height))
     g = float(guidance)
-    if n < 12:
-        raise RuntimeError(
-            f"Production resolved to {n} steps (required 12). "
-            "The API likely received Standard/Preview, or steps were overwritten "
-            "by flux_config.yaml standard: num_inference_steps=3. "
-            "Check [QUALITY DEBUG] requested_mode vs resolved_mode."
-        )
+    _ = physical_vram_mb  # VRAM must not relax Production; kept for call-site compat.
+    if resolved_mode == "production":
+        if resolved_steps != 12:
+            raise RuntimeError(
+                f"Production configuration invalid: expected 12 steps, got {resolved_steps}"
+            )
+
+        if resolved_resolution != (768, 768):
+            raise RuntimeError(
+                f"Production configuration invalid: expected 768x768, got {resolved_resolution}"
+            )
     if abs(g - 3.0) > 0.05:
         raise RuntimeError(
-            f"Production resolved to guidance={g} (required 3.0)."
-        )
-    # T4 / 14GB+: Production must stay 768×768. Local 3050 may clamp to 512×12.
-    if float(physical_vram_mb) >= 14000 and (h < 768 or w < 768):
-        raise RuntimeError(
-            f"Production on T4-class GPU resolved to {w}x{h} steps={n} "
-            "(required 768x768 / 12). Refusing silent 768→512 downgrade."
+            f"Production configuration invalid: expected guidance 3.0, got {g}"
         )
 
 
@@ -239,8 +237,10 @@ class GarmentGenerationPipeline:
             )
 
         # Resolution knobs:
-        # - FLUX_GENERATION_RESOLUTION → Preview/Standard (and Production fallback)
-        # - FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_SIZE → Production only (≥700 on T4)
+        # - FLUX_GENERATION_RESOLUTION → Preview/Standard only
+        # - FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_SIZE → Production only
+        # Production must never inherit Standard env (FLUX_GENERATION_RESOLUTION,
+        # FLUX_GENERATION_STEPS, FLUX_STANDARD_STEPS).
         from src.features.custom_generator.inference.flux_inference import (
             resolve_flux_generation_resolution,
             resolve_flux_production_guidance,
@@ -249,16 +249,18 @@ class GarmentGenerationPipeline:
         )
 
         if mode_key == "production":
-            size = resolve_flux_production_resolution(default=self.config.height)
-            # On low-VRAM the production VRAM policy will clamp to 512 later.
+            size = resolve_flux_production_resolution(
+                default=768 if int(self.config.height) < 768 else int(self.config.height)
+            )
             self.config.height = size
             self.config.width = size
             self.config.num_inference_steps = resolve_flux_production_steps(
-                default=self.config.num_inference_steps
+                default=12 if int(self.config.num_inference_steps) < 12 else int(self.config.num_inference_steps)
             )
             self.config.guidance_scale = resolve_flux_production_guidance(
-                default=self.config.guidance_scale
+                default=3.0
             )
+            os.environ.setdefault("FLUX_PRODUCTION_NO_OOM_FALLBACK", "1")
         else:
             res_env = os.environ.get("FLUX_GENERATION_RESOLUTION", "").strip()
             if res_env.isdigit():
@@ -277,7 +279,7 @@ class GarmentGenerationPipeline:
         # T4 / 16GB+ quality path: Standard UI mode must not stay at the RTX 3050
         # 512×3 preset (known soft/blurry). Prefer 768 / 12 steps unless overridden.
         self._apply_high_vram_standard_defaults(mode_key)
-        # Production: 700+ on Kaggle T4; 512 clamp on local low-VRAM.
+        # Production: locked 768×768 / 12 / 3.0. Never inherit Standard 512×3.
         self._apply_production_vram_defaults(mode_key)
 
         gen_cfg_path = Path(self.config.config_dir) / "generation_config.yaml"
@@ -369,7 +371,7 @@ class GarmentGenerationPipeline:
             self._vram_policy = {"profile": policy.profile, "reason": policy.reason}
 
     def _apply_production_vram_defaults(self, mode_key: str) -> None:
-        """VRAM-aware Production policy: 512² / 12–16 on 6GB; never silent 768."""
+        """Locked Production policy: 768×768 / 12 steps / guidance 3.0. Never 512×3."""
         if mode_key != "production":
             return
 
@@ -402,6 +404,7 @@ class GarmentGenerationPipeline:
 
         if policy.enable_vae_tiling:
             os.environ.setdefault("FLUX_VAE_TILING", "true")
+        os.environ.setdefault("FLUX_PRODUCTION_NO_OOM_FALLBACK", "1")
 
         self.logger.info(
             "[FLUX] Production policy profile=%s %sx%s steps=%s guidance=%s "
@@ -714,6 +717,12 @@ class GarmentGenerationPipeline:
         except Exception:
             flux_device = self.config.device
         for line in (
+            "[PIPELINE QUALITY DEBUG]",
+            f"mode={self.config.mode_key}",
+            f"resolution={self.config.width}x{self.config.height}",
+            f"steps={self.config.num_inference_steps}",
+            f"guidance={self.config.guidance_scale}",
+            f"device={flux_device}",
             "[FLUX CONFIG]",
             f"mode={self.config.generation_mode}",
             "[FLUX CONFIG]",
@@ -750,6 +759,7 @@ class GarmentGenerationPipeline:
             progress_callback=progress_callback,
             save_raw_path=str(raw_path),
             flux_input_audit_path=str(flux_input_path),
+            generation_mode=str(self.config.mode_key or self.config.generation_mode),
             color_trace={
                 "selected_ui_color": color_trace_ui,
                 "color_mode": "explicit" if conditioning_recolored else "match_fabric",

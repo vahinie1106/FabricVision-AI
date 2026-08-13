@@ -73,8 +73,8 @@ standard_t4:
 
 # Production — Kaggle T4×2 locked target: 768×768 / 12 steps / guidance 3.0.
 # Override via FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_STEPS /
-# FLUX_PRODUCTION_GUIDANCE. Do NOT silently demote 768→512 on T4.
-# Local RTX 3050 is clamped to 512 by flux_vram_policy (low-VRAM path).
+# FLUX_PRODUCTION_GUIDANCE only. Do NOT inherit FLUX_GENERATION_RESOLUTION
+# or FLUX_STANDARD_STEPS. Do NOT silently demote 768→512.
 production:
   height: 768
   width: 768

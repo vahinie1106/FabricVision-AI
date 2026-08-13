@@ -6,7 +6,16 @@ export const GenerationService = {
     req: GenerationRequest,
     onProgress?: (progress: number, step: string, stage?: string) => void
   ): Promise<GenerationResponse> {
+    if (!req.generationMode) {
+      throw new Error("generation_mode is required (Preview | Standard | Production)");
+    }
+    const selectedMode = req.generationMode;
+    console.log("[FRONTEND QUALITY DEBUG]");
+    console.log(`selected_generation_mode=${selectedMode}`);
+
     const formData = new FormData();
+    // Send mode first so a truncated multipart body cannot drop it after the image.
+    formData.append("generation_mode", selectedMode);
     formData.append("fabric_image", req.fabricImage);
     formData.append("garment_type", req.garmentType);
     formData.append("fit", req.fit);
@@ -20,12 +29,13 @@ export const GenerationService = {
     formData.append("color", req.color);
     formData.append("sleeve", req.sleeve);
     formData.append("neckline", req.neckline);
-    if (!req.generationMode) {
-      throw new Error("generation_mode is required (Preview | Standard | Production)");
-    }
-    formData.append("generation_mode", req.generationMode);
 
-    const initRes = await ApiClient.postFormData<{ job_id: string }>("/generate", formData);
+    const qs = `?generation_mode=${encodeURIComponent(selectedMode)}`;
+    const initRes = await ApiClient.postFormData<{ job_id: string }>(
+      `/generate${qs}`,
+      formData,
+      { "X-Fabricvision-Generation-Mode": selectedMode }
+    );
     
     if (!initRes.job_id) {
       throw new Error("Failed to start generation job");

@@ -112,6 +112,12 @@ def resolve_flux_production_guidance(default: Optional[float] = None) -> float:
     return float(fallback)
 
 
+def _is_production_generation_mode(mode: Optional[str]) -> bool:
+    raw = (mode or "").strip().lower().replace("-", " ").replace("_", " ")
+    raw = " ".join(raw.split())
+    return raw in ("production", "high quality", "hq", "high", "highquality", "prod")
+
+
 class FLUXInferenceEngine:
     """FLUX.1-Kontext inference: fabric conditioning image + garment edit prompt."""
 
@@ -543,6 +549,7 @@ class FLUXInferenceEngine:
         save_raw_path: Optional[str] = None,
         flux_input_audit_path: Optional[str] = None,
         color_trace: Optional[Dict[str, Any]] = None,
+        generation_mode: str = "",
     ) -> Image.Image:
         """Generate a garment with FLUX.1-Kontext image conditioning."""
         t_start = time.perf_counter()
@@ -635,6 +642,19 @@ class FLUXInferenceEngine:
                 physical_vram_mb = 0.0
 
         self.logger.info("Kontext inference started (conditioning image present)")
+        production_mode = _is_production_generation_mode(generation_mode)
+        if production_mode:
+            resolved_steps = int(num_inference_steps)
+            resolved_resolution = (int(width), int(height))
+            if resolved_steps != 12:
+                raise RuntimeError(
+                    f"Production configuration invalid: expected 12 steps, got {resolved_steps}"
+                )
+            if resolved_resolution != (768, 768):
+                raise RuntimeError(
+                    f"Production configuration invalid: expected 768x768, got {resolved_resolution}"
+                )
+            os.environ.setdefault("FLUX_PRODUCTION_NO_OOM_FALLBACK", "1")
         snap0 = self._vram_snapshot()
         self.logger.info(
             "[FLUX] Effective config: %sx%s steps=%s guidance=%s max_seq=%s "
@@ -891,8 +911,24 @@ class FLUXInferenceEngine:
             if generator is not None and "generator" in signature.parameters:
                 kwargs["generator"] = generator
 
-            # Drop kwargs not accepted by this diffusers version
+            # Drop kwargs not accepted by this diffusers version, then force the
+            # scheduler step/size/guidance back on. Never run with a dropped
+            # num_inference_steps (diffusers default is not our Production lock).
+            required_call = {
+                "num_inference_steps": int(num_inference_steps),
+                "guidance_scale": float(guidance_scale),
+                "height": int(height),
+                "width": int(width),
+            }
             kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters or k.startswith("_")}
+            for key, value in required_call.items():
+                if key in signature.parameters:
+                    kwargs[key] = value
+            if "num_inference_steps" not in kwargs:
+                raise RuntimeError(
+                    "FLUX pipeline signature dropped num_inference_steps; "
+                    "refusing to run with an unknown scheduler default."
+                )
 
             # Large-resolution memory path (768²+): VAE tiling/slicing are supported on
             # FluxKontextPipeline and materially reduce decode/activation peaks on T4-class GPUs.
@@ -938,7 +974,16 @@ class FLUXInferenceEngine:
                 flush=True,
             )
             print("[FLUX] inference started", flush=True)
+            actual_steps = int(kwargs.get("num_inference_steps"))
+            actual_guidance = float(kwargs.get("guidance_scale"))
+            actual_h = int(kwargs.get("height"))
+            actual_w = int(kwargs.get("width"))
             for line in (
+                "[FLUX ACTUAL CONFIG]",
+                f"resolution={actual_w}x{actual_h}",
+                f"steps={actual_steps}",
+                f"guidance={actual_guidance}",
+                f"device={device_s}",
                 "[FLUX CONFIG]",
                 f"resolution={width}x{height}",
                 "[FLUX CONFIG]",
@@ -949,6 +994,16 @@ class FLUXInferenceEngine:
                 f"device={device_s}",
             ):
                 print(line, flush=True)
+            if production_mode:
+                if actual_steps != 12:
+                    raise RuntimeError(
+                        f"Production configuration invalid: expected 12 steps, got {actual_steps}"
+                    )
+                if (actual_w, actual_h) != (768, 768):
+                    raise RuntimeError(
+                        "Production configuration invalid: expected 768x768, "
+                        f"got {(actual_w, actual_h)}"
+                    )
             self.logger.info(
                 "[FLUX] FINAL kwargs before pipeline(): height=%s width=%s "
                 "steps=%s guidance=%s device=%s auto_resize=%s",
@@ -1053,6 +1108,8 @@ class FLUXInferenceEngine:
                 no_oom_fallback = os.environ.get(
                     "FLUX_PRODUCTION_NO_OOM_FALLBACK", ""
                 ).strip().lower() in ("1", "true", "yes", "on")
+                if production_mode:
+                    no_oom_fallback = True
                 if no_oom_fallback:
                     raise RuntimeError(
                         f"CUDA out of memory at requested Production settings "
@@ -1189,15 +1246,24 @@ class FLUXInferenceEngine:
             log_vram("after VAE decode")
             out_w, out_h = image.size if hasattr(image, "size") else (width, height)
             out_mode = getattr(image, "mode", "?")
+            print("[FLUX ACTUAL OUTPUT]", flush=True)
+            print(f"width={out_w}", flush=True)
+            print(f"height={out_h}", flush=True)
             print("[FLUX] inference completed", flush=True)
             print(f"[FLUX] output size = {out_w}x{out_h}", flush=True)
             print(f"[FLUX] output mode = {out_mode}", flush=True)
+            print("[FLUX] real FLUX output = true", flush=True)
             print("[FLUX CONFIG]", flush=True)
             print(f"actual_output_resolution={out_w}x{out_h}", flush=True)
             print("[FLUX CONFIG]", flush=True)
             print(f"actual_steps={num_inference_steps}", flush=True)
             print("[FLUX CONFIG]", flush=True)
             print(f"actual_guidance={guidance_scale}", flush=True)
+            if production_mode and (int(out_w), int(out_h)) != (768, 768):
+                raise RuntimeError(
+                    "Production FLUX output invalid: expected 768x768, "
+                    f"got {out_w}x{out_h}. Refusing to resize a smaller image."
+                )
 
             # Raw model output before any UI path — for blur root-cause isolation
             if save_raw_path:

@@ -71,7 +71,7 @@ def test_low_vram_keeps_conservative_steps(monkeypatch):
     assert policy.profile == "standard_low_vram"
 
 
-def test_production_low_vram_locks_512(monkeypatch):
+def test_production_low_vram_stays_768(monkeypatch):
     monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_SIZE", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_RESOLUTION", raising=False)
@@ -86,9 +86,11 @@ def test_production_low_vram_locks_512(monkeypatch):
         yaml_steps=10,
         yaml_guidance=3.0,
     )
-    assert policy.height == 512
-    assert policy.width == 512
-    assert policy.profile == "production_low_vram"
+    assert policy.height == 768
+    assert policy.width == 768
+    assert policy.num_inference_steps == 12
+    assert policy.guidance_scale == 3.0
+    assert policy.profile == "production_locked_768"
 
 
 def test_production_t4_defaults_to_768(monkeypatch):
@@ -111,7 +113,7 @@ def test_production_t4_defaults_to_768(monkeypatch):
     assert policy.width == 768
     assert policy.num_inference_steps == 12
     assert policy.guidance_scale == 3.0
-    assert policy.profile == "production_t4_768"
+    assert policy.profile == "production_locked_768"
 
 
 def test_production_t4_env_720(monkeypatch):
@@ -139,7 +141,7 @@ def test_production_steps_env_wins_on_low_vram(monkeypatch):
         yaml_steps=10,
     )
     assert policy.num_inference_steps == 14
-    assert policy.height == 512
+    assert policy.height == 768
 
 
 def test_oom_fallback_ladder():
@@ -254,8 +256,9 @@ def test_pipeline_production_policy_on_rtx3050(monkeypatch):
     )
 
     pipe._apply_production_vram_defaults("production")
-    assert pipe.config.height == 512
-    assert pipe.config.width == 512
+    assert pipe.config.height == 768
+    assert pipe.config.width == 768
+    assert pipe.config.num_inference_steps >= 12
 
 
 def test_pipeline_production_policy_on_t4(monkeypatch):

@@ -4,6 +4,7 @@ import os
 import shutil
 import threading
 import time
+from typing import Optional
 from pathlib import Path
 
 from PIL import Image
@@ -15,6 +16,20 @@ from src.common.models.model_manager import ModelManager
 # Shared VRAM-aware model orchestrator (same instance used by try-on / semantic services)
 model_manager = ModelManager()
 logger = logging.getLogger("fabricvision.api.generation")
+
+
+def resolve_incoming_generation_mode(*candidates: Optional[str]) -> str:
+    """First non-empty candidate wins. Never silently default to Standard."""
+    for raw in candidates:
+        if raw is None:
+            continue
+        text = str(raw).strip()
+        if text:
+            return text
+    raise ValueError(
+        "generation_mode is required (Preview | Standard | Production). "
+        "Silent fallback to Standard is disabled."
+    )
 
 # Single-flight GPU generation — concurrent jobs on one T4 cause immediate OOM.
 _generation_lock = threading.Lock()
@@ -49,7 +64,7 @@ def _process_generation_sync(
     color: str = "white",
     sleeve: str = "short",
     neckline: str = "round",
-    generation_mode: str = "standard",
+    generation_mode: str = "",
 ) -> None:
     """
     Synchronous FLUX garment worker.
@@ -85,15 +100,20 @@ def _process_generation_sync(
             normalize_generation_mode,
         )
 
-        raw_requested_mode = str(generation_mode or "")
-        mode = raw_requested_mode or "standard"
-        mode_key = normalize_generation_mode(mode)
-        print(f"[QUALITY DEBUG] requested_mode={raw_requested_mode or '(empty)'}", flush=True)
-        print(f"[QUALITY DEBUG] resolved_mode={mode_key}", flush=True)
+        raw_requested_mode = resolve_incoming_generation_mode(generation_mode)
+        mode = raw_requested_mode
+        normalized_mode = normalize_generation_mode(mode)
+        mode_key = normalized_mode
+        print("[QUALITY DEBUG]", flush=True)
+        print(f"[QUALITY DEBUG] api_received_generation_mode={raw_requested_mode}", flush=True)
+        print(f"[QUALITY DEBUG] requested_mode={raw_requested_mode}", flush=True)
+        print(f"[QUALITY DEBUG] normalized_mode={normalized_mode}", flush=True)
         logger.info(
-            "[QUALITY DEBUG] requested_mode=%s resolved_mode=%s",
-            raw_requested_mode or "(empty)",
-            mode_key,
+            "[QUALITY DEBUG] api_received_generation_mode=%s requested_mode=%s "
+            "normalized_mode=%s",
+            raw_requested_mode,
+            raw_requested_mode,
+            normalized_mode,
         )
 
         t_upload = _stage_log("UPLOAD/PARSE INPUT", t_job)
@@ -382,17 +402,25 @@ def _process_generation_sync(
         )
 
         flux_device = DeviceManager.resolve_role_device("flux", "cuda:0")
+        resolved_mode = str(pipeline.config.mode_key)
+        resolved_resolution = f"{pipeline.config.width}x{pipeline.config.height}"
+        resolved_steps = int(pipeline.config.num_inference_steps)
+        resolved_guidance = float(pipeline.config.guidance_scale)
         for line in (
-            f"[QUALITY DEBUG] requested_mode={raw_requested_mode or '(empty)'}",
-            f"[QUALITY DEBUG] resolved_mode={pipeline.config.mode_key}",
-            f"[QUALITY DEBUG] resolved_resolution={pipeline.config.width}x{pipeline.config.height}",
-            f"[QUALITY DEBUG] resolved_steps={pipeline.config.num_inference_steps}",
-            f"[QUALITY DEBUG] resolved_guidance={pipeline.config.guidance_scale}",
+            "[QUALITY DEBUG]",
+            f"[QUALITY DEBUG] api_received_generation_mode={raw_requested_mode}",
+            f"[QUALITY DEBUG] requested_mode={raw_requested_mode}",
+            f"[QUALITY DEBUG] normalized_mode={normalized_mode}",
+            f"[QUALITY DEBUG] resolved_mode={resolved_mode}",
+            f"[QUALITY DEBUG] resolved_resolution={resolved_resolution}",
+            f"[QUALITY DEBUG] resolved_steps={resolved_steps}",
+            f"[QUALITY DEBUG] resolved_guidance={resolved_guidance}",
             f"[QUALITY DEBUG] device={flux_device}",
             (
                 "[QUALITY DEBUG] "
                 "FLUX_PRODUCTION_RESOLUTION="
                 f"{os.environ.get('FLUX_PRODUCTION_RESOLUTION')} "
+                f"FLUX_PRODUCTION_SIZE={os.environ.get('FLUX_PRODUCTION_SIZE')} "
                 f"FLUX_PRODUCTION_STEPS={os.environ.get('FLUX_PRODUCTION_STEPS')} "
                 f"FLUX_PRODUCTION_GUIDANCE={os.environ.get('FLUX_PRODUCTION_GUIDANCE')} "
                 "FLUX_PRODUCTION_NO_OOM_FALLBACK="
@@ -654,7 +682,7 @@ async def process_generation(
     color: str = "white",
     sleeve: str = "short",
     neckline: str = "round",
-    generation_mode: str = "standard",
+    generation_mode: str = "",
 ):
     """
     Background worker for FLUX.1-Kontext fabric→garment generation.

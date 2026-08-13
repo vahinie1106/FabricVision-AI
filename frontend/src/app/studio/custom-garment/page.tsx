@@ -121,6 +121,9 @@ export default function CustomGarmentGenerator() {
     try {
       const { GenerationService } = await import("@/services/generationService");
 
+      console.log("[FRONTEND QUALITY DEBUG]");
+      console.log(`selected_generation_mode=${generationMode}`);
+
       const response = await GenerationService.generateCustomGarment(
         {
           fabricImage,

@@ -251,16 +251,19 @@ def select_production_generation_policy(
     """
     Production / High-Quality policy.
 
-    - Local / low-VRAM (<14GB): lock 512² (3050-safe).
-    - Kaggle T4 / high-VRAM: locked Production target 768×768 / 12 steps /
-      guidance 3.0 (env-overridable). Do NOT silently demote 768→720/704/512.
+    Locked target: 768×768 / 12 steps / guidance 3.0.
+
+    Production must NOT inherit Standard knobs:
+    FLUX_GENERATION_RESOLUTION, FLUX_GENERATION_STEPS, FLUX_STANDARD_STEPS.
+    VRAM size must NOT silently clamp Production to 512×3.
+    Override only via FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_SIZE /
+    FLUX_PRODUCTION_STEPS / FLUX_PRODUCTION_GUIDANCE.
     """
     from src.features.custom_generator.inference.flux_inference import (
         ALLOWED_FLUX_GENERATION_RESOLUTIONS,
         DEFAULT_KAGGLE_PRODUCTION_GUIDANCE,
         DEFAULT_KAGGLE_PRODUCTION_RESOLUTION,
         DEFAULT_KAGGLE_PRODUCTION_STEPS,
-        MIN_KAGGLE_PRODUCTION_RESOLUTION,
         resolve_flux_production_guidance,
         resolve_flux_production_resolution,
         resolve_flux_production_steps,
@@ -270,60 +273,39 @@ def select_production_generation_policy(
     phys = float(physical_mb if physical_mb is not None else diag.physical_total_mb)
     free = float(free_mb if free_mb is not None else diag.free_mb)
     offload = (offload_strategy or "").strip().lower()
+    _ = offload  # reserved for diagnostics / prefer_offload below
 
-    forced_steps = _env_int("FLUX_PRODUCTION_STEPS")
-    allow_high_res = _env_truthy("FLUX_ALLOW_HIGH_RES")
     offload_env = _env_truthy("FLUX_MODEL_CPU_OFFLOAD")
-
-    if forced_steps is not None:
-        base_steps = int(forced_steps)
-    else:
-        base_steps = resolve_flux_production_steps(
-            default=int(yaml_steps or DEFAULT_KAGGLE_PRODUCTION_STEPS)
-        )
-
-    guidance = resolve_flux_production_guidance(
-        default=float(yaml_guidance or DEFAULT_KAGGLE_PRODUCTION_GUIDANCE)
-    )
-
     prefer_offload = True if offload_env is None else offload_env
 
-    # RTX 3050 / <14GB: never default to 700+ Production (local-dev only).
-    if phys > 0 and phys < 14000:
-        forced_low = _env_int("FLUX_GENERATION_RESOLUTION") or _env_int(
-            "FLUX_PRODUCTION_RESOLUTION"
-        ) or _env_int("FLUX_PRODUCTION_SIZE")
-        res = forced_low or 512
-        if res > 512 and allow_high_res is not True:
-            res = 512
-        return ProductionGenPolicy(
-            height=int(res),
-            width=int(res),
-            num_inference_steps=int(
-                base_steps if forced_steps is not None else max(12, min(16, base_steps))
-            ),
-            guidance_scale=float(guidance),
-            prefer_model_cpu_offload=True if offload_env is None else offload_env,
-            enable_vae_tiling=True,
-            reason=f"production_low_vram phys={phys:.0f}MB steps={base_steps}",
-            profile="production_low_vram",
-        )
-
-    # Kaggle T4-class: honor locked Production resolution (default 768).
-    res = resolve_flux_production_resolution(
-        default=int(yaml_height)
-        if int(yaml_height) >= MIN_KAGGLE_PRODUCTION_RESOLUTION
+    # yaml_* are hints only when they already match the locked Production target.
+    height_default = (
+        int(yaml_height)
+        if int(yaml_height) >= DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
         else DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
     )
-    if res < MIN_KAGGLE_PRODUCTION_RESOLUTION:
-        res = DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
+    steps_default = (
+        int(yaml_steps)
+        if int(yaml_steps) >= DEFAULT_KAGGLE_PRODUCTION_STEPS
+        else DEFAULT_KAGGLE_PRODUCTION_STEPS
+    )
+    guidance_default = (
+        float(yaml_guidance)
+        if abs(float(yaml_guidance) - DEFAULT_KAGGLE_PRODUCTION_GUIDANCE) <= 0.05
+        else DEFAULT_KAGGLE_PRODUCTION_GUIDANCE
+    )
+
+    res = resolve_flux_production_resolution(default=height_default)
     if res not in ALLOWED_FLUX_GENERATION_RESOLUTIONS:
         res = DEFAULT_KAGGLE_PRODUCTION_RESOLUTION
+    base_steps = resolve_flux_production_steps(default=steps_default)
+    guidance = resolve_flux_production_guidance(default=guidance_default)
 
-    profile = "production_t4_768"
+    profile = "production_locked_768"
     reason = (
-        f"production_t4_768 free={free:.0f}MB phys={phys:.0f}MB "
-        f"res={res} steps={base_steps} guidance={guidance}"
+        f"production_locked_768 free={free:.0f}MB phys={phys:.0f}MB "
+        f"res={res} steps={base_steps} guidance={guidance} "
+        "(isolated from FLUX_GENERATION_RESOLUTION / FLUX_STANDARD_STEPS)"
     )
 
     return ProductionGenPolicy(

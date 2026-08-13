@@ -91,13 +91,18 @@ export class ApiClient {
     return res.json();
   }
 
-  static async postFormData<T>(endpoint: string, formData: FormData): Promise<T> {
+  static async postFormData<T>(
+    endpoint: string,
+    formData: FormData,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> {
     const base = resolveApiBaseUrl();
     let res: Response;
     try {
       res = await fetch(`${base}${endpoint}`, {
         method: "POST",
         body: formData,
+        headers: extraHeaders,
         // Note: Do not set Content-Type header when sending FormData,
         // the browser automatically sets it along with the correct boundary.
       });
