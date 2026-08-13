@@ -58,6 +58,41 @@ def normalize_generation_mode(mode: Optional[str]) -> str:
     return "standard"
 
 
+def assert_production_config_lock(
+    *,
+    mode_key: str,
+    height: int,
+    width: int,
+    steps: int,
+    guidance: float,
+    physical_vram_mb: float = 0.0,
+) -> None:
+    """Fail before FLUX inference if Production collapsed to Standard 512×3."""
+    if str(mode_key).strip().lower() != "production":
+        return
+    h = int(height)
+    w = int(width)
+    n = int(steps)
+    g = float(guidance)
+    if n < 12:
+        raise RuntimeError(
+            f"Production resolved to {n} steps (required 12). "
+            "The API likely received Standard/Preview, or steps were overwritten "
+            "by flux_config.yaml standard: num_inference_steps=3. "
+            "Check [QUALITY DEBUG] requested_mode vs resolved_mode."
+        )
+    if abs(g - 3.0) > 0.05:
+        raise RuntimeError(
+            f"Production resolved to guidance={g} (required 3.0)."
+        )
+    # T4 / 14GB+: Production must stay 768×768. Local 3050 may clamp to 512×12.
+    if float(physical_vram_mb) >= 14000 and (h < 768 or w < 768):
+        raise RuntimeError(
+            f"Production on T4-class GPU resolved to {w}x{h} steps={n} "
+            "(required 768x768 / 12). Refusing silent 768→512 downgrade."
+        )
+
+
 @dataclass
 class GarmentGenerationConfig:
     """Runtime configuration for FLUX.1-Kontext garment generation."""
@@ -434,6 +469,23 @@ class GarmentGenerationPipeline:
                 self._apply_production_vram_defaults("production")
         except Exception as pol_exc:
             self.logger.warning("Runtime VRAM policy refresh skipped: %s", pol_exc)
+
+        try:
+            from src.features.custom_generator.inference.flux_vram_policy import (
+                collect_vram_diagnostics,
+            )
+
+            phys = float(collect_vram_diagnostics().physical_total_mb or 0.0)
+        except Exception:
+            phys = 0.0
+        assert_production_config_lock(
+            mode_key=normalize_generation_mode(self.config.generation_mode),
+            height=int(self.config.height),
+            width=int(self.config.width),
+            steps=int(self.config.num_inference_steps),
+            guidance=float(self.config.guidance_scale),
+            physical_vram_mb=phys,
+        )
 
         # Keep fabric in memory — avoid re-reading from disk during conditioning.
         fabric_image = reference_image

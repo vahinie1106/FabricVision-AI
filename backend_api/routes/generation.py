@@ -31,6 +31,10 @@ async def generate_garment(
     generation_mode: preview | standard | production
     (also accepts legacy "Fast Preview" / "High Quality").
     """
+    print(
+        f"[QUALITY DEBUG] api_received_generation_mode={generation_mode!r}",
+        flush=True,
+    )
     try:
         fabric_path = save_upload_file(fabric_image)
     except Exception as e:

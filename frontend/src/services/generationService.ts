@@ -20,7 +20,10 @@ export const GenerationService = {
     formData.append("color", req.color);
     formData.append("sleeve", req.sleeve);
     formData.append("neckline", req.neckline);
-    formData.append("generation_mode", req.generationMode || "standard");
+    if (!req.generationMode) {
+      throw new Error("generation_mode is required (Preview | Standard | Production)");
+    }
+    formData.append("generation_mode", req.generationMode);
 
     const initRes = await ApiClient.postFormData<{ job_id: string }>("/generate", formData);
     

@@ -81,11 +81,20 @@ def _process_generation_sync(
         from src.features.custom_generator.pipeline.garment_generation_pipeline import (
             GarmentGenerationConfig,
             GarmentGenerationPipeline,
+            assert_production_config_lock,
             normalize_generation_mode,
         )
 
-        mode = generation_mode or "standard"
+        raw_requested_mode = str(generation_mode or "")
+        mode = raw_requested_mode or "standard"
         mode_key = normalize_generation_mode(mode)
+        print(f"[QUALITY DEBUG] requested_mode={raw_requested_mode or '(empty)'}", flush=True)
+        print(f"[QUALITY DEBUG] resolved_mode={mode_key}", flush=True)
+        logger.info(
+            "[QUALITY DEBUG] requested_mode=%s resolved_mode=%s",
+            raw_requested_mode or "(empty)",
+            mode_key,
+        )
 
         t_upload = _stage_log("UPLOAD/PARSE INPUT", t_job)
         already_loaded = (
@@ -368,21 +377,20 @@ def _process_generation_sync(
         pipeline = GarmentGenerationPipeline(config=config, model_loader=loader)
 
         from src.common.models.device_manager import DeviceManager
+        from src.features.custom_generator.inference.flux_vram_policy import (
+            collect_vram_diagnostics,
+        )
 
         flux_device = DeviceManager.resolve_role_device("flux", "cuda:0")
         for line in (
-            "[QUALITY DEBUG]",
-            f"requested_mode={pipeline.config.generation_mode}",
-            "[QUALITY DEBUG]",
-            f"resolved_resolution={pipeline.config.width}x{pipeline.config.height}",
-            "[QUALITY DEBUG]",
-            f"resolved_steps={pipeline.config.num_inference_steps}",
-            "[QUALITY DEBUG]",
-            f"resolved_guidance={pipeline.config.guidance_scale}",
-            "[QUALITY DEBUG]",
-            f"device={flux_device}",
-            "[QUALITY DEBUG]",
+            f"[QUALITY DEBUG] requested_mode={raw_requested_mode or '(empty)'}",
+            f"[QUALITY DEBUG] resolved_mode={pipeline.config.mode_key}",
+            f"[QUALITY DEBUG] resolved_resolution={pipeline.config.width}x{pipeline.config.height}",
+            f"[QUALITY DEBUG] resolved_steps={pipeline.config.num_inference_steps}",
+            f"[QUALITY DEBUG] resolved_guidance={pipeline.config.guidance_scale}",
+            f"[QUALITY DEBUG] device={flux_device}",
             (
+                "[QUALITY DEBUG] "
                 "FLUX_PRODUCTION_RESOLUTION="
                 f"{os.environ.get('FLUX_PRODUCTION_RESOLUTION')} "
                 f"FLUX_PRODUCTION_STEPS={os.environ.get('FLUX_PRODUCTION_STEPS')} "
@@ -394,10 +402,28 @@ def _process_generation_sync(
             print(line, flush=True)
             logger.info(line)
 
+        phys = 0.0
+        try:
+            phys = float(collect_vram_diagnostics().physical_total_mb or 0.0)
+        except Exception:
+            phys = 0.0
+        assert_production_config_lock(
+            mode_key=str(pipeline.config.mode_key),
+            height=int(pipeline.config.height),
+            width=int(pipeline.config.width),
+            steps=int(pipeline.config.num_inference_steps),
+            guidance=float(pipeline.config.guidance_scale),
+            physical_vram_mb=phys,
+        )
+
         job_manager.update_job(
             job_id,
             progress=20,
-            current_step="Preparing fabric",
+            current_step=(
+                f"{pipeline.config.generation_mode} "
+                f"{pipeline.config.width}x{pipeline.config.height} / "
+                f"{pipeline.config.num_inference_steps} steps"
+            ),
         )
 
         ref_img = Image.open(fabric_image_path).convert("RGB")
@@ -518,7 +544,7 @@ def _process_generation_sync(
             "model": "FLUX.1-Kontext",
             "generation_mode": pipeline.config.generation_mode,
             "mode_key": mode_key,
-            "requested_mode": pipeline.config.generation_mode,
+            "requested_mode": raw_requested_mode or pipeline.config.generation_mode,
             "was_real_flux_used": bool(stats.get("was_real_flux_used", True)),
             "model_reused": bool(stats.get("model_reused", already_loaded)),
             "has_image": True,

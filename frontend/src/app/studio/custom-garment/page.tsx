@@ -53,8 +53,12 @@ export default function CustomGarmentGenerator() {
   const [color, setColor] = useState("Match Fabric");
   const [sleeve, setSleeve] = useState("Short Sleeve");
   const [neckline, setNeckline] = useState("Round Neck");
-  /** Standard = default quality/speed balance; Production maximizes detail on 6GB. */
-  const [generationMode, setGenerationMode] = useState<GenerationMode>("Standard");
+  /** Kaggle bake-time default is Production; local Next stays Standard. */
+  const [generationMode, setGenerationMode] = useState<GenerationMode>(() => {
+    const raw = (process.env.NEXT_PUBLIC_DEFAULT_GENERATION_MODE || "Standard").trim();
+    if (raw === "Preview" || raw === "Standard" || raw === "Production") return raw;
+    return "Standard";
+  });
 
   const [resultUrl, setResultUrl] = useState<string | null>(null);
   const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
@@ -706,7 +710,9 @@ function SelectField({
         onChange={(e) => onChange(e.target.value)}
       >
         {options.map((o) => (
-          <option key={o}>{o}</option>
+          <option key={o} value={o}>
+            {o}
+          </option>
         ))}
       </select>
     </div>

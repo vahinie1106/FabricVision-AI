@@ -9,6 +9,7 @@ from src.features.custom_generator.inference import flux_vram_policy as pol
 from src.features.custom_generator.pipeline.garment_generation_pipeline import (
     GarmentGenerationConfig,
     GarmentGenerationPipeline,
+    assert_production_config_lock,
     normalize_generation_mode,
 )
 
@@ -105,10 +106,76 @@ def test_production_no_oom_fallback_does_not_downgrade_resolution(monkeypatch):
     assert "no silent resize" in src
 
 
+def test_production_lock_rejects_three_steps():
+    try:
+        assert_production_config_lock(
+            mode_key="production",
+            height=512,
+            width=512,
+            steps=3,
+            guidance=3.0,
+            physical_vram_mb=15109.0,
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "12" in str(exc)
+        assert "3" in str(exc)
+
+
+def test_production_lock_rejects_t4_512():
+    try:
+        assert_production_config_lock(
+            mode_key="production",
+            height=512,
+            width=512,
+            steps=12,
+            guidance=3.0,
+            physical_vram_mb=15109.0,
+        )
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "768" in str(exc)
+
+
+def test_production_lock_allows_t4_768x12():
+    assert_production_config_lock(
+        mode_key="production",
+        height=768,
+        width=768,
+        steps=12,
+        guidance=3.0,
+        physical_vram_mb=15109.0,
+    )
+
+
+def test_production_lock_allows_local_512x12():
+    assert_production_config_lock(
+        mode_key="production",
+        height=512,
+        width=512,
+        steps=12,
+        guidance=3.0,
+        physical_vram_mb=6144.0,
+    )
+
+
+def test_standard_three_steps_does_not_trip_production_lock():
+    assert_production_config_lock(
+        mode_key="standard",
+        height=512,
+        width=512,
+        steps=3,
+        guidance=3.0,
+        physical_vram_mb=15109.0,
+    )
+
+
 def test_frontend_exposes_all_three_modes():
     page = Path("frontend/src/app/studio/custom-garment/page.tsx").read_text(
         encoding="utf-8"
     )
     assert 'options={["Preview", "Standard", "Production"]}' in page
+    assert "NEXT_PUBLIC_DEFAULT_GENERATION_MODE" in page
     svc = Path("frontend/src/services/generationService.ts").read_text(encoding="utf-8")
-    assert 'formData.append("generation_mode", req.generationMode || "standard")' in svc
+    assert 'formData.append("generation_mode", req.generationMode)' in svc
+    assert 'req.generationMode || "standard"' not in svc

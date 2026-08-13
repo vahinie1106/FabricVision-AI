@@ -305,6 +305,7 @@ def test_frontend_env_split_proxy_preserves_backend_port():
     assert env["NEXT_PUBLIC_API_URL"] == "/proxy/8000/api/v1"
     assert env["NEXT_PUBLIC_BACKEND_URL"] == "/proxy/8000"
     assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "false"
+    assert env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] == "Production"
     assert "NEXT_PUBLIC_BASE_PATH" not in env
 
 
