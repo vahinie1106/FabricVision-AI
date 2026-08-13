@@ -14,25 +14,46 @@ const frontendRoot = path.resolve(__dirname);
  * Optional public path prefix for Jupyter/Kaggle reverse proxies.
  *
  * On Kaggle, scripts/run_kaggle.py sets this dynamically from the live Jupyter
- * server base_url (for example /k/<session>/proxy/proxy/8000).
- * Do NOT hard-code host-root /proxy/8000 here.
+ * server base_url. Split-proxy uses NEXT_PUBLIC_ASSET_PREFIX for PORT 3000
+ * (example /k/<session>/proxy/proxy/3000) and leaves basePath empty so
+ * jupyter-server-proxy can strip the prefix. Never use an :8000 prefix for assets.
  *
  * Leave unset for local development (Next on :3000 or gateway without prefix).
  */
 const basePath = (process.env.NEXT_PUBLIC_BASE_PATH || "").trim().replace(/\/+$/, "");
+/** Split-proxy Kaggle: keep routes at `/` (jupyter strips the prefix) but load
+ * `/_next` assets from the public PORT 3000 path so the browser does not hit
+ * host-root `/_next` (blank page). Never use an :8000 prefix here. */
+const assetPrefix = (
+  process.env.NEXT_PUBLIC_ASSET_PREFIX ||
+  process.env.NEXT_PUBLIC_BASE_PATH ||
+  ""
+)
+  .trim()
+  .replace(/\/+$/, "");
+
+if (assetPrefix.includes("8000") && !(basePath && basePath.includes("8000"))) {
+  throw new Error(
+    `NEXT_PUBLIC_ASSET_PREFIX must be a PORT 3000 path, not 8000 (got ${assetPrefix})`
+  );
+}
 
 const nextConfig: NextConfig = {
   // Absolute path required; keeps PostCSS/Tailwind scoped to frontend/.
   turbopack: {
     root: frontendRoot,
   },
+  // jupyter-server-proxy + Next absolute 308s to localhost/0.0.0.0 break PORT 3000.
+  skipTrailingSlashRedirect: true,
+  trailingSlash: false,
   ...(basePath
     ? {
         basePath,
-        // Keep assets under the same public prefix so /_next/* stays on the proxy.
-        assetPrefix: basePath,
+        assetPrefix: assetPrefix || basePath,
       }
-    : {}),
+    : assetPrefix
+      ? { assetPrefix }
+      : {}),
 };
 
 export default nextConfig;

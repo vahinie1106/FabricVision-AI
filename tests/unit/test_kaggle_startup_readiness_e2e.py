@@ -307,6 +307,7 @@ def test_frontend_env_split_proxy_preserves_backend_port():
     assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "false"
     assert env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] == "Production"
     assert "NEXT_PUBLIC_BASE_PATH" not in env
+    assert "NEXT_PUBLIC_ASSET_PREFIX" not in env
 
 
 def test_frontend_env_gateway_uses_relative_api():
@@ -316,6 +317,7 @@ def test_frontend_env_gateway_uses_relative_api():
     assert env["NEXT_PUBLIC_API_URL"] == "/api/v1"
     assert env["NEXT_PUBLIC_BASE_PATH"] == "/k/abc/proxy/proxy/8000"
     assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "true"
+    assert "NEXT_PUBLIC_ASSET_PREFIX" not in env
 
 
 def test_main_default_skips_blocking_prefetch_before_services():
@@ -480,6 +482,7 @@ def test_banner_never_advertises_port_8000_as_website(monkeypatch):
         "base_path": "",
         "deploy_mode": "split_proxy",
         "is_kaggle": True,
+        "website_confirmed": True,
     }
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -508,10 +511,12 @@ def test_start_next_binds_all_interfaces():
     import scripts.run_kaggle as rk
 
     src = inspect.getsource(rk.start_next)
-    assert '"-H", "0.0.0.0"' in src or "'-H', '0.0.0.0'" in src
-    assert '"-p", "3000"' in src or "'-p', '3000'" in src
-    assert "HOSTNAME" not in src or 'env.pop("HOSTNAME"' in src
-    assert '"127.0.0.1"' not in src.replace("http://127.0.0.1", "")
+    assert "--hostname" in src and "0.0.0.0" in src
+    assert "--port" in src and "3000" in src
+    assert 'env.pop("HOSTNAME"' in src
+    assert 'env.pop("HOST"' in src
+    pkg = (rk.FRONTEND / "package.json").read_text(encoding="utf-8")
+    assert "next start --hostname 0.0.0.0 --port 3000" in pkg
 
 
 def test_collapse_extra_proxy_segments_caps_nesting():
@@ -534,3 +539,168 @@ def test_main_split_proxy_applies_port_3000_website():
     assert "apply_split_proxy_public_urls" in src
     assert "discover_working_frontend_public_path" in src
     assert "stopping stale :3000 and :8000" in src
+    assert "print_startup_checks" in src
+    assert "website_confirmed" in src
+
+
+def test_split_proxy_frontend_public_path_never_uses_8000():
+    import scripts.run_kaggle as rk
+
+    path = rk.split_proxy_frontend_public_path("/k/sess/proxy/")
+    assert path.endswith("3000")
+    assert "8000" not in path
+    assert path == "/k/sess/proxy/proxy/3000"
+    assert rk.split_proxy_frontend_public_path("/") == "/proxy/3000"
+
+
+def test_frontend_env_kaggle_sets_port_3000_asset_prefix(monkeypatch):
+    import scripts.run_kaggle as rk
+
+    monkeypatch.setattr(rk, "is_kaggle_environment", lambda: True)
+    monkeypatch.setattr(rk, "read_jupyter_base_url", lambda: "/k/sess/proxy/")
+    env = rk._frontend_env("", split_proxy=True)
+    assert env["NEXT_PUBLIC_ASSET_PREFIX"] == "/k/sess/proxy/proxy/3000"
+    assert "8000" not in env["NEXT_PUBLIC_ASSET_PREFIX"]
+    assert "NEXT_PUBLIC_BASE_PATH" not in env
+    assert env["NEXT_PUBLIC_API_URL"] == "/proxy/proxy/8000/api/v1"
+    assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "false"
+
+
+def test_next_config_skips_trailing_slash_redirect():
+    from pathlib import Path
+
+    cfg = Path("frontend/next.config.ts").read_text(encoding="utf-8")
+    assert "skipTrailingSlashRedirect: true" in cfg
+    assert "NEXT_PUBLIC_ASSET_PREFIX" in cfg
+    assert "PORT 8000" in cfg or "8000" in cfg
+
+
+def test_http_probe_does_not_follow_redirects():
+    import inspect
+    import scripts.run_kaggle as rk
+
+    src = inspect.getsource(rk._http_probe)
+    assert "HTTPRedirectHandler" in inspect.getsource(rk._no_redirect_opener)
+    assert "_no_redirect_opener" in src
+    assert "urlopen" not in src
+
+
+def test_wait_http_rejects_loopback_location(monkeypatch):
+    import scripts.run_kaggle as rk
+
+    monkeypatch.setattr(
+        rk,
+        "_http_status_noredirect",
+        lambda url, timeout=8.0: (308, "", "http://127.0.0.1:3000/"),
+    )
+    monkeypatch.setattr(rk.time, "sleep", lambda *_: None)
+    with pytest.raises(RuntimeError, match="loopback"):
+        rk.wait_http(
+            "http://127.0.0.1:3000/",
+            "Next.js root",
+            attempts=2,
+            reject_loopback_redirect=True,
+        )
+
+
+def test_print_startup_checks_unconfirmed_does_not_invent_url():
+    import scripts.run_kaggle as rk
+
+    deploy = {
+        "website_url": (
+            "https://kkb-production.jupyter-proxy.kaggle.net"
+            "/k/s/proxy/proxy/3000/"
+        ),
+        "api_public_url": (
+            "https://kkb-production.jupyter-proxy.kaggle.net"
+            "/k/s/proxy/proxy/8000/api/v1/"
+        ),
+        "website_confirmed": False,
+    }
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rk.print_startup_checks(
+            frontend_status=200,
+            backend_status=200,
+            deploy=deploy,
+            website_confirmed=False,
+        )
+    text = buf.getvalue()
+    assert "[FRONTEND CHECK]" in text
+    assert "host=0.0.0.0" in text
+    assert "port=3000" in text
+    assert "local_url=http://127.0.0.1:3000/" in text
+    assert "local_status=200" in text
+    assert "[BACKEND CHECK]" in text
+    assert "port=8000" in text
+    assert "health_status=200" in text
+    assert "[KAGGLE PROXY]" in text
+    assert "frontend_port=3000" in text
+    assert "backend_port=8000" in text
+    frontend_line = [
+        ln for ln in text.splitlines() if ln.startswith("public_frontend_url=")
+    ][0]
+    assert "NOT CONFIRMED" in frontend_line
+    assert "kkb-production" not in frontend_line
+    assert "/proxy/8000" not in frontend_line
+
+
+def test_banner_unconfirmed_does_not_print_guessed_website(monkeypatch):
+    import scripts.run_kaggle as rk
+
+    monkeypatch.setattr(rk, "_pids_on_port", lambda _p: [])
+    deploy = {
+        "website_url": (
+            "https://kkb-production.jupyter-proxy.kaggle.net"
+            "/k/s/proxy/proxy/3000/"
+        ),
+        "public_url": (
+            "https://kkb-production.jupyter-proxy.kaggle.net"
+            "/k/s/proxy/proxy/3000/"
+        ),
+        "api_public_url": (
+            "https://kkb-production.jupyter-proxy.kaggle.net"
+            "/k/s/proxy/proxy/8000/api/v1/"
+        ),
+        "website_confirmed": False,
+        "base_path": "",
+        "deploy_mode": "split_proxy",
+        "is_kaggle": True,
+    }
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rk.print_banner(
+            health_code=200,
+            root_code=200,
+            next_code=200,
+            deploy=deploy,
+            application_ready=True,
+        )
+    text = buf.getvalue()
+    website_block = text.split("PUBLIC WEBSITE:")[1].split("BACKEND:")[0]
+    assert "not confirmed" in website_block.lower()
+    assert "kkb-production" not in website_block
+    assert "/proxy/8000" not in website_block
+
+
+def test_is_loopback_url_detects_localhost_and_unspecified():
+    import scripts.run_kaggle as rk
+
+    assert rk._is_loopback_url("http://127.0.0.1:3000/")
+    assert rk._is_loopback_url("http://localhost:8000/api/v1/health")
+    assert rk._is_loopback_url("http://0.0.0.0:3000/")
+    assert not rk._is_loopback_url(
+        "https://kkb-production.jupyter-proxy.kaggle.net/k/s/proxy/proxy/3000/"
+    )
+
+
+def test_split_proxy_build_marker_includes_asset_prefix():
+    import scripts.run_kaggle as rk
+
+    marker = rk.split_proxy_build_marker(
+        {"NEXT_PUBLIC_ASSET_PREFIX": "/k/sess/proxy/proxy/3000"}
+    )
+    assert "3000" in marker
+    assert "8000" in marker
+    assert "/k/sess/proxy/proxy/3000" in marker
+    assert rk.split_proxy_build_marker({}) == "SPLIT:/proxy/8000:assetPrefix=none"

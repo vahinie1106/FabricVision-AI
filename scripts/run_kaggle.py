@@ -206,6 +206,23 @@ def candidate_public_paths(jupyter_base_url: str, port: int = 8000) -> List[str]
     return ordered
 
 
+def split_proxy_frontend_public_path(jupyter_base_url: str) -> str:
+    """Public PORT 3000 path for Next assetPrefix. Never an :8000 path."""
+    paths = candidate_public_paths(jupyter_base_url or "/", port=3000)
+    for path in paths:
+        if "8000" in path:
+            continue
+        if path.endswith("3000"):
+            return path
+    return "/proxy/3000"
+
+
+def split_proxy_build_marker(env: Dict[str, Any]) -> str:
+    """Invalidate stale Next builds when split-proxy assetPrefix changes."""
+    prefix = str((env or {}).get("NEXT_PUBLIC_ASSET_PREFIX") or "").strip()
+    return f"SPLIT:/proxy/8000:assetPrefix={prefix or 'none'}"
+
+
 def _urls_for_public_path(host: str, public_path: str) -> Dict[str, str]:
     host = host.rstrip("/")
     path = _normalize_public_path(public_path)
@@ -284,8 +301,22 @@ def _looks_like_app_response(status: int, body: str, content_hint: str = "") -> 
     return False
 
 
+def _no_redirect_opener() -> urllib.request.OpenerDirector:
+    """Opener that surfaces 3xx + Location instead of following to localhost."""
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    return urllib.request.build_opener(_NoRedirect)
+
+
 def _http_probe(url: str, timeout: float = 12.0, token: Optional[str] = None) -> Dict[str, Any]:
-    """GET url; return status/body/headers (does not follow forever)."""
+    """GET url without following redirects.
+
+    Following 308/307 Location: http://127.0.0.1:3000 from the Kaggle VM yields
+    HTTP 200 (Next is local) while the user's browser gets ERR_CONNECTION_REFUSED.
+    """
     target = url
     if token and "token=" not in url:
         sep = "&" if "?" in url else "?"
@@ -298,13 +329,14 @@ def _http_probe(url: str, timeout: float = 12.0, token: Optional[str] = None) ->
         "location": None,
         "error": None,
     }
+    opener = _no_redirect_opener()
     try:
         req = urllib.request.Request(
             target,
             method="GET",
             headers={"User-Agent": "FabricVision-run_kaggle/1.0", "Accept": "*/*"},
         )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             out["status"] = int(getattr(resp, "status", 200))
             out["content_type"] = resp.headers.get("Content-Type") or ""
             out["location"] = resp.headers.get("Location")
@@ -444,15 +476,20 @@ def discover_working_frontend_public_path(
             status = int(probe.get("status") or 0)
             body = probe.get("body") or ""
             ctype = probe.get("content_type") or ""
+            loc = str(probe.get("location") or "")
             endpoint_status[name] = status
             details[name] = {
                 "status": status,
                 "content_type": ctype,
-                "location": probe.get("location"),
+                "location": loc,
                 "body_preview": body[:160],
                 "edge_404": _is_kaggle_edge_404(status, body),
+                "loopback_redirect": _is_loopback_url(loc),
             }
-            if status != 200 or _is_kaggle_edge_404(status, body):
+            if _is_loopback_url(loc):
+                ok_all = False
+                _log(f"  {name}: LOOPBACK REDIRECT Location={loc!r}")
+            elif status != 200 or _is_kaggle_edge_404(status, body):
                 ok_all = False
             elif not _looks_like_app_response(status, body, ctype):
                 ok_all = False
@@ -657,6 +694,39 @@ def _http_status(url: str, timeout: float = 8.0) -> tuple[int, str]:
         return 0, str(exc)
 
 
+def _is_loopback_url(url: Optional[str]) -> bool:
+    text = (url or "").strip().lower()
+    if not text:
+        return False
+    return (
+        "127.0.0.1" in text
+        or "localhost" in text
+        or "://0.0.0.0" in text
+        or text.startswith("0.0.0.0:")
+    )
+
+
+def _http_status_noredirect(url: str, timeout: float = 8.0) -> tuple[int, str, Optional[str]]:
+    """GET without following redirects so loopback Location headers are visible."""
+    opener = _no_redirect_opener()
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with opener.open(req, timeout=timeout) as resp:
+            code = int(getattr(resp, "status", 200))
+            body = resp.read(2_000_000).decode("utf-8", errors="replace")
+            location = resp.headers.get("Location")
+            return code, body, location
+    except urllib.error.HTTPError as exc:
+        location = exc.headers.get("Location") if exc.headers else None
+        try:
+            body = exc.read(64_000).decode("utf-8", errors="replace")
+        except Exception:
+            body = str(exc.reason)
+        return int(exc.code), body, location
+    except Exception as exc:
+        return 0, str(exc), None
+
+
 def _http_ok(url: str, timeout: float = 5.0) -> tuple[bool, int, str]:
     code, body = _http_status(url, timeout=timeout)
     return 200 <= code < 400, code, body
@@ -772,6 +842,14 @@ def _frontend_env(base_path: str, *, split_proxy: bool = False) -> dict:
         env.pop("NEXT_PUBLIC_BASE_PATH", None)
         env.pop("NEXT_PUBLIC_LOCAL_API_ROOT", None)
         env.pop("NEXT_PUBLIC_LOCAL_API_ORIGIN", None)
+        # Kaggle split: prefix /_next assets for PORT 3000. Keep Next routes at `/`
+        # because jupyter-server-proxy strips the public prefix. Never bake :8000.
+        if is_kaggle_environment():
+            env["NEXT_PUBLIC_ASSET_PREFIX"] = split_proxy_frontend_public_path(
+                jupyter_base
+            )
+        else:
+            env.pop("NEXT_PUBLIC_ASSET_PREFIX", None)
         env["FABRICVISION_PROXY_NESTING"] = "double" if nested else "single"
         # Kaggle Custom Garment must default to Production 768×12, not Standard 512×3.
         env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] = "Production"
@@ -786,6 +864,7 @@ def _frontend_env(base_path: str, *, split_proxy: bool = False) -> dict:
         env["NEXT_PUBLIC_FORBID_LOOPBACK"] = "true"
         env.pop("NEXT_PUBLIC_LOCAL_API_ROOT", None)
         env.pop("NEXT_PUBLIC_LOCAL_API_ORIGIN", None)
+        env.pop("NEXT_PUBLIC_ASSET_PREFIX", None)
         env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] = "Production"
     return env
 
@@ -806,6 +885,7 @@ def write_frontend_dotenv(base_path: str, *, split_proxy: bool) -> Path:
         "NEXT_PUBLIC_BASE_PATH",
         "NEXT_PUBLIC_FORBID_LOOPBACK",
         "NEXT_PUBLIC_DEFAULT_GENERATION_MODE",
+        "NEXT_PUBLIC_ASSET_PREFIX",
     )
     lines = [
         "# Generated by scripts/run_kaggle.py — do not commit secrets.",
@@ -815,6 +895,10 @@ def write_frontend_dotenv(base_path: str, *, split_proxy: bool) -> Path:
     for key in keys:
         if key in env and env[key] is not None:
             val = str(env[key])
+            if key == "NEXT_PUBLIC_ASSET_PREFIX" and "8000" in val:
+                raise RuntimeError(
+                    f"Refusing to write {key}={val!r} (PORT 3000 assets must not use 8000)."
+                )
             if "127.0.0.1" in val or "localhost" in val.lower():
                 raise RuntimeError(
                     f"Refusing to write loopback {key}={val!r} into frontend/.env.local "
@@ -826,7 +910,8 @@ def write_frontend_dotenv(base_path: str, *, split_proxy: bool) -> Path:
     _log(
         f"Wrote {path} "
         f"(split_proxy={split_proxy} API_URL={env.get('NEXT_PUBLIC_API_URL')!r} "
-        f"BASE_PATH={env.get('NEXT_PUBLIC_BASE_PATH', '')!r})"
+        f"BASE_PATH={env.get('NEXT_PUBLIC_BASE_PATH', '')!r} "
+        f"ASSET_PREFIX={env.get('NEXT_PUBLIC_ASSET_PREFIX', '')!r})"
     )
     return path
 
@@ -856,6 +941,14 @@ def frontend_dotenv_is_kaggle_safe(*, split_proxy: bool) -> bool:
         if "NEXT_PUBLIC_FORBID_LOOPBACK=true" not in text.replace(" ", ""):
             if "FORBID_LOOPBACK=true" not in text.replace(" ", ""):
                 return False
+        # Asset prefix is optional in tests; when present it must be PORT 3000.
+        for line in text.splitlines():
+            if line.startswith("NEXT_PUBLIC_ASSET_PREFIX="):
+                prefix = line.split("=", 1)[-1].strip()
+                if "8000" in prefix or "127.0.0.1" in prefix or "localhost" in prefix.lower():
+                    return False
+                if "3000" not in prefix:
+                    return False
     return True
 
 
@@ -869,8 +962,12 @@ def assert_client_bundle_has_no_loopback_api() -> None:
         b"http://localhost:8000",
         b"https://127.0.0.1:8000",
         b"https://localhost:8000",
+        b"http://127.0.0.1:3000",
+        b"http://localhost:3000",
+        b"https://127.0.0.1:3000",
+        b"https://localhost:3000",
     )
-    # Prefer static JS chunks served to the browser.
+    # Prefer static JS chunks served to the browser (not server-only health URLs).
     roots = [
         next_dir / "static",
         next_dir / "server" / "app",
@@ -1130,11 +1227,12 @@ def build_frontend(base_path: str, *, split_proxy: bool = False) -> None:
     _log(
         f"Building Next.js (split_proxy={split_proxy} "
         f"BASE_PATH={base_path or '(none)'}, "
-        f"API_URL={env.get('NEXT_PUBLIC_API_URL')})..."
+        f"API_URL={env.get('NEXT_PUBLIC_API_URL')}, "
+        f"ASSET_PREFIX={env.get('NEXT_PUBLIC_ASSET_PREFIX') or '(none)'})..."
     )
     subprocess.check_call(["npm", "run", "build"], cwd=str(FRONTEND), env=env)
     BASE_PATH_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    marker = "SPLIT:/proxy/8000" if split_proxy else (base_path or "")
+    marker = split_proxy_build_marker(env) if split_proxy else (base_path or "")
     BASE_PATH_MARKER.write_text(marker, encoding="utf-8")
 
 
@@ -1149,14 +1247,25 @@ def start_next(base_path: str, *, split_proxy: bool = False) -> subprocess.Popen
     env = _frontend_env(base_path, split_proxy=split_proxy)
     env["PORT"] = "3000"
     # Bind all interfaces so Kaggle jupyter-server-proxy can reach Next.
-    # Do not set HOSTNAME=127.0.0.1 — Next would advertise loopback and the
-    # browser (or Kaggle "Open") tries 127.0.0.1 → ERR_CONNECTION_REFUSED.
+    # Do not set HOST/HOSTNAME to 127.0.0.1 or localhost — Next would advertise
+    # loopback and the browser (Kaggle "Open PORT 3000") gets ERR_CONNECTION_REFUSED.
     env.pop("HOSTNAME", None)
+    env.pop("HOST", None)
     FRONTEND_LOG.parent.mkdir(parents=True, exist_ok=True)
     log_fh = open(FRONTEND_LOG, "w", encoding="utf-8", errors="replace", buffering=1)
     _log(f"Starting Next.js production server on 0.0.0.0:3000 (log={FRONTEND_LOG}) ...")
+    # Bake hostname into npm script AND pass CLI flags — npm extra-args are unreliable.
     proc = subprocess.Popen(
-        ["npm", "run", "start", "--", "-H", "0.0.0.0", "-p", "3000"],
+        [
+            "npm",
+            "run",
+            "start",
+            "--",
+            "--hostname",
+            "0.0.0.0",
+            "--port",
+            "3000",
+        ],
         cwd=str(FRONTEND),
         env=env,
         stdout=subprocess.PIPE,
@@ -1319,6 +1428,7 @@ def wait_http(
     attempts: int = 60,
     *,
     proc: Optional[subprocess.Popen] = None,
+    reject_loopback_redirect: bool = False,
 ) -> int:
     last_detail = ""
     for i in range(attempts):
@@ -1336,7 +1446,20 @@ def wait_http(
                 )
             if i == 0 or i % 5 == 0:
                 _log(f"⏳ FastAPI still starting... {i}s elapsed")
-        ok, http_code, detail = _http_ok(url)
+        if reject_loopback_redirect:
+            http_code, body, location = _http_status_noredirect(url)
+            if location and _is_loopback_url(location):
+                ok = False
+                detail = f"loopback redirect Location={location}"
+            else:
+                # Require 200 — a 308 that urllib would follow locally is not
+                # browser-safe on Kaggle PORT 3000.
+                ok = http_code == 200
+                detail = body if http_code == 200 else (
+                    f"HTTP {http_code} Location={location}" if location else body
+                )
+        else:
+            ok, http_code, detail = _http_ok(url)
         last_detail = detail
         if ok:
             _log(f"OK {label}: {url} → HTTP {http_code}")
@@ -1350,6 +1473,47 @@ def wait_http(
             f"Backend log ({log_path}):\n{tail}"
         )
     raise RuntimeError(f"{label} failed validation: {url} ({last_detail})")
+
+
+def print_startup_checks(
+    *,
+    frontend_status: int,
+    backend_status: int,
+    deploy: Dict[str, Any],
+    website_confirmed: bool = False,
+) -> None:
+    """Explicit local + public proxy diagnostics (never invent a working URL)."""
+    print("[FRONTEND CHECK]", flush=True)
+    print("host=0.0.0.0", flush=True)
+    print("port=3000", flush=True)
+    print("local_url=http://127.0.0.1:3000/", flush=True)
+    print(f"local_status={frontend_status}", flush=True)
+    print("[BACKEND CHECK]", flush=True)
+    print("host=0.0.0.0", flush=True)
+    print("port=8000", flush=True)
+    print(f"health_status={backend_status}", flush=True)
+    print("[KAGGLE PROXY]", flush=True)
+    print("frontend_port=3000", flush=True)
+    print("backend_port=8000", flush=True)
+    website = public_website_url(deploy) if website_confirmed else None
+    if website and not _is_loopback_url(website):
+        print(f"public_frontend_url={website}", flush=True)
+    else:
+        print(
+            "public_frontend_url=NOT CONFIRMED — open Kaggle Notebook → Interface → PORT 3000",
+            flush=True,
+        )
+    api = public_api_url(deploy)
+    if website_confirmed and api and not _is_loopback_url(api):
+        print(f"public_backend_url={api}", flush=True)
+    elif api and not _is_loopback_url(api):
+        print(
+            f"public_backend_url={api} (constructed; public PORT 3000 probe not confirmed)",
+            flush=True,
+        )
+    else:
+        print("public_backend_url=NOT CONFIRMED", flush=True)
+
 
 
 def assert_html_has_no_stale_proxy_prefix(url: str) -> None:
@@ -1421,12 +1585,14 @@ def print_banner(
     print("    /studio redirects → /studio/custom-garment", flush=True)
     print("", flush=True)
     print("PUBLIC WEBSITE:", flush=True)
-    website = public_website_url(deploy)
-    if website:
+    confirmed = bool(deploy.get("website_confirmed"))
+    website = public_website_url(deploy) if confirmed else None
+    if website and not _is_loopback_url(website):
         print(f"    {website}", flush=True)
         print("    Paste this URL in Chrome (Kaggle PORT 3000 — NOT PORT 8000).", flush=True)
     else:
-        print("    Open Kaggle PORT 3000 (Notebook → Ports / Interface).", flush=True)
+        print("    Public PORT 3000 URL not confirmed — not advertising a guessed URL.", flush=True)
+        print("    Open Kaggle Notebook → Interface → PORT 3000.", flush=True)
         print("    Do NOT open PORT 8000 as the website.", flush=True)
     if public_status:
         print(f"    HTTP {public_status.get('root', 'n/a')}", flush=True)
@@ -1987,7 +2153,10 @@ def main() -> int:
         stop_port(3000, "frontend")
 
     built = read_built_base_path()
-    target_marker = "SPLIT:/proxy/8000" if split_proxy else (base_path or "")
+    env_preview = _frontend_env(base_path, split_proxy=split_proxy)
+    target_marker = (
+        split_proxy_build_marker(env_preview) if split_proxy else (base_path or "")
+    )
     need_build = not args.skip_build
     if args.skip_build:
         if not (FRONTEND / ".next").exists():
@@ -2060,10 +2229,21 @@ def main() -> int:
             if (base_path and not split_proxy)
             else "http://127.0.0.1:3000/"
         )
-        next_code = wait_http(next_root, "Next.js root", attempts=90)
+        next_code = wait_http(
+            next_root,
+            "Next.js root",
+            attempts=90,
+            reject_loopback_redirect=True,
+        )
         wait_http("http://127.0.0.1:8000/health", "Gateway health", attempts=60)
         wait_http("http://127.0.0.1:8000/api/v1/openapi.json", "OpenAPI JSON (v1)")
         _log("Frontend READY")
+        print_startup_checks(
+            frontend_status=next_code,
+            backend_status=health_code,
+            deploy=deploy,
+            website_confirmed=False,
+        )
 
         flux_status: Optional[Dict[str, Any]] = None
         if os.environ.get("FLUX_WARMUP_ON_STARTUP", "true").strip().lower() not in (
@@ -2321,27 +2501,58 @@ def main() -> int:
                 deploy["studio_tryon_url"] = urls.get("studio_tryon_url")
                 deploy["studio_semantic_url"] = urls.get("studio_semantic_url")
                 public_status.update((fe_disc or {}).get("endpoint_status") or {})
+                deploy["website_confirmed"] = True
                 _log(f"PUBLIC WEBSITE winner: {urls['public_url']}")
             else:
+                deploy["website_confirmed"] = False
+                deploy["website_url"] = None
+                deploy["public_url"] = None
                 _log(
                     "PORT 3000 public probe did not confirm a winner; "
-                    "printing constructed PORT 3000 URL from Jupyter base_url."
+                    "not advertising a guessed URL. Open Kaggle Interface → PORT 3000."
                 )
             website = public_website_url(deploy)
             if website:
                 token = read_jupyter_token()
                 probe = _http_probe(website, timeout=20.0, token=token)
                 public_status["root"] = int(probe.get("status") or 0)
-                loc = probe.get("location") or ""
-                if "127.0.0.1" in loc or "localhost" in loc.lower():
+                loc = str(probe.get("location") or "")
+                if _is_loopback_url(loc) or public_status["root"] != 200:
+                    deploy["website_confirmed"] = False
+                    deploy["website_url"] = None
+                    deploy["public_url"] = None
                     _log(
-                        f"WARNING: public PORT 3000 redirected to loopback "
-                        f"Location={loc!r} — browser would get ERR_CONNECTION_REFUSED"
+                        "WARNING: public PORT 3000 is not browser-safe "
+                        f"(HTTP {public_status['root']} Location={loc!r}) — "
+                        "not advertising a guessed URL. Open Interface → PORT 3000."
                     )
-                _log(
-                    f"PUBLIC WEBSITE verify: HTTP {public_status['root']} ({website})"
-                )
+                else:
+                    _log(
+                        f"PUBLIC WEBSITE verify: HTTP {public_status['root']} ({website})"
+                    )
+                    try:
+                        assert_public_next_static_reachable(
+                            public_url=website,
+                            base_path=str(winner),
+                            proxy_host=str(
+                                deploy.get("proxy_host") or KAGGLE_PROXY_HOST_DEFAULT
+                            ),
+                            token=token,
+                        )
+                    except Exception as asset_exc:
+                        _log(
+                            f"WARNING: public /_next assets not confirmed: {asset_exc}"
+                        )
+                        deploy["website_confirmed"] = False
+                        deploy["website_url"] = None
+                        deploy["public_url"] = None
 
+        print_startup_checks(
+            frontend_status=next_code,
+            backend_status=health_code,
+            deploy=deploy,
+            website_confirmed=bool(deploy.get("website_confirmed")),
+        )
         print_banner(
             health_code=health_code,
             root_code=root_code,
