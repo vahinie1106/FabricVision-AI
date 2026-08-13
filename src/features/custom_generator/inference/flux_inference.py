@@ -61,7 +61,10 @@ def resolve_flux_production_resolution(default: Optional[int] = None) -> int:
     Production-only square resolution.
 
     Priority: FLUX_PRODUCTION_RESOLUTION → FLUX_PRODUCTION_SIZE →
-    FLUX_GENERATION_RESOLUTION → default (Kaggle locked target: 768).
+    default (Kaggle locked target: 768).
+
+    Do NOT inherit FLUX_GENERATION_RESOLUTION — that knob is Preview/Standard
+    only. A Standard 512 env must never silently demote Production.
     """
     fallback = (
         DEFAULT_KAGGLE_PRODUCTION_RESOLUTION if default is None else int(default)
@@ -69,7 +72,6 @@ def resolve_flux_production_resolution(default: Optional[int] = None) -> int:
     for key in (
         "FLUX_PRODUCTION_RESOLUTION",
         "FLUX_PRODUCTION_SIZE",
-        "FLUX_GENERATION_RESOLUTION",
     ):
         raw = os.environ.get(key, "").strip()
         if not raw.isdigit():
@@ -936,6 +938,17 @@ class FLUXInferenceEngine:
                 flush=True,
             )
             print("[FLUX] inference started", flush=True)
+            for line in (
+                "[FLUX CONFIG]",
+                f"resolution={width}x{height}",
+                "[FLUX CONFIG]",
+                f"steps={num_inference_steps}",
+                "[FLUX CONFIG]",
+                f"guidance={guidance_scale}",
+                "[FLUX CONFIG]",
+                f"device={device_s}",
+            ):
+                print(line, flush=True)
             self.logger.info(
                 "[FLUX] FINAL kwargs before pipeline(): height=%s width=%s "
                 "steps=%s guidance=%s device=%s auto_resize=%s",
@@ -1179,6 +1192,12 @@ class FLUXInferenceEngine:
             print("[FLUX] inference completed", flush=True)
             print(f"[FLUX] output size = {out_w}x{out_h}", flush=True)
             print(f"[FLUX] output mode = {out_mode}", flush=True)
+            print("[FLUX CONFIG]", flush=True)
+            print(f"actual_output_resolution={out_w}x{out_h}", flush=True)
+            print("[FLUX CONFIG]", flush=True)
+            print(f"actual_steps={num_inference_steps}", flush=True)
+            print("[FLUX CONFIG]", flush=True)
+            print(f"actual_guidance={guidance_scale}", flush=True)
 
             # Raw model output before any UI path — for blur root-cause isolation
             if save_raw_path:

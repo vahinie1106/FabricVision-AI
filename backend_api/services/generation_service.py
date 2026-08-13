@@ -367,6 +367,33 @@ def _process_generation_sync(
 
         pipeline = GarmentGenerationPipeline(config=config, model_loader=loader)
 
+        from src.common.models.device_manager import DeviceManager
+
+        flux_device = DeviceManager.resolve_role_device("flux", "cuda:0")
+        for line in (
+            "[QUALITY DEBUG]",
+            f"requested_mode={pipeline.config.generation_mode}",
+            "[QUALITY DEBUG]",
+            f"resolved_resolution={pipeline.config.width}x{pipeline.config.height}",
+            "[QUALITY DEBUG]",
+            f"resolved_steps={pipeline.config.num_inference_steps}",
+            "[QUALITY DEBUG]",
+            f"resolved_guidance={pipeline.config.guidance_scale}",
+            "[QUALITY DEBUG]",
+            f"device={flux_device}",
+            "[QUALITY DEBUG]",
+            (
+                "FLUX_PRODUCTION_RESOLUTION="
+                f"{os.environ.get('FLUX_PRODUCTION_RESOLUTION')} "
+                f"FLUX_PRODUCTION_STEPS={os.environ.get('FLUX_PRODUCTION_STEPS')} "
+                f"FLUX_PRODUCTION_GUIDANCE={os.environ.get('FLUX_PRODUCTION_GUIDANCE')} "
+                "FLUX_PRODUCTION_NO_OOM_FALLBACK="
+                f"{os.environ.get('FLUX_PRODUCTION_NO_OOM_FALLBACK')}"
+            ),
+        ):
+            print(line, flush=True)
+            logger.info(line)
+
         job_manager.update_job(
             job_id,
             progress=20,
@@ -491,6 +518,7 @@ def _process_generation_sync(
             "model": "FLUX.1-Kontext",
             "generation_mode": pipeline.config.generation_mode,
             "mode_key": mode_key,
+            "requested_mode": pipeline.config.generation_mode,
             "was_real_flux_used": bool(stats.get("was_real_flux_used", True)),
             "model_reused": bool(stats.get("model_reused", already_loaded)),
             "has_image": True,

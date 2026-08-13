@@ -52,6 +52,15 @@ def test_production_resolution_defaults_to_768(monkeypatch):
     assert 768 in ALLOWED_FLUX_GENERATION_RESOLUTIONS
 
 
+def test_production_resolution_ignores_standard_generation_env(monkeypatch):
+    """Standard 512 knob must not demote Production to 512×3."""
+    monkeypatch.setenv("FLUX_GENERATION_RESOLUTION", "512")
+    monkeypatch.delenv("FLUX_PRODUCTION_RESOLUTION", raising=False)
+    monkeypatch.delenv("FLUX_PRODUCTION_SIZE", raising=False)
+    assert resolve_flux_production_resolution() == 768
+    assert resolve_flux_generation_resolution() == 512
+
+
 def test_production_resolution_env(monkeypatch):
     monkeypatch.setenv("FLUX_PRODUCTION_RESOLUTION", "768")
     monkeypatch.setenv("FLUX_PRODUCTION_STEPS", "12")

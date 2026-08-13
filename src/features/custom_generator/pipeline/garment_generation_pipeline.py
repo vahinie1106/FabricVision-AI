@@ -425,11 +425,13 @@ class GarmentGenerationPipeline:
                 "Fabric reference image is required for FLUX.1-Kontext garment generation."
             )
 
-        # Re-evaluate Standard settings with live free VRAM after model residency.
+        # Re-evaluate mode settings with live free VRAM after model residency.
         try:
             mode_key = normalize_generation_mode(self.config.generation_mode)
             if mode_key == "standard":
                 self._apply_high_vram_standard_defaults("standard")
+            elif mode_key == "production":
+                self._apply_production_vram_defaults("production")
         except Exception as pol_exc:
             self.logger.warning("Runtime VRAM policy refresh skipped: %s", pol_exc)
 
@@ -653,6 +655,26 @@ class GarmentGenerationPipeline:
             f"recolored={conditioning_recolored}",
             flush=True,
         )
+        try:
+            from src.common.models.device_manager import DeviceManager
+
+            flux_device = DeviceManager.resolve_role_device("flux", "cuda:0")
+        except Exception:
+            flux_device = self.config.device
+        for line in (
+            "[FLUX CONFIG]",
+            f"mode={self.config.generation_mode}",
+            "[FLUX CONFIG]",
+            f"resolution={self.config.width}x{self.config.height}",
+            "[FLUX CONFIG]",
+            f"steps={self.config.num_inference_steps}",
+            "[FLUX CONFIG]",
+            f"guidance={self.config.guidance_scale}",
+            "[FLUX CONFIG]",
+            f"device={flux_device}",
+        ):
+            print(line, flush=True)
+            self.logger.info(line)
         self.logger.info(
             "[FLUX] FINAL RUNTIME before inference: %sx%s steps=%s guidance=%s "
             "mode=%s recolored=%s",
@@ -684,6 +706,20 @@ class GarmentGenerationPipeline:
                 "conditioning_recolored": conditioning_recolored,
             },
         )
+        stats = getattr(self.inference_engine, "last_execution_stats", {}) or {}
+        out_w, out_h = (
+            image.size if hasattr(image, "size") else (self.config.width, self.config.height)
+        )
+        for line in (
+            "[FLUX CONFIG]",
+            f"actual_output_resolution={out_w}x{out_h}",
+            "[FLUX CONFIG]",
+            f"actual_steps={stats.get('num_inference_steps', self.config.num_inference_steps)}",
+            "[FLUX CONFIG]",
+            f"actual_guidance={stats.get('guidance_scale', self.config.guidance_scale)}",
+        ):
+            print(line, flush=True)
+            self.logger.info(line)
 
         # Save the actual FLUX PNG. Optional contour refiner is opt-in only —
         # UnsharpMask + contrast on the full output was softening/haloing prints.
