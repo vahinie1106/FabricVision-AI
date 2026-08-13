@@ -15,6 +15,7 @@ export type FriendlyError = {
     | "INVALID_IMAGE"
     | "SERVER_OFFLINE"
     | "TIMEOUT"
+    | "BACKEND_RESTARTED"
     | "CATVTON_FALLBACK"
     | "CATVTON_MASK"
     | "GENERIC";
@@ -228,6 +229,20 @@ export function toFriendlyError(error: unknown): FriendlyError {
       code: "INVALID_IMAGE",
       title: "Invalid Image",
       message: "Please upload a valid garment image (PNG, JPEG, or WEBP).",
+    };
+  }
+
+  if (
+    type === "BACKEND_RESTARTED" ||
+    lower.includes("backend_restarted") ||
+    lower.includes("backend process restarted") ||
+    lower.includes("job not found")
+  ) {
+    return {
+      code: "BACKEND_RESTARTED",
+      title: "Backend Restarted",
+      message:
+        "The API process restarted while this job was running. Click Generate again — the job was not lost as a silent 404.",
     };
   }
 

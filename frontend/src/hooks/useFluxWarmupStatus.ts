@@ -2,33 +2,22 @@
 
 import { useEffect, useState } from "react";
 import {
+  deriveFluxWarmupUi,
+  type FluxWarmupUiState,
+} from "@/lib/fluxWarmupUi";
+import {
   fetchFluxStatus,
   type FluxStatusResponse,
-  type FluxWarmupState,
 } from "@/services/fluxStatus";
-
-function normalizeState(raw: string | undefined): FluxWarmupState {
-  const s = (raw || "UNKNOWN").toUpperCase();
-  if (
-    s === "IDLE" ||
-    s === "STARTING" ||
-    s === "READY" ||
-    s === "FAILED" ||
-    s === "SKIPPED"
-  ) {
-    return s;
-  }
-  if (s === "LOADING") return "STARTING";
-  return "UNKNOWN";
-}
 
 /**
  * Poll API-process FLUX warmup status for studio UX.
  * Does not fake progress — mirrors /api/v1/flux-status.
+ * IDLE / UNKNOWN / temporary poll failures are NOT treated as warming.
  */
 export function useFluxWarmupStatus(pollMs = 2000) {
   const [status, setStatus] = useState<FluxStatusResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -39,14 +28,15 @@ export function useFluxWarmupStatus(pollMs = 2000) {
         const next = await fetchFluxStatus();
         if (cancelled) return;
         setStatus(next);
-        setError(null);
-        const state = normalizeState(String(next.state));
-        if (state === "READY" || state === "FAILED" || state === "SKIPPED") {
+        setPollError(null);
+        const state = String(next.state || "").toUpperCase();
+        // Keep polling after FAILED so a Generate-driven retry can clear the banner.
+        if (state === "READY" || state === "SKIPPED") {
           return;
         }
       } catch (exc) {
         if (cancelled) return;
-        setError(exc instanceof Error ? exc.message : String(exc));
+        setPollError(exc instanceof Error ? exc.message : String(exc));
       }
       if (!cancelled) {
         timer = setTimeout(tick, pollMs);
@@ -60,20 +50,29 @@ export function useFluxWarmupStatus(pollMs = 2000) {
     };
   }, [pollMs]);
 
-  const state = normalizeState(status?.state ? String(status.state) : undefined);
-  const warming = state === "STARTING" || state === "IDLE" || state === "UNKNOWN";
-  const ready = state === "READY" || Boolean(status?.ready) || Boolean(status?.in_memory);
-  const failed = state === "FAILED";
+  const ui = deriveFluxWarmupUi({
+    state: status?.state ? String(status.state) : pollError ? "UNKNOWN" : undefined,
+    ready: status?.ready,
+    in_memory: status?.in_memory,
+    progress: status?.progress,
+    current_step: status?.current_step,
+    stage: status?.stage,
+    error: status?.error,
+    pollError,
+    load_duration_s: status?.load_duration_s,
+  });
 
   return {
     status,
-    state,
-    warming: warming && !ready,
-    ready,
-    failed,
-    error: error || status?.error || null,
-    progress: status?.progress ?? 0,
-    currentStep: status?.current_step || status?.stage || null,
-    loadDurationS: status?.load_duration_s ?? null,
+    state: ui.state as FluxWarmupUiState,
+    warming: ui.warming,
+    ready: ui.ready,
+    failed: ui.failed,
+    generateEnabledByFlux: ui.generateEnabledByFlux,
+    showWarmupBanner: ui.showWarmupBanner,
+    error: ui.error,
+    progress: ui.progress,
+    currentStep: ui.currentStep,
+    loadDurationS: ui.loadDurationS,
   };
 }

@@ -328,13 +328,12 @@ def pick_fabric(explicit: str | Path | None = None) -> Path:
             )
         return path.resolve()
 
-    # Prefer established FLUX benchmark / validation names when present locally.
+    # Tracked test image first — data/uploads is gitignored on a fresh Kaggle clone.
     preferred = [
+        ROOT / "tests" / "test_images" / "test_img_1.jpg",
         ROOT / "data" / "uploads" / "30c9aacaacf444169b3959f2171b4942.jpg",
         ROOT / "data" / "uploads" / "val_cotton.png",
         ROOT / "frontend" / "public" / "studio" / "fabric.png",
-        # Tracked in git — available on a fresh Kaggle clone.
-        ROOT / "tests" / "test_images" / "test_img_1.jpg",
     ]
     for p in preferred:
         if p.is_file():

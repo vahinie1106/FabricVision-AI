@@ -81,6 +81,31 @@ class JobManager:
         except Exception as exc:
             logger.warning("Failed to persist job %s: %s", job.job_id, exc)
 
+    def _fail_orphaned_inflight(self, job: JobStatusResponse) -> JobStatusResponse:
+        """If this in-flight job belongs to a previous PID, mark BACKEND_RESTARTED."""
+        meta = dict(job.metadata or {})
+        prev_pid = meta.get("server_pid")
+        if (
+            job.status in ("queued", "processing")
+            and prev_pid is not None
+            and int(prev_pid) != int(self._pid)
+        ):
+            job.status = "failed"
+            job.error = (
+                "Backend process restarted while this job was running "
+                f"(old_pid={prev_pid}, new_pid={self._pid}). "
+                "Please click Generate again."
+            )
+            job.error_type = "BACKEND_RESTARTED"
+            job.failed_stage = job.stage or job.current_step or "processing"
+            job.current_step = "Failed (backend restarted)"
+            job.stage = "failed"
+            meta["server_pid"] = self._pid
+            meta["restarted"] = True
+            job.metadata = meta
+            self._persist(job)
+        return job
+
     def _load_existing(self) -> None:
         try:
             files = list(self._persist_dir.glob("*.json"))
@@ -89,29 +114,7 @@ class JobManager:
         for path in files:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                job = self._from_dict(data)
-                # Orphaned in-flight jobs from a previous PID cannot continue.
-                meta = dict(job.metadata or {})
-                prev_pid = meta.get("server_pid")
-                if (
-                    job.status in ("queued", "processing")
-                    and prev_pid is not None
-                    and int(prev_pid) != int(self._pid)
-                ):
-                    job.status = "failed"
-                    job.error = (
-                        "Backend process restarted while this job was running "
-                        f"(old_pid={prev_pid}, new_pid={self._pid}). "
-                        "Please click Generate again."
-                    )
-                    job.error_type = "BACKEND_RESTARTED"
-                    job.failed_stage = job.stage or job.current_step or "processing"
-                    job.current_step = "Failed (backend restarted)"
-                    job.stage = "failed"
-                    meta["server_pid"] = self._pid
-                    meta["restarted"] = True
-                    job.metadata = meta
-                    self._persist(job)
+                job = self._fail_orphaned_inflight(self._from_dict(data))
                 self._jobs[job.job_id] = job
             except Exception as exc:
                 logger.warning("Skipping corrupt job file %s: %s", path, exc)
@@ -146,8 +149,10 @@ class JobManager:
                 path = self._job_path(job_id)
                 if path.is_file():
                     try:
-                        job = self._from_dict(
-                            json.loads(path.read_text(encoding="utf-8"))
+                        job = self._fail_orphaned_inflight(
+                            self._from_dict(
+                                json.loads(path.read_text(encoding="utf-8"))
+                            )
                         )
                         self._jobs[job_id] = job
                         logger.info(

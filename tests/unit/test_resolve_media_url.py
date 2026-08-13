@@ -126,3 +126,31 @@ def test_result_card_still_calls_resolve_media_url():
         encoding="utf-8"
     )
     assert "resolveMediaUrl(imageUrl)" in text
+
+
+def _collapse_extra_proxy(path: str) -> str:
+    """Mirror frontend collapseExtraProxyNesting."""
+    import re
+
+    out = path.rstrip("/")
+    extra = re.compile(r"(/proxy){3,}/(\d+)$")
+    while extra.search(out):
+        out = extra.sub(r"/proxy/proxy/\2", out)
+    return out
+
+
+def test_collapse_triple_proxy_nesting():
+    assert (
+        _collapse_extra_proxy("/k/abc/proxy/proxy/proxy/8000")
+        == "/k/abc/proxy/proxy/8000"
+    )
+    assert _collapse_extra_proxy("/proxy/proxy/8000") == "/proxy/proxy/8000"
+    assert _collapse_extra_proxy("/proxy/8000") == "/proxy/8000"
+
+
+def test_api_config_collapses_triple_proxy_and_local_dev_host():
+    src = Path("frontend/src/lib/apiConfig.ts").read_text(encoding="utf-8")
+    assert "collapseExtraProxyNesting" in src
+    assert "isLocalNextDevHost" in src
+    assert "localDevApiRoot" in src
+    assert r"(/proxy){3,}/(\d+)$" in src or r"(\/proxy){3,}\/(\d+)$" in src

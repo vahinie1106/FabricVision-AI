@@ -158,9 +158,11 @@ export class ApiClient {
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          // Definitive backend miss — do not mask as a transient blip.
-          if (/job not found/i.test(message)) {
-            reject(error);
+          // Definitive backend miss / process restart — do not mask as a blip.
+          if (/job not found/i.test(message) || /BACKEND_RESTARTED/i.test(message)) {
+            const err = error instanceof Error ? error : new Error(message);
+            (err as Error & { errorType?: string }).errorType = "BACKEND_RESTARTED";
+            reject(err);
             return;
           }
           consecutiveErrors += 1;

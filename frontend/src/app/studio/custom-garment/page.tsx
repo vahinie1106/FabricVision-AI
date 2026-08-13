@@ -280,21 +280,16 @@ export default function CustomGarmentGenerator() {
           <p className="text-xs text-[#767676] mt-1">
             Upload → Customize → Generate → Download
           </p>
-          {fluxWarmup.warming && (
+          {fluxWarmup.showWarmupBanner && (
             <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
               <p className="font-semibold">AI engine is warming up…</p>
               <p className="mt-1 text-amber-900/90">
-                FLUX initialization: {Math.max(0, Math.min(100, fluxWarmup.progress))}%
+                FLUX initialization: {fluxWarmup.progress}%
                 {fluxWarmup.currentStep ? ` — ${fluxWarmup.currentStep}` : ""}
               </p>
               {typeof fluxWarmup.loadDurationS === "number" && (
                 <p className="mt-1 text-amber-800/80">
                   Elapsed {Math.round(fluxWarmup.loadDurationS)}s (real API warmup)
-                </p>
-              )}
-              {fluxWarmup.error && (
-                <p className="mt-1 text-amber-900/90">
-                  Status check: {fluxWarmup.error}
                 </p>
               )}
             </div>
@@ -306,6 +301,9 @@ export default function CustomGarmentGenerator() {
             <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-950">
               <p className="font-semibold">AI engine failed to initialize</p>
               <p className="mt-1">{fluxWarmup.error || "FLUX warmup failed"}</p>
+              <p className="mt-1 text-red-900/80">
+                You can retry with Generate Garment (loads on demand).
+              </p>
             </div>
           )}
         </div>
@@ -440,20 +438,17 @@ export default function CustomGarmentGenerator() {
             disabled={
               !fabricImage ||
               isGenerating ||
-              fluxWarmup.warming ||
-              fluxWarmup.failed
+              !fluxWarmup.generateEnabledByFlux
             }
             isLoading={isGenerating}
           >
             {fluxWarmup.warming
               ? "Waiting for AI engine…"
-              : fluxWarmup.failed
-                ? "AI engine unavailable"
-                : isGenerating
-                  ? "Generating..."
-                  : isDone
-                    ? "Generate Again"
-                    : "Generate Garment"}
+              : isGenerating
+                ? "Generating..."
+                : isDone
+                  ? "Generate Again"
+                  : "Generate Garment"}
           </Button>
         </div>
       </div>

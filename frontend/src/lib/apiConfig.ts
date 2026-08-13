@@ -171,6 +171,16 @@ export function extractProxyPort(path: string): string | null {
   return null;
 }
 
+/** Collapse `/proxy/proxy/proxy/<port>` (or deeper) to `/proxy/proxy/<port>`. */
+export function collapseExtraProxyNesting(path: string): string {
+  let out = stripTrailingSlash(path);
+  const extra = /(\/proxy){3,}\/(\d+)$/;
+  while (extra.test(out)) {
+    out = out.replace(extra, "/proxy/proxy/$2");
+  }
+  return out;
+}
+
 /** Rewrite `/proxy/<port>` or `/proxy/proxy/<port>` while preserving session prefix.
  *
  * When ``preferDouble`` is true (configured backend is /proxy/proxy/8000), a
@@ -182,24 +192,30 @@ export function withProxyPort(
   port: string,
   preferDouble: boolean = false
 ): string {
-  const trimmed = stripTrailingSlash(basePath);
+  const trimmed = collapseExtraProxyNesting(basePath);
   if (/\/proxy\/proxy\/\d+$/.test(trimmed)) {
-    return trimmed.replace(/\/proxy\/proxy\/\d+$/, `/proxy/proxy/${port}`);
+    return collapseExtraProxyNesting(
+      trimmed.replace(/\/proxy\/proxy\/\d+$/, `/proxy/proxy/${port}`)
+    );
   }
   if (/\/proxy\/\d+$/.test(trimmed)) {
     if (preferDouble) {
-      return trimmed.replace(/\/proxy\/\d+$/, `/proxy/proxy/${port}`);
+      return collapseExtraProxyNesting(
+        trimmed.replace(/\/proxy\/\d+$/, `/proxy/proxy/${port}`)
+      );
     }
-    return trimmed.replace(/\/proxy\/\d+$/, `/proxy/${port}`);
+    return collapseExtraProxyNesting(
+      trimmed.replace(/\/proxy\/\d+$/, `/proxy/${port}`)
+    );
   }
   // Page has a /k/<session> prefix but no proxy port segment yet.
   if (preferDouble && /\/k\//.test(trimmed)) {
-    return `${trimmed}/proxy/proxy/${port}`;
+    return collapseExtraProxyNesting(`${trimmed}/proxy/proxy/${port}`);
   }
   if (preferDouble) {
     return `/proxy/proxy/${port}`;
   }
-  return trimmed;
+  return collapseExtraProxyNesting(trimmed);
 }
 
 function configuredPrefersDoubleProxy(configuredBackend: string): boolean {

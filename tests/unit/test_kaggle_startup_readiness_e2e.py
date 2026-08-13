@@ -282,13 +282,20 @@ def test_custom_garment_page_gates_generate_on_flux_warmup():
     page = Path("frontend/src/app/studio/custom-garment/page.tsx").read_text(
         encoding="utf-8"
     )
+    hook = Path("frontend/src/hooks/useFluxWarmupStatus.ts").read_text(encoding="utf-8")
+    ui = Path("frontend/src/lib/fluxWarmupUi.ts").read_text(encoding="utf-8")
     assert "useFluxWarmupStatus" in page
-    assert "fluxWarmup.warming" in page
+    assert "generateEnabledByFlux" in page
+    assert "showWarmupBanner" in page
     assert "AI engine is warming up" in page
     assert "AI engine ready" in page
     assert "AI engine failed to initialize" in page
     assert "Waiting for AI engine" in page
-    assert "fluxWarmup.failed" in page
+    assert "deriveFluxWarmupUi" in hook
+    assert "state === \"STARTING\"" in ui or 'state === "STARTING"' in ui
+    assert "IDLE" not in [
+        ln for ln in ui.splitlines() if "warming" in ln and "=" in ln
+    ][0]
 
 
 def test_frontend_env_split_proxy_preserves_backend_port():
@@ -406,3 +413,23 @@ def test_studio_index_is_redirect_only():
     assert "/studio/custom-garment" in page
     assert "dashboard" not in page.lower()
     assert "sidebar" not in page.lower()
+
+
+def test_kaggle_benchmark_prefers_tracked_test_image():
+    from pathlib import Path
+
+    src = Path("scripts/kaggle_flux_production_benchmark.py").read_text(encoding="utf-8")
+    e2e = Path("scripts/kaggle_e2e_integration.py").read_text(encoding="utf-8")
+    tracked = 'ROOT / "tests" / "test_images" / "test_img_1.jpg"'
+    assert tracked in src
+    assert tracked in e2e
+    # Tracked sample must be listed before gitignored uploads in the benchmark.
+    assert src.index(tracked) < src.index('ROOT / "data" / "uploads"')
+
+
+def test_run_api_does_not_enable_reload_by_default():
+    from pathlib import Path
+
+    src = Path("run_api.py").read_text(encoding="utf-8")
+    assert "UVICORN_RELOAD" in src
+    assert 'reload=True' not in src.replace("reload=reload_flag", "")

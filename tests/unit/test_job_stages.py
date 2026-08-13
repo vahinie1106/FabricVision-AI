@@ -59,6 +59,27 @@ def test_job_manager_survives_process_restart(tmp_path):
     assert "restarted" in (job.error or "").lower()
 
 
+def test_job_manager_get_job_marks_orphan_without_preload(tmp_path):
+    """get_job disk path must apply BACKEND_RESTARTED even if _load_existing was skipped."""
+    store = tmp_path / "jobs"
+    jm1 = JobManager(persist_dir=store)
+    job_id = jm1.create_job()
+    jm1.update_job(
+        job_id,
+        status="processing",
+        progress=45,
+        current_step="Encoding prompt",
+    )
+
+    jm2 = JobManager(persist_dir=store)
+    jm2._pid = jm1._pid + 4242
+    jm2._jobs.clear()
+    job = jm2.get_job(job_id)
+    assert job is not None
+    assert job.status == "failed"
+    assert job.error_type == "BACKEND_RESTARTED"
+
+
 def test_job_manager_completed_survives_restart(tmp_path):
     store = tmp_path / "jobs"
     jm1 = JobManager(persist_dir=store)
