@@ -507,10 +507,12 @@ def _process_generation_sync(
             "model_load_time_s": stats.get("model_load_time_s")
             or getattr(loader, "_init_time_s", None),
             "peak_vram_mb": stats.get("peak_vram_mb"),
-            "height": pipeline.config.height,
-            "width": pipeline.config.width,
-            "num_inference_steps": pipeline.config.num_inference_steps,
-            "guidance_scale": pipeline.config.guidance_scale,
+            "height": stats.get("height") or pipeline.config.height,
+            "width": stats.get("width") or pipeline.config.width,
+            "num_inference_steps": stats.get("num_inference_steps")
+            or pipeline.config.num_inference_steps,
+            "guidance_scale": stats.get("guidance_scale")
+            or pipeline.config.guidance_scale,
             "prompt_token_count": prompt_stats.get("token_count"),
             "prompt_compacted": prompt_stats.get("prompt_compacted"),
             "prompt_truncated": prompt_stats.get("truncated"),

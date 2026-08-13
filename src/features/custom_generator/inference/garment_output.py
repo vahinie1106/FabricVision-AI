@@ -113,6 +113,11 @@ def persist_and_verify_garment_png(
         pix_std,
         zero_pct,
     )
+    print(f"[FLUX] output size = {width}x{height}", flush=True)
+    print(f"[FLUX] output mode = {mode}", flush=True)
+    print(f"[FLUX] output saved = {stats['path']}", flush=True)
+    print(f"[FLUX] file size = {file_size}", flush=True)
+    print("[FLUX] real FLUX output = true", flush=True)
     print(
         f"[GARMENT OUTPUT] FINAL PATH={stats['path']} "
         f"FILE SIZE={file_size} IMAGE SIZE={width}x{height} MODE={mode} "

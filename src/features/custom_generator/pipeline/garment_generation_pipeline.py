@@ -250,19 +250,9 @@ class GarmentGenerationPipeline:
             gen_cfg_path = Path(self.config.config_dir) / "custom_generator" / "generation_config.yaml"
         if gen_cfg_path.exists():
             loaded_gen = load_yaml_config(gen_cfg_path) or {}
-            if not mode_cfg:
-                self.config.num_inference_steps = loaded_gen.get(
-                    "default_num_inference_steps", self.config.num_inference_steps
-                )
-                self.config.guidance_scale = loaded_gen.get(
-                    "default_guidance_scale", self.config.guidance_scale
-                )
-                self.config.height = loaded_gen.get("default_height", self.config.height)
-                self.config.width = loaded_gen.get("default_width", self.config.width)
-            # Only apply global defaults when caller left these at the dataclass
-            # default. Otherwise an explicit output_root (e.g. pytest tmp_path
-            # isolation, benchmark scripts) was silently overwritten — a real
-            # stabilization bug, not a feature.
+            # Do NOT apply default_num_inference_steps / default_height here.
+            # Those YAML defaults (steps=3) would clobber Production 12-step / 768
+            # after VRAM policy. Mode blocks in flux_config.yaml already won.
             _defaults = GarmentGenerationConfig.__dataclass_fields__
             if self.config.seed == _defaults["seed"].default:
                 self.config.seed = loaded_gen.get("seed", self.config.seed)
@@ -654,6 +644,26 @@ class GarmentGenerationPipeline:
         raw_path = raw_dir / f"{garment_id}_raw.png"
         flux_input_path = debug_dir / f"{garment_id}_flux_input.png"
 
+        print(
+            f"[FLUX] resolution = {self.config.width}x{self.config.height}\n"
+            f"[FLUX] steps = {self.config.num_inference_steps}\n"
+            f"[FLUX] guidance = {self.config.guidance_scale}\n"
+            f"[FLUX] conditioning image = {flux_input_path} "
+            f"size={conditioning_image.size} mode={getattr(conditioning_image, 'mode', '?')} "
+            f"recolored={conditioning_recolored}",
+            flush=True,
+        )
+        self.logger.info(
+            "[FLUX] FINAL RUNTIME before inference: %sx%s steps=%s guidance=%s "
+            "mode=%s recolored=%s",
+            self.config.width,
+            self.config.height,
+            self.config.num_inference_steps,
+            self.config.guidance_scale,
+            self.config.generation_mode,
+            conditioning_recolored,
+        )
+
         image = self.inference_engine.generate(
             prompt=positive_prompt,
             negative_prompt=negative_prompt,
@@ -675,27 +685,35 @@ class GarmentGenerationPipeline:
             },
         )
 
-        # Apply contour-guided detail refiner (sharpens neckline, sleeves, seams; preserves fabric identity)
-        try:
-            from src.features.custom_generator.inference.garment_detail_refiner import (
-                GarmentDetailRefiner,
+        # Save the actual FLUX PNG. Optional contour refiner is opt-in only —
+        # UnsharpMask + contrast on the full output was softening/haloing prints.
+        refine_env = os.environ.get("FLUX_DETAIL_REFINER", "").strip().lower()
+        if refine_env in ("1", "true", "yes", "on"):
+            try:
+                from src.features.custom_generator.inference.garment_detail_refiner import (
+                    GarmentDetailRefiner,
+                )
+
+                refiner = GarmentDetailRefiner()
+                image = refiner.refine(image, mask_fabric_interior=True, enabled=True)
+            except Exception as ref_exc:
+                self.logger.warning("Garment detail refiner skipped: %s", ref_exc)
+        else:
+            self.logger.info(
+                "[FLUX] detail refiner disabled (saving raw FLUX output; "
+                "set FLUX_DETAIL_REFINER=1 to opt in)"
             )
 
-            refiner = GarmentDetailRefiner()
-            image = refiner.refine(image, mask_fabric_interior=True, enabled=True)
-        except Exception as ref_exc:
-            self.logger.warning("Garment detail refiner skipped: %s", ref_exc)
-
         # Deterministic UI color: FLUX often preserves original base hues even when
-        # the conditioning image is correctly recolored. Apply the same base-only
-        # motif-preserving recolor to the generated garment (studio bg protected).
+        # the conditioning image is correctly recolored. Apply a *light* base-only
+        # motif-preserving recolor so lighting/folds from FLUX are not painted over.
         if conditioning_target:
             try:
                 post = recolor_fabric_base_preserving_motifs(
                     image,
                     conditioning_target,
                     protect_studio_background=True,
-                    strength=1.0,
+                    strength=0.45,
                 )
                 image = post.image
                 post_dir = debug_dir / f"{garment_id}_post_{normalize_color_key(conditioning_target)}"
@@ -790,6 +808,11 @@ class GarmentGenerationPipeline:
             )
 
         t_meta = _mark("METADATA", time.perf_counter())
+        stats = getattr(self.inference_engine, "last_execution_stats", {}) or {}
+        actual_h = int(stats.get("height") or self.config.height)
+        actual_w = int(stats.get("width") or self.config.width)
+        actual_steps = int(stats.get("num_inference_steps") or self.config.num_inference_steps)
+        actual_guidance = float(stats.get("guidance_scale") or self.config.guidance_scale)
         metadata = {
             "garment_id": garment_id,
             "positive_prompt": positive_prompt,
@@ -801,15 +824,19 @@ class GarmentGenerationPipeline:
             "generation_mode": self.config.generation_mode,
             "mode_key": self.config.mode_key,
             "model": "FLUX.1-Kontext",
-            "height": self.config.height,
-            "width": self.config.width,
-            "num_inference_steps": self.config.num_inference_steps,
-            "guidance_scale": self.config.guidance_scale,
+            "height": actual_h,
+            "width": actual_w,
+            "num_inference_steps": actual_steps,
+            "guidance_scale": actual_guidance,
+            "requested_height": self.config.height,
+            "requested_width": self.config.width,
+            "requested_steps": self.config.num_inference_steps,
             "image_path": str(image_path),
             "raw_image_path": str(raw_path),
             "pipeline_timings": timings,
             "vram_policy": getattr(self, "_vram_policy", None),
             "output_stats": output_stats,
+            "was_real_flux_used": bool(stats.get("was_real_flux_used", True)),
         }
         serialize_json(metadata, metadata_dir / f"{garment_id}.json")
 

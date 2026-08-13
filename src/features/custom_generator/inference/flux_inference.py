@@ -924,6 +924,28 @@ class FLUXInferenceEngine:
                 max_seq,
                 prompt_embeds is not None,
             )
+            device_s = str(device)
+            print(f"[FLUX] pipeline device = {device_s}", flush=True)
+            print(f"[FLUX] resolution = {width}x{height}", flush=True)
+            print(f"[FLUX] steps = {num_inference_steps}", flush=True)
+            print(f"[FLUX] guidance = {guidance_scale}", flush=True)
+            print(
+                f"[FLUX] conditioning image = {flux_input_saved or '(in-memory)'} "
+                f"size={getattr(cond_image, 'size', None)} "
+                f"mode={getattr(cond_image, 'mode', None)}",
+                flush=True,
+            )
+            print("[FLUX] inference started", flush=True)
+            self.logger.info(
+                "[FLUX] FINAL kwargs before pipeline(): height=%s width=%s "
+                "steps=%s guidance=%s device=%s auto_resize=%s",
+                kwargs.get("height"),
+                kwargs.get("width"),
+                kwargs.get("num_inference_steps"),
+                kwargs.get("guidance_scale"),
+                device_s,
+                kwargs.get("_auto_resize"),
+            )
 
             self._clear_cuda()
             from src.features.custom_generator.inference.flux_vram_policy import (
@@ -1152,6 +1174,11 @@ class FLUXInferenceEngine:
             _flux_mark("decoding", t_dec, end=True)
             self._log_generation_stage("VAE_DECODE_COMPLETE")
             log_vram("after VAE decode")
+            out_w, out_h = image.size if hasattr(image, "size") else (width, height)
+            out_mode = getattr(image, "mode", "?")
+            print("[FLUX] inference completed", flush=True)
+            print(f"[FLUX] output size = {out_w}x{out_h}", flush=True)
+            print(f"[FLUX] output mode = {out_mode}", flush=True)
 
             # Raw model output before any UI path — for blur root-cause isolation
             if save_raw_path:
@@ -1164,7 +1191,11 @@ class FLUXInferenceEngine:
                     self._log_pil_stats("RAW_SAVE", image)
                     self._assert_non_black_pil(image, stage="raw_save")
                     image.save(raw_p, format="PNG", compress_level=3)
+                    raw_bytes = int(raw_p.stat().st_size) if raw_p.exists() else 0
                     self.logger.info("[FLUX] Saved raw model output → %s (%sx%s)", raw_p, image.size[0], image.size[1])
+                    print(f"[FLUX] output saved = {raw_p}", flush=True)
+                    print(f"[FLUX] file size = {raw_bytes}", flush=True)
+                    print("[FLUX] real FLUX output = true", flush=True)
                 except Exception as raw_exc:
                     # Black-image / hard failures must not be swallowed.
                     if "completely black image" in str(raw_exc).lower():

@@ -360,38 +360,67 @@ def save_fabric_recolor_audit(
 
 def _cover_fabric(fabric: Image.Image, width: int, height: int) -> Image.Image:
     """
-    Fill the garment canvas with fabric while preserving print scale when possible.
+    Fill the garment canvas with fabric while preserving print/motif scale.
 
-    Softness note: shrinking a high-res fabric photo to 512×512 before Kontext
-    smears motif detail. Prefer native-scale center crop when the upload is
-    already large enough; tile small swatches; only LANCZOS-cover when needed.
+    Never upscale a small or narrow swatch to cover 768×768 — that stretches
+    motifs. Native-scale tile those. Center-crop when the upload already covers
+    the canvas. Only a modest LANCZOS cover is used when the fabric is already
+    near canvas size (≤ ~1.55×) so a 512 swatch on 768 does not get a hard tile seam.
     """
     fabric_rgb = fabric.convert("RGB")
     fw, fh = fabric_rgb.size
     if fw < 8 or fh < 8:
         return fabric_rgb.resize((width, height), Image.Resampling.LANCZOS)
 
-    # Tile small pattern swatches to preserve motif scale relative to garment
-    if fw <= width // 2 and fh <= height // 2:
-        tiled = Image.new("RGB", (width, height))
-        for x in range(0, width, fw):
-            for y in range(0, height, fh):
-                tiled.paste(fabric_rgb, (x, y))
-        return tiled
-
-    # Large fabric: center-crop at native resolution (no downscale smear).
+    # Both axes already cover the canvas: native-resolution center crop (no smear).
     if fw >= width and fh >= height:
         left = max(0, (fw - width) // 2)
         top = max(0, (fh - height) // 2)
+        logger.info(
+            "[FLUX] conditioning fabric fill=center_crop source=%sx%s canvas=%sx%s",
+            fw,
+            fh,
+            width,
+            height,
+        )
         return fabric_rgb.crop((left, top, left + width, top + height))
 
-    # One dimension smaller than canvas — cover-scale (unavoidable resize).
     scale = max(width / float(fw), height / float(fh))
-    nw, nh = max(1, int(fw * scale)), max(1, int(fh * scale))
-    resized = fabric_rgb.resize((nw, nh), Image.Resampling.LANCZOS)
-    left = max(0, (nw - width) // 2)
-    top = max(0, (nh - height) // 2)
-    return resized.crop((left, top, left + width, top + height))
+    nearly_full = (
+        fw >= int(width * 0.6)
+        and fh >= int(height * 0.6)
+        and scale <= 1.55
+    )
+    if nearly_full:
+        nw, nh = max(1, int(round(fw * scale))), max(1, int(round(fh * scale)))
+        resized = fabric_rgb.resize((nw, nh), Image.Resampling.LANCZOS)
+        left = max(0, (nw - width) // 2)
+        top = max(0, (nh - height) // 2)
+        logger.info(
+            "[FLUX] conditioning fabric fill=modest_cover scale=%.3f "
+            "source=%sx%s canvas=%sx%s (near-canvas; no tile seam)",
+            scale,
+            fw,
+            fh,
+            width,
+            height,
+        )
+        return resized.crop((left, top, left + width, top + height))
+
+    # Small or narrow swatch: tile at native pixel scale (do not stretch).
+    tiled = Image.new("RGB", (width, height))
+    for y in range(0, height, fh):
+        for x in range(0, width, fw):
+            tiled.paste(fabric_rgb, (x, y))
+    logger.info(
+        "[FLUX] conditioning fabric fill=native_tile source=%sx%s canvas=%sx%s "
+        "(no cover-scale stretch)",
+        fw,
+        fh,
+        width,
+        height,
+    )
+    return tiled
 
 
 def _shirt_polygon(w: int, h: int, long_sleeve: bool = False) -> Sequence[Tuple[int, int]]:
@@ -540,14 +569,8 @@ def build_garment_conditioning_image(
     build_garment_conditioning_image.last_recolor_audit = last_audit  # type: ignore[attr-defined]
 
     fabric_fill = _cover_fabric(source, w, h)
-    # Mild unsharp on the fabric fill only (not the silhouette edge) to counter
-    # LANCZOS softness before Kontext sees the mockup. Radius kept tiny.
-    try:
-        fabric_fill = fabric_fill.filter(
-            ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=2)
-        )
-    except Exception:
-        pass
+    # Do not UnsharpMask the conditioning image. Sharpening before Kontext
+    # invents halo texture that the model bakes into a blurry/melted print.
     mask = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask)
     polygon = _polygon_for_garment(garment_type, w, h, sleeve=sleeve)
@@ -559,7 +582,7 @@ def build_garment_conditioning_image(
 
     logger.info(
         "Built garment conditioning image: garment=%s sleeve=%s size=%sx%s "
-        "blur=none unsharp=mild conditioning_recolored=%s target_color=%s "
+        "blur=none unsharp=none conditioning_recolored=%s target_color=%s "
         "mode=%s",
         garment_type,
         sleeve or "default",

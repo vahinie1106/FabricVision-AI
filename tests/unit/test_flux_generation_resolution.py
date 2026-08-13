@@ -60,3 +60,27 @@ def test_production_resolution_env(monkeypatch):
     assert resolve_flux_production_resolution() == 768
     assert resolve_flux_production_steps() == 12
     assert resolve_flux_production_guidance() == 3.0
+
+
+def test_pipeline_does_not_clobber_production_with_yaml_step_defaults():
+    from pathlib import Path
+
+    src = Path("src/features/custom_generator/pipeline/garment_generation_pipeline.py").read_text(
+        encoding="utf-8"
+    )
+    assert "default_num_inference_steps" in src
+    # The YAML default (3 steps) must not be assigned onto config after VRAM policy.
+    assert "self.config.num_inference_steps = loaded_gen.get(" not in src
+    assert "FLUX_DETAIL_REFINER" in src
+    assert "strength=0.45" in src
+
+
+def test_kaggle_production_lock_unchanged():
+    from pathlib import Path
+
+    src = Path("scripts/run_kaggle.py").read_text(encoding="utf-8")
+    assert 'os.environ.setdefault("FLUX_CUDA_DEVICE", "0")' in src
+    assert 'os.environ.setdefault("CATVTON_CUDA_DEVICE", "1")' in src
+    assert 'os.environ.setdefault("FLUX_PRODUCTION_RESOLUTION", "768")' in src
+    assert 'os.environ.setdefault("FLUX_PRODUCTION_STEPS", "12")' in src
+    assert 'os.environ.setdefault("FLUX_PRODUCTION_GUIDANCE", "3.0")' in src

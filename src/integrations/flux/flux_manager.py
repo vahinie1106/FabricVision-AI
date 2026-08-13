@@ -63,6 +63,7 @@ class FluxManager:
                 "[FLUX] Model initialization started via FluxManager from %s",
                 self.model_path,
             )
+            print("[FLUX] model loading started", flush=True)
             from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
 
             self.loader = FLUXModelLoader(
@@ -84,6 +85,12 @@ class FluxManager:
             )
             if pipeline is not None:
                 self.logger.info("[FLUX] Model initialization completed via FluxManager")
+                print("[FLUX] model loading completed", flush=True)
+                try:
+                    dev = getattr(pipeline, "_execution_device", None) or self.device
+                    print(f"[FLUX] pipeline device = {dev}", flush=True)
+                except Exception:
+                    pass
             return pipeline
 
     def unload(self) -> None:
