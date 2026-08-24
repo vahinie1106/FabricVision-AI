@@ -92,4 +92,55 @@ def test_api_v1_health_still_liveness_without_frontend(monkeypatch):
     client = TestClient(app)
     resp = client.get("/api/v1/health")
     assert resp.status_code == 200
-    assert resp.json()["status"] == "healthy"
+    assert resp.json() == {"status": "healthy", "version": "1.0.0"}
+
+
+def test_cors_regex_allows_kaggle_and_googleusercontent_hosts():
+    import re
+
+    from backend_api.main import CORS_ORIGIN_REGEX
+
+    rx = re.compile(CORS_ORIGIN_REGEX)
+    assert rx.fullmatch("https://kkb-production.jupyter-proxy.kaggle.net")
+    assert rx.fullmatch("https://foo.kaggleusercontent.com")
+    assert rx.fullmatch("https://123.notebooks.googleusercontent.com")
+    assert rx.fullmatch("https://example.jupyter-proxy.kaggle.net")
+    assert not rx.fullmatch("http://evil.example")
+    assert not rx.fullmatch("https://evil.com")
+
+
+def test_openapi_exposes_real_ai_routes(monkeypatch):
+    monkeypatch.setenv("FLUX_WARMUP_ON_STARTUP", "false")
+    from backend_api.main import app
+
+    client = TestClient(app)
+    spec = client.get("/openapi.json").json()
+    paths = spec.get("paths") or {}
+    for route in (
+        "/api/v1/health",
+        "/api/v1/analyze",
+        "/api/v1/generate",
+        "/api/v1/tryon",
+        "/api/v1/status/{job_id}",
+    ):
+        assert route in paths, route
+    assert "post" in paths["/api/v1/generate"]
+    assert "post" in paths["/api/v1/tryon"]
+    assert "post" in paths["/api/v1/analyze"]
+    assert "get" in paths["/api/v1/status/{job_id}"]
+
+
+def test_rewrite_strips_loopback_location_headers():
+    import httpx
+
+    from backend_api.gateway import _rewrite_response_headers
+
+    out = _rewrite_response_headers(
+        httpx.Headers({"location": "http://127.0.0.1:3000/about"})
+    )
+    assert out["location"] == "/about"
+    out = _rewrite_response_headers(
+        httpx.Headers({"location": "http://127.0.0.1:8000/studio/custom-garment"})
+    )
+    assert out["location"] == "/studio/custom-garment"
+

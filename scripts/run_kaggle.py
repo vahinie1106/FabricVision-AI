@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Start FabricVision-AI for Kaggle / local deployment.
 
-Default Kaggle mode = SPLIT notebook ports (recommended):
+Default Kaggle mode = GATEWAY (recommended):
+  Browser → Kaggle …/proxy/proxy/8000 → FastAPI :8000 → Next.js :3000
+  API + images are same-origin (/api/v1, /outputs) — the browser never
+  calls http://127.0.0.1:8000.
+
+Optional split ports (--no-base-path):
   Browser UI  → Kaggle /proxy/3000/  → Next.js :3000
   Browser API → Kaggle /proxy/8000/  → FastAPI  :8000
-  API base    → /proxy/8000/api/v1
-
-Optional gateway mode (--gateway):
-  Browser → Kaggle …/proxy/proxy/8000 → FastAPI gateway → Next :3000
-  (Jupyter base_url already ends in /proxy/, so jupyter-server-proxy
-   yields the intentional two-layer /proxy/proxy/<port> path.)
 
 Startup order (always):
   1. Configure env + HF cache + deps
@@ -22,8 +21,9 @@ Startup order (always):
 
 Usage (from repo root):
   python scripts/run_kaggle.py
+  python scripts/run_kaggle.py --gateway
+  python scripts/run_kaggle.py --no-base-path   # split PORT 3000 + 8000
   python scripts/run_kaggle.py --skip-build
-  python scripts/run_kaggle.py --gateway          # single-port public gateway
   python scripts/run_kaggle.py --prefetch-flux   # optional disk prep BEFORE services
 """
 
@@ -590,6 +590,30 @@ def detect_deployment(port: int = 8000) -> Dict[str, Any]:
     return info
 
 
+def select_kaggle_deploy_mode(
+    *,
+    is_kaggle: bool,
+    jupyter_base_url: Optional[str] = None,
+    detected_base_path: Optional[str] = None,
+    gateway: bool = False,
+    no_base_path: bool = False,
+    base_path_arg: Optional[str] = None,
+) -> tuple[bool, bool]:
+    """Return ``(gateway_mode, split_proxy)``.
+
+    On Kaggle, default to gateway (same-origin UI+API on PORT 8000) so the
+    browser never has to call a second proxy port or ``http://127.0.0.1:8000``.
+    Split PORT 3000 + 8000 is opt-in via ``--no-base-path``.
+    """
+    if no_base_path:
+        return False, True
+    if gateway or base_path_arg is not None:
+        return True, False
+    if is_kaggle and (jupyter_base_url or detected_base_path):
+        return True, False
+    return False, True
+
+
 def apply_split_proxy_public_urls(deploy: Dict[str, Any]) -> Dict[str, Any]:
     """Split mode: website is PORT 3000; API is PORT 8000. Never advertise 8000 as the site."""
     jupyter_base = str(deploy.get("jupyter_base_url") or "").strip()
@@ -634,7 +658,18 @@ def _is_backend_public_url(url: Optional[str]) -> bool:
 
 
 def public_website_url(deploy: Dict[str, Any]) -> Optional[str]:
-    """Website URL is PORT 3000 only — never advertise FastAPI :8000 as the site."""
+    """Public site URL for the mode in use.
+
+    Gateway: PORT 8000 (same-origin UI+API). Split: PORT 3000 only.
+    Never return a loopback URL.
+    """
+    mode = str(deploy.get("deploy_mode") or "")
+    if mode == "gateway":
+        for key in ("website_url", "public_url"):
+            url = str(deploy.get(key) or "").strip()
+            if url and _is_backend_public_url(url) and not _is_loopback_url(url):
+                return url
+        return None
     for key in ("website_url", "public_url"):
         url = str(deploy.get(key) or "").strip()
         if url and _is_frontend_public_url(url):
@@ -832,7 +867,14 @@ def _frontend_env(base_path: str, *, split_proxy: bool = False) -> dict:
             detected = ""
         jupyter_base = (detected or jupyter_base or "").rstrip("/") + "/"
         nested = jupyter_base.rstrip("/").endswith("/proxy")
-        api_prefix = "/proxy/proxy/8000" if nested else "/proxy/8000"
+        if "/k/" in jupyter_base:
+            # Keep /k/<session> on the baked API path so the browser does not
+            # call host-root /proxy/8000 while the UI lives under /k/<session>/.
+            api_prefix = _collapse_extra_proxy_segments(
+                jupyter_base.rstrip("/") + "/proxy/8000"
+            )
+        else:
+            api_prefix = "/proxy/proxy/8000" if nested else "/proxy/8000"
         env["NEXT_PUBLIC_USE_SAME_ORIGIN"] = "false"
         env["NEXT_PUBLIC_API_URL"] = f"{api_prefix}/api/v1"
         env["NEXT_PUBLIC_API_BASE_URL"] = f"{api_prefix}/api/v1"
@@ -851,8 +893,8 @@ def _frontend_env(base_path: str, *, split_proxy: bool = False) -> dict:
         else:
             env.pop("NEXT_PUBLIC_ASSET_PREFIX", None)
         env["FABRICVISION_PROXY_NESTING"] = "double" if nested else "single"
-        # Kaggle Custom Garment must default to Production 768×12, not Standard 512×3.
-        env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] = "Production"
+        # Fastest usable web default. Production 768×12 remains selectable in UI.
+        env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] = "Standard"
     else:
         # Gateway mode: UI+API same public prefix (…/proxy/proxy/8000).
         env["NEXT_PUBLIC_USE_SAME_ORIGIN"] = "true"
@@ -865,7 +907,7 @@ def _frontend_env(base_path: str, *, split_proxy: bool = False) -> dict:
         env.pop("NEXT_PUBLIC_LOCAL_API_ROOT", None)
         env.pop("NEXT_PUBLIC_LOCAL_API_ORIGIN", None)
         env.pop("NEXT_PUBLIC_ASSET_PREFIX", None)
-        env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] = "Production"
+        env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] = "Standard"
     return env
 
 
@@ -1499,8 +1541,13 @@ def print_startup_checks(
     if website and not _is_loopback_url(website):
         print(f"public_frontend_url={website}", flush=True)
     else:
+        open_port = (
+            "PORT 8000"
+            if str(deploy.get("deploy_mode") or "") == "gateway"
+            else "PORT 3000"
+        )
         print(
-            "public_frontend_url=NOT CONFIRMED — open Kaggle Notebook → Interface → PORT 3000",
+            f"public_frontend_url=NOT CONFIRMED — open Kaggle Notebook → Interface → {open_port}",
             flush=True,
         )
     api = public_api_url(deploy)
@@ -1508,7 +1555,7 @@ def print_startup_checks(
         print(f"public_backend_url={api}", flush=True)
     elif api and not _is_loopback_url(api):
         print(
-            f"public_backend_url={api} (constructed; public PORT 3000 probe not confirmed)",
+            f"public_backend_url={api} (constructed; public website probe not confirmed)",
             flush=True,
         )
     else:
@@ -1587,9 +1634,26 @@ def print_banner(
     print("PUBLIC WEBSITE:", flush=True)
     confirmed = bool(deploy.get("website_confirmed"))
     website = public_website_url(deploy) if confirmed else None
+    gateway = str(deploy.get("deploy_mode") or "") == "gateway"
     if website and not _is_loopback_url(website):
         print(f"    {website}", flush=True)
-        print("    Paste this URL in Chrome (Kaggle PORT 3000 — NOT PORT 8000).", flush=True)
+        if gateway:
+            print(
+                "    Paste this URL in Chrome (Kaggle PORT 8000 — website + API).",
+                flush=True,
+            )
+        else:
+            print(
+                "    Paste this URL in Chrome (Kaggle PORT 3000 — NOT PORT 8000).",
+                flush=True,
+            )
+    elif gateway:
+        print(
+            "    Public PORT 8000 URL not confirmed — not advertising a guessed URL.",
+            flush=True,
+        )
+        print("    Open Kaggle Notebook → Interface → PORT 8000.", flush=True)
+        print("    Do NOT open PORT 3000 as the website in gateway mode.", flush=True)
     else:
         print("    Public PORT 3000 URL not confirmed — not advertising a guessed URL.", flush=True)
         print("    Open Kaggle Notebook → Interface → PORT 3000.", flush=True)
@@ -1612,9 +1676,14 @@ def print_banner(
     print("    Browser must NOT call http://127.0.0.1:8000.", flush=True)
     print("", flush=True)
     print("Proxy:", flush=True)
-    print("    Frontend UI:  Kaggle → Open PORT 3000  (/proxy/3000/)", flush=True)
-    print("    Backend API:  Kaggle → Open PORT 8000  (/proxy/8000/)", flush=True)
-    print("    API base:     /proxy/8000/api/v1/  (nested: /proxy/proxy/8000/api/v1/)", flush=True)
+    if gateway:
+        print("    Website+API:  Kaggle → Open PORT 8000  (/proxy/proxy/8000/)", flush=True)
+        print("    Next.js:      local :3000 (proxied by FastAPI gateway)", flush=True)
+        print("    API base:     same-origin /api/v1  (never http://127.0.0.1:8000)", flush=True)
+    else:
+        print("    Frontend UI:  Kaggle → Open PORT 3000  (/proxy/3000/)", flush=True)
+        print("    Backend API:  Kaggle → Open PORT 8000  (/proxy/8000/)", flush=True)
+        print("    API base:     /proxy/8000/api/v1/  (nested: /proxy/proxy/8000/api/v1/)", flush=True)
     if deploy.get("base_path"):
         print(
             f"    Gateway basePath (optional): {deploy.get('base_path')}",
@@ -1645,9 +1714,14 @@ def print_banner(
         print("=" * 60, flush=True)
         print("FABRICVISION-AI READY", flush=True)
         print("=" * 60, flush=True)
-        print("    Open Kaggle PORT 3000 for the UI (Home + AI Studio).", flush=True)
-        print("    Open AI Studio at /studio/custom-garment on PORT 3000.", flush=True)
-        print("    Open Kaggle PORT 8000 for API/docs/outputs.", flush=True)
+        if gateway:
+            print("    Open Kaggle PORT 8000 for the UI (Home + AI Studio + API).", flush=True)
+            print("    Open AI Studio at /studio/custom-garment on PORT 8000.", flush=True)
+            print("    API is same-origin: /api/v1  (images: /outputs).", flush=True)
+        else:
+            print("    Open Kaggle PORT 3000 for the UI (Home + AI Studio).", flush=True)
+            print("    Open AI Studio at /studio/custom-garment on PORT 3000.", flush=True)
+            print("    Open Kaggle PORT 8000 for API/docs/outputs.", flush=True)
         print(
             "    Next.js + FastAPI liveness + FLUX residency confirmed.",
             flush=True,
@@ -1750,12 +1824,13 @@ def configure_kaggle_flux_runtime() -> None:
             except Exception:
                 major = 8
             if int(major) < 8:
-                os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")
                 os.environ.setdefault("FLUX_TORCH_DTYPE", "float16")
+                # 16GB T4: keep FLUX GPU-resident. Forcing model_cpu_offload just
+                # because SM < 8 makes Standard 512×8 take many minutes (CPU↔GPU
+                # shuttling). Low-VRAM (6GB) still enables offload in the else branch.
                 _log(
-                    "Pre-Ampere T4-class defaults: FLUX_MODEL_CPU_OFFLOAD=true "
-                    "FLUX_TORCH_DTYPE=float16 (transformer/compute); "
-                    "VAE is upcast to float32 at load/generate to avoid fp16 NaN/black"
+                    "Pre-Ampere T4-class: FLUX_TORCH_DTYPE=float16; "
+                    "FLUX_MODEL_CPU_OFFLOAD left unset (GPU-resident on >=14GB)"
                 )
             # Never silently demote Production 768 → 512 on T4.
             prod_res = (
@@ -1971,7 +2046,7 @@ def main() -> int:
     parser.add_argument(
         "--no-base-path",
         action="store_true",
-        help="Force empty Next basePath (same as default split-proxy mode)",
+        help="Opt in to split-proxy (UI PORT 3000, API PORT 8000). Default on Kaggle is gateway.",
     )
     parser.add_argument(
         "--gateway",
@@ -2004,31 +2079,14 @@ def main() -> int:
     os.chdir(ROOT)
 
     deploy = detect_deployment(port=args.port)
-    gateway_mode = bool(args.gateway or (args.base_path is not None and not args.no_base_path))
-    split_proxy = (not gateway_mode) or bool(args.no_base_path)
-
-    if args.no_base_path or split_proxy:
-        base_path = ""
-        deploy["base_path"] = ""
-        deploy["deploy_mode"] = "split_proxy"
-    elif args.base_path is not None:
-        base_path = "/" + args.base_path.strip("/") if args.base_path.strip() else ""
-        deploy["base_path"] = base_path
-        deploy["deploy_mode"] = "gateway"
-        if deploy.get("proxy_host") and base_path:
-            deploy["public_url"] = f"{deploy['proxy_host']}{base_path}/"
-            deploy["about_url"] = f"{deploy['proxy_host']}{base_path}/about"
-            deploy["docs_url"] = f"{deploy['proxy_host']}{base_path}/docs"
-            deploy["health_url"] = f"{deploy['proxy_host']}{base_path}/api/v1/health"
-        split_proxy = False
-    else:
-        base_path = str(deploy.get("base_path") or "")
-        deploy["deploy_mode"] = "gateway" if base_path else "local"
-        split_proxy = not bool(base_path)
-        if split_proxy:
-            base_path = ""
-            deploy["base_path"] = ""
-            deploy["deploy_mode"] = "split_proxy"
+    gateway_mode, split_proxy = select_kaggle_deploy_mode(
+        is_kaggle=bool(deploy.get("is_kaggle")),
+        jupyter_base_url=deploy.get("jupyter_base_url"),
+        detected_base_path=deploy.get("base_path"),
+        gateway=bool(args.gateway),
+        no_base_path=bool(args.no_base_path),
+        base_path_arg=args.base_path,
+    )
 
     if split_proxy:
         base_path = ""
@@ -2040,6 +2098,28 @@ def main() -> int:
             f"website={deploy.get('website_url')!r} "
             f"api={deploy.get('api_public_url')!r}"
         )
+    elif args.base_path is not None:
+        base_path = "/" + args.base_path.strip("/") if args.base_path.strip() else ""
+        deploy["base_path"] = base_path
+        deploy["deploy_mode"] = "gateway"
+        if deploy.get("proxy_host") and base_path:
+            deploy["public_url"] = f"{deploy['proxy_host']}{base_path}/"
+            deploy["about_url"] = f"{deploy['proxy_host']}{base_path}/about"
+            deploy["docs_url"] = f"{deploy['proxy_host']}{base_path}/docs"
+            deploy["health_url"] = f"{deploy['proxy_host']}{base_path}/api/v1/health"
+            deploy["website_url"] = deploy["public_url"]
+        split_proxy = False
+    else:
+        base_path = str(deploy.get("base_path") or "")
+        deploy["deploy_mode"] = "gateway" if base_path else "local"
+        if base_path:
+            deploy["website_url"] = deploy.get("public_url")
+        split_proxy = not bool(base_path)
+        if split_proxy:
+            base_path = ""
+            deploy["base_path"] = ""
+            deploy["deploy_mode"] = "split_proxy"
+            apply_split_proxy_public_urls(deploy)
 
     _log(
         f"Deployment mode: kaggle={deploy['is_kaggle']} "
@@ -2056,10 +2136,10 @@ def main() -> int:
         and not base_path
     ):
         _log(
-            "ERROR: --gateway on Kaggle requires a non-empty public basePath. "
+            "ERROR: gateway on Kaggle requires a non-empty public basePath. "
             "Could not detect Jupyter base_url. Set KAGGLE_PUBLIC_PATH or "
             "pass --base-path /k/<session>/proxy/proxy/8000. "
-            "Or omit --gateway to use split /proxy/3000 + /proxy/8000 mode."
+            "Or use --no-base-path for split /proxy/3000 + /proxy/8000 mode."
         )
         return 1
 
@@ -2399,6 +2479,9 @@ def main() -> int:
                             token=token,
                         )
                         public_status["next_static"] = 200
+                        deploy["website_confirmed"] = True
+                        deploy["website_url"] = deploy.get("public_url")
+                        deploy["deploy_mode"] = "gateway"
                     except Exception as asset_exc:
                         public_status["next_static"] = 0
                         print_banner(

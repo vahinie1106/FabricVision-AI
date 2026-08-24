@@ -12,7 +12,7 @@ export {
 
 export interface JobStatusResponse {
   job_id: string;
-  status: "queued" | "processing" | "completed" | "failed";
+  status: "queued" | "processing" | "completed" | "failed" | "cancelled";
   progress: number;
   current_step: string;
   /** Authoritative backend lifecycle stage (prefer over UI inference). */
@@ -156,7 +156,7 @@ export class ApiClient {
             onProgress(statusRes);
           }
 
-          if (statusRes.status === "completed" || statusRes.status === "failed") {
+          if (statusRes.status === "completed" || statusRes.status === "failed" || statusRes.status === "cancelled") {
             resolve(statusRes);
           } else {
             setTimeout(poll, pollInterval);

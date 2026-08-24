@@ -52,7 +52,7 @@ export const BACKEND_STAGE_TO_UI_ID: Record<string, string> = {
   saving: "save",
   completed: "done",
   failed: "done",
-  processing: "fabric",
+  processing: "generate",
 };
 
 export function getStages(kind: WorkflowKind): ProgressStageDef[] {

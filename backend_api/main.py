@@ -40,6 +40,10 @@ _CORS_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
 ]
+CORS_ORIGIN_REGEX = (
+    r"https://.*\.(kaggle\.net|kaggleusercontent\.com|googleusercontent\.com)"
+    r"|https://.*jupyter-proxy\.kaggle\.net"
+)
 _extra = os.environ.get("FABRICVISION_CORS_ORIGINS", "").strip()
 if _extra:
     _CORS_ORIGINS.extend(
@@ -49,7 +53,7 @@ if _extra:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_CORS_ORIGINS,
-    allow_origin_regex=r"https://.*\.(kaggle\.net|kaggleusercontent\.com)|https://.*jupyter-proxy\.kaggle\.net",
+    allow_origin_regex=CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -38,7 +38,7 @@ NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000
 NEXT_PUBLIC_API_ORIGIN=http://127.0.0.1:8000
 NEXT_PUBLIC_USE_SAME_ORIGIN=false
 NEXT_PUBLIC_FORBID_LOOPBACK=false
-NEXT_PUBLIC_DEFAULT_GENERATION_MODE=Production
+NEXT_PUBLIC_DEFAULT_GENERATION_MODE=Standard
 """
 
 
@@ -69,7 +69,7 @@ def wait_http(url: str, label: str, attempts: int = 90) -> int:
             _log(f"OK {label}: {url} -> HTTP {last}")
             return last
         time.sleep(1.0)
-    raise RuntimeError(f"{label} failed: {url} → HTTP {last}")
+    raise RuntimeError(f"{label} failed: {url} -> HTTP {last}")
 
 
 def main() -> int:
@@ -111,6 +111,8 @@ def main() -> int:
 
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONPATH", str(ROOT))
     env.setdefault("FLUX_WARMUP_ON_STARTUP", "false")
     env.pop("HOST", None)
@@ -152,14 +154,35 @@ def main() -> int:
     print("  Health:    http://127.0.0.1:8000/api/v1/health", flush=True)
     print("Press Ctrl+C to stop.", flush=True)
 
+    def _spawn_api() -> subprocess.Popen:
+        proc = subprocess.Popen(
+            [py, str(ROOT / "run_api.py")],
+            cwd=str(ROOT),
+            env=env,
+        )
+        children.append(proc)
+        return proc
+
     try:
         while True:
-            for proc, name in ((next_proc, "Next.js"), (api, "FastAPI")):
-                code = proc.poll()
-                if code is not None:
-                    _log(f"{name} exited with code {code}")
-                    _shutdown()
-                    return code or 1
+            fe_code = next_proc.poll()
+            if fe_code is not None:
+                _log(f"Next.js exited with code {fe_code}")
+                _shutdown()
+                return fe_code or 1
+            api_code = api.poll()
+            if api_code is not None:
+                _log(
+                    f"FastAPI exited with code {api_code} — "
+                    "restarting backend only (frontend stays on :3000)"
+                )
+                try:
+                    children.remove(api)
+                except ValueError:
+                    pass
+                time.sleep(1.5)
+                api = _spawn_api()
+                _log(f"FastAPI restart PID: {api.pid}")
             time.sleep(1.0)
     except KeyboardInterrupt:
         _shutdown()

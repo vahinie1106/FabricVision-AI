@@ -110,12 +110,47 @@ class VirtualTryOnPipeline:
             return env
 
         g = (garment_type or "garment").lower().replace(" ", "_")
-        if g in ("pants", "trousers", "skirt", "shorts"):
+        if g in ("pants", "trousers", "shorts", "jeans", "leggings"):
             return "lower"
-        if g in ("dress", "gown", "jumpsuit", "overall", "kurti", "kurta", "saree", "anarkali"):
+        # Long / dress-like skirts use overall so GrabCut does not follow pant legs.
+        if g in ("skirt", "mini_skirt", "short_skirt"):
+            return "lower"
+        if g in (
+            "dress",
+            "gown",
+            "jumpsuit",
+            "overall",
+            "kurti",
+            "kurta",
+            "saree",
+            "anarkali",
+            "maxi",
+            "maxi_dress",
+            "maxi_skirt",
+            "frock",
+            "lehenga",
+            "kaftan",
+        ):
             return "overall"
-        if g in ("top", "shirt", "t_shirt", "tshirt", "blouse", "hoodie", "jacket", "sweater"):
+        if g in (
+            "top",
+            "shirt",
+            "t_shirt",
+            "tshirt",
+            "blouse",
+            "hoodie",
+            "jacket",
+            "sweater",
+            "coat",
+            "blazer",
+            "cardigan",
+            "crop_top",
+            "tank",
+            "camisole",
+        ):
             return "upper"
+        if g in ("outer", "outerwear", "overcoat"):
+            return "outer"
         # Unknown label: if person is full-body portrait, prefer overall.
         if person_image is not None:
             pw, ph = person_image.size
@@ -456,7 +491,8 @@ class VirtualTryOnPipeline:
             "garment_mask_computed": prep_garment.garment_mask is not None,
             "raw_equals_final": bool(was_real_catvton_used),
             "limitations": [
-                "AutoMasker requires CATVTON_USE_AUTOMASKER=true and importable detectron2.",
+                "AutoMasker is preferred when DensePose/SCHP/detectron2 are available "
+                "(CATVTON_USE_AUTOMASKER=auto|true); GrabCut remains the fallback.",
                 "GrabCut cloth-region masks are approximate vs DensePose+SCHP agnostic masks.",
                 "Garment uses resize_and_padding; person/mask use resize_and_crop (upstream).",
                 "vitonhd-16k-512 + 384x512 used on RTX 3050 6GB (not mix 768x1024 / 50 steps).",

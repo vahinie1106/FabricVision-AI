@@ -266,7 +266,7 @@ def try_automasker_mask(
     person_rgb: Image.Image,
     catvton_root: Path,
     cloth_type: str = "upper",
-    device: str = "cuda",
+    device: str = "auto",
 ) -> Optional[Image.Image]:
     """
     Attempt native CatVTON AutoMasker (DensePose + SCHP).
@@ -274,8 +274,17 @@ def try_automasker_mask(
     Returns None when detectron2/weights/imports are unavailable so callers
     can fall back without crashing. Caller must unload VRAM after use.
     """
-    flag = os.environ.get("CATVTON_USE_AUTOMASKER", "false").strip().lower()
-    if flag not in ("1", "true", "yes", "on"):
+    from src.common.models.device_manager import DeviceManager
+
+    if device == "auto":
+        device = DeviceManager.resolve_role_device("catvton", "cuda")
+    device = DeviceManager().resolve_device(device)
+    flag = os.environ.get("CATVTON_USE_AUTOMASKER", "auto").strip().lower()
+    # Default "auto": attempt AutoMasker when DensePose/SCHP/detectron2 are present.
+    # Explicit false disables; true/on forces the attempt.
+    if flag in ("0", "false", "no", "off"):
+        return None
+    if flag not in ("1", "true", "yes", "on", "auto", ""):
         return None
 
     model_dir = catvton_root / "model"
@@ -409,12 +418,24 @@ def resolve_person_mask(
         if am is not None:
             if am.size != target_size:
                 am = ImageOps.fit(am, target_size, method=Image.Resampling.NEAREST)
-            attempts.append("automasker:ok")
-            resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
-            resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
-            return am, "automasker"
-        attempts.append("automasker:unavailable_or_failed")
-        if strategy == "automasker":
+            # Enforce cloth-type band — AutoMasker "upper" can still leak onto legs.
+            binary = (np.asarray(am.convert("L")) > 127).astype(np.uint8) * 255
+            binary = restrict_mask_to_cloth_region(binary, cloth_type)
+            if cloth_type in ("overall", "dress", "outer"):
+                binary = solidify_overall_dress_mask(binary)
+            am = Image.fromarray(binary, mode="L")
+            min_fill = 0.03 if cloth_type in ("upper", "lower", "inner") else 0.05
+            max_fill = 0.92 if cloth_type in ("overall", "dress", "outer") else 0.85
+            if not _validate_mask(am, min_fill=min_fill, max_fill=max_fill):
+                attempts.append("automasker:band_reject")
+            else:
+                attempts.append("automasker:ok")
+                resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
+                resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
+                return am, "automasker"
+        else:
+            attempts.append("automasker:unavailable_or_failed")
+        if strategy == "automasker" and "automasker:ok" not in attempts:
             resolve_person_mask.last_attempts = attempts  # type: ignore[attr-defined]
             resolve_person_mask.last_strategy = strategy  # type: ignore[attr-defined]
             raise RuntimeError(

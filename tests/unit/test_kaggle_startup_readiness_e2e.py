@@ -305,7 +305,7 @@ def test_frontend_env_split_proxy_preserves_backend_port():
     assert env["NEXT_PUBLIC_API_URL"] == "/proxy/8000/api/v1"
     assert env["NEXT_PUBLIC_BACKEND_URL"] == "/proxy/8000"
     assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "false"
-    assert env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] == "Production"
+    assert env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] == "Standard"
     assert "NEXT_PUBLIC_BASE_PATH" not in env
     assert "NEXT_PUBLIC_ASSET_PREFIX" not in env
 
@@ -317,6 +317,7 @@ def test_frontend_env_gateway_uses_relative_api():
     assert env["NEXT_PUBLIC_API_URL"] == "/api/v1"
     assert env["NEXT_PUBLIC_BASE_PATH"] == "/k/abc/proxy/proxy/8000"
     assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "true"
+    assert env["NEXT_PUBLIC_DEFAULT_GENERATION_MODE"] == "Standard"
     assert "NEXT_PUBLIC_ASSET_PREFIX" not in env
 
 
@@ -562,7 +563,8 @@ def test_frontend_env_kaggle_sets_port_3000_asset_prefix(monkeypatch):
     assert env["NEXT_PUBLIC_ASSET_PREFIX"] == "/k/sess/proxy/proxy/3000"
     assert "8000" not in env["NEXT_PUBLIC_ASSET_PREFIX"]
     assert "NEXT_PUBLIC_BASE_PATH" not in env
-    assert env["NEXT_PUBLIC_API_URL"] == "/proxy/proxy/8000/api/v1"
+    assert env["NEXT_PUBLIC_API_URL"] == "/k/sess/proxy/proxy/8000/api/v1"
+    assert env["NEXT_PUBLIC_BACKEND_URL"] == "/k/sess/proxy/proxy/8000"
     assert env["NEXT_PUBLIC_USE_SAME_ORIGIN"] == "false"
 
 
@@ -704,3 +706,116 @@ def test_split_proxy_build_marker_includes_asset_prefix():
     assert "8000" in marker
     assert "/k/sess/proxy/proxy/3000" in marker
     assert rk.split_proxy_build_marker({}) == "SPLIT:/proxy/8000:assetPrefix=none"
+
+
+def test_select_kaggle_deploy_mode_defaults_to_gateway_on_kaggle():
+    import scripts.run_kaggle as rk
+
+    gw, split = rk.select_kaggle_deploy_mode(
+        is_kaggle=True,
+        jupyter_base_url="/k/sess/proxy/",
+        detected_base_path="/k/sess/proxy/proxy/8000",
+    )
+    assert gw is True and split is False
+
+    gw, split = rk.select_kaggle_deploy_mode(
+        is_kaggle=True,
+        jupyter_base_url="/k/sess/proxy/",
+        no_base_path=True,
+    )
+    assert gw is False and split is True
+
+    gw, split = rk.select_kaggle_deploy_mode(is_kaggle=False)
+    assert gw is False and split is True
+
+    gw, split = rk.select_kaggle_deploy_mode(
+        is_kaggle=False,
+        gateway=True,
+        detected_base_path="/k/s/proxy/proxy/8000",
+    )
+    assert gw is True and split is False
+
+
+def test_public_website_url_gateway_uses_port_8000():
+    import scripts.run_kaggle as rk
+
+    url = (
+        "https://kkb-production.jupyter-proxy.kaggle.net"
+        "/k/342038368/proxy/proxy/8000/"
+    )
+    assert rk.public_website_url({"deploy_mode": "gateway", "public_url": url}) == url
+    assert (
+        rk.public_website_url(
+            {"deploy_mode": "split_proxy", "public_url": url}
+        )
+        is None
+    )
+
+
+def test_banner_gateway_advertises_port_8000_as_website(monkeypatch):
+    import scripts.run_kaggle as rk
+
+    monkeypatch.setattr(rk, "_pids_on_port", lambda _p: [])
+    deploy = {
+        "jupyter_base_url": "/k/sess/proxy/",
+        "public_url": "https://example.kaggle.net/k/sess/proxy/proxy/8000/",
+        "website_url": "https://example.kaggle.net/k/sess/proxy/proxy/8000/",
+        "api_public_url": "https://example.kaggle.net/k/sess/proxy/proxy/8000/api/v1/",
+        "base_path": "/k/sess/proxy/proxy/8000",
+        "deploy_mode": "gateway",
+        "is_kaggle": True,
+        "website_confirmed": True,
+    }
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rk.print_banner(
+            health_code=200,
+            root_code=200,
+            next_code=200,
+            deploy=deploy,
+            application_ready=True,
+        )
+    text = buf.getvalue()
+    website_block = text.split("PUBLIC WEBSITE:")[1].split("BACKEND:")[0]
+    assert "/proxy/proxy/8000/" in website_block
+    assert "PORT 8000 — website + API" in text
+    assert "Open Kaggle PORT 8000 for the UI" in text
+    assert "Do NOT open PORT 8000 as the website." not in text
+
+
+def test_main_uses_select_kaggle_deploy_mode():
+    import inspect
+    import scripts.run_kaggle as rk
+
+    src = inspect.getsource(rk.main)
+    assert "select_kaggle_deploy_mode" in src
+    assert "args.no_base_path or split_proxy" not in src
+
+
+def test_t4_high_vram_does_not_force_cpu_offload():
+    from pathlib import Path
+
+    src = Path("scripts/run_kaggle.py").read_text(encoding="utf-8")
+    assert "FLUX_MODEL_CPU_OFFLOAD left unset" in src
+    assert 'os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")' in src
+    # High-VRAM T4 block must not force offload; low-VRAM else branch still may.
+    high = src.split("if vram_mb >= 14000:")[1].split("else:")[0]
+    assert 'setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")' not in high
+
+
+def test_api_config_detects_googleusercontent_and_session_remap():
+    from pathlib import Path
+
+    src = Path("frontend/src/lib/apiConfig.ts").read_text(encoding="utf-8")
+    assert "googleusercontent.com" in src
+    assert 'pageBasePath.includes("/k/")' in src
+    assert "isLocalNextDevHost" in src
+
+
+def test_progress_stages_map_processing_to_generating():
+    from pathlib import Path
+
+    src = Path("frontend/src/lib/progressStages.ts").read_text(encoding="utf-8")
+    assert 'processing: "generate"' in src
+    assert 'processing: "fabric"' not in src
+

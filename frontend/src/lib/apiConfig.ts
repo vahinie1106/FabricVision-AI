@@ -83,6 +83,7 @@ function isProxyDeploymentHost(hostname: string): boolean {
   return (
     host.includes("kaggle.net") ||
     host.includes("kaggleusercontent.com") ||
+    host.includes("googleusercontent.com") ||
     host.includes("jupyter-proxy") ||
     host.includes("googleapis.com") ||
     // Some notebook edge hosts only expose the jupyter-proxy subdomain pattern.
@@ -239,8 +240,8 @@ export function resolveBackendDeploymentBase(pageBasePath: string): string {
       backendPort &&
       (!pagePort || pagePort !== backendPort || FRONTEND_PROXY_PORTS.has(pagePort))
     ) {
-      if (pageBasePath.includes("/k/") && extractProxyPort(configuredBackend) === backendPort) {
-        // Refresh session prefix; honor /proxy/proxy nesting when configured.
+      if (pageBasePath.includes("/k/")) {
+        // Always refresh /k/<session> from the live page; never keep host-root /proxy/8000.
         return withProxyPort(pageBasePath, backendPort, preferDouble);
       }
       return configuredBackend;
@@ -358,15 +359,11 @@ export function resolveApiBaseUrl(): string {
         configuredPort !== pagePort &&
         FRONTEND_PROXY_PORTS.has(pagePort)
       ) {
-        // Keep backend port; refresh /k/<session> prefix from the live page when needed.
-        if (pageBasePath.includes("/k/") && !normalized.includes("/k/")) {
+        // Keep backend port; always attach /k/<session> from the live page when present.
+        if (pageBasePath.includes("/k/")) {
           return sameOriginApiRoot(
             withProxyPort(pageBasePath, configuredPort, preferDouble)
           );
-        }
-        // Prefer configured nesting (/proxy/proxy/8000) over a bare host-root path.
-        if (preferDouble) {
-          return stripTrailingSlash(normalized);
         }
         return stripTrailingSlash(normalized);
       }
@@ -444,7 +441,7 @@ export function resolveApiOrigin(): string {
       configuredPort !== pagePort &&
       FRONTEND_PROXY_PORTS.has(pagePort)
     ) {
-      if (pageBasePath.includes("/k/") && !normalizedOrigin.includes("/k/")) {
+      if (pageBasePath.includes("/k/")) {
         const preferDouble = configuredPrefersDoubleProxy(normalizedOrigin);
         return withProxyPort(pageBasePath, configuredPort, preferDouble);
       }

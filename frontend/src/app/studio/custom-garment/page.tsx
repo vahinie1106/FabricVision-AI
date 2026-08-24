@@ -53,7 +53,7 @@ export default function CustomGarmentGenerator() {
   const [color, setColor] = useState("Match Fabric");
   const [sleeve, setSleeve] = useState("Short Sleeve");
   const [neckline, setNeckline] = useState("Round Neck");
-  /** Kaggle bake-time default is Production; local Next stays Standard. */
+  /** Web default is Standard (fastest usable). Production stays selectable. */
   const [generationMode, setGenerationMode] = useState<GenerationMode>(() => {
     const raw = (process.env.NEXT_PUBLIC_DEFAULT_GENERATION_MODE || "Standard").trim();
     if (raw === "Preview" || raw === "Standard" || raw === "Production") return raw;
