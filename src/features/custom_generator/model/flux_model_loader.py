@@ -19,6 +19,29 @@ except ImportError:
 
 ProgressCallback = Optional[Callable[[str, int], None]]
 
+# Physical VRAM below this uses the RTX 3050 path (model_cpu_offload).
+# Tesla T4 is ~15109 MiB and must stay GPU-resident — SM 7.5 is a dtype
+# concern (fp16 vs bf16), not a reason to shuttle weights every step.
+_HIGH_VRAM_OFFLOAD_FLOOR_MB = 14000.0
+
+
+def should_prefer_model_cpu_offload(
+    *,
+    physical_mb: float,
+    offload_env: str = "",
+) -> bool:
+    """Decide whether FLUX should enable ``enable_model_cpu_offload``.
+
+    Explicit ``FLUX_MODEL_CPU_OFFLOAD`` wins. Auto: only cards below 14 GB.
+    Pre-Ampere (Tesla T4 sm_75) is intentionally *not* an offload trigger.
+    """
+    env = (offload_env or "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    return float(physical_mb or 0.0) < _HIGH_VRAM_OFFLOAD_FLOOR_MB
+
 
 class FLUXModelLoader:
     """
@@ -1122,7 +1145,7 @@ class FLUXModelLoader:
 
         t0 = self._mark("MODEL_INIT", time.perf_counter())
         self._progress("Initializing FLUX (cache check / dependencies)", 8)
-        target_device = self.device_manager.resolve_device(self.device_setting)
+        target_device = self._resolve_flux_target_device()
         vram_before = self._gpu_vram_mb()
         print(
             f"[FLUX] START pipeline initialization device={target_device} "
@@ -1455,25 +1478,21 @@ class FLUXModelLoader:
                     )
 
                 # Offload policy:
-                # - FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (6GB / T4-safe path)
+                # - FLUX_MODEL_CPU_OFFLOAD=true → model_cpu_offload (RTX 3050 6GB)
                 # - FLUX_MODEL_CPU_OFFLOAD=false → GPU-resident
-                # - auto: offload on <14GB OR pre-Ampere (Tesla T4 sm_75).
-                #   GPU-resident NF4 on T4 parks VAE to CPU then fails during
-                #   Kontext image encode / denoise with deferred CUDA errors.
-                #   Generation resolution is gated separately by flux_vram_policy
-                #   (completion-first; 768 is NOT assumed safe on T4).
-                offload_env = os.environ.get("FLUX_MODEL_CPU_OFFLOAD", "").strip().lower()
+                # - auto: offload only when physical VRAM < 14 GB.
+                #   Tesla T4 (~15 GB, sm_75) stays GPU-resident. Pre-Ampere
+                #   still uses fp16 (see _resolve_torch_dtype); do NOT shuttle
+                #   NF4 transformer CPU↔GPU every denoise step.
+                #   VAE must be restored via ensure_generation_devices() before
+                #   pipeline() — parking VAE on CPU caused deferred CUDA errors
+                #   at ~50%. Resolution is gated separately by flux_vram_policy.
                 gpu_idx = DeviceManager.cuda_device_index(target_device) or 0
                 physical_mb = self._gpu_vram_mb(device_index=gpu_idx)
-                prefer_offload = True
-                if offload_env in ("0", "false", "no", "off"):
-                    prefer_offload = False
-                elif offload_env in ("1", "true", "yes", "on"):
-                    prefer_offload = True
-                else:
-                    prefer_offload = physical_mb < 14000 or self._is_pre_ampere_gpu(
-                        device_index=gpu_idx
-                    )
+                prefer_offload = should_prefer_model_cpu_offload(
+                    physical_mb=physical_mb,
+                    offload_env=os.environ.get("FLUX_MODEL_CPU_OFFLOAD", ""),
+                )
 
                 self._progress("Configuring device / offload", 16)
                 t_dev = self._mark("PIPELINE_DEVICE_SETUP", time.perf_counter())
@@ -1592,6 +1611,15 @@ class FLUXModelLoader:
     @property
     def pipeline(self) -> Any | None:
         return self._pipeline
+
+    def _resolve_flux_target_device(self) -> str:
+        """Honor FLUX_CUDA_DEVICE when YAML device is auto (Kaggle T4×2)."""
+        requested = (self.device_setting or "auto").strip()
+        if requested.lower() == "auto":
+            role = DeviceManager.resolve_role_device("flux", "auto")
+            if role and role.lower() != "auto":
+                requested = role
+        return self.device_manager.resolve_device(requested)
 
     def _is_pre_ampere_gpu(self, device_index: int = 0) -> bool:
         """True for Turing/Volta (e.g. Tesla T4 sm_75) where BF16 kernels are weak."""
@@ -1761,7 +1789,7 @@ class FLUXModelLoader:
                 pass
             return info
 
-        target_str = self.device_manager.resolve_device(self.device_setting)
+        target_str = self._resolve_flux_target_device()
         idx = DeviceManager.cuda_device_index(target_str)
         target = torch.device(f"cuda:{idx}" if idx is not None else "cuda")
         for name in ("vae",):
@@ -1799,6 +1827,62 @@ class FLUXModelLoader:
                 info["transformer_device"] = str(next(tr.parameters()).device)
         except Exception:
             pass
+        return info
+
+    def ensure_text_encoders_on_device(self) -> dict[str, Any]:
+        """Put CLIP/T5 on the FLUX CUDA device for prompt encoding.
+
+        Skip when accelerate ``model_cpu_offload`` hooks own module placement.
+        GPU-resident T4 must encode T5 on CUDA — CPU T5 is the 3050-class
+        ~2 minute encode path.
+        """
+        info: dict[str, Any] = {
+            "offload_strategy": self._offload_strategy,
+            "text_encoder_device": None,
+            "text_encoder_2_device": None,
+            "restored": [],
+            "skipped": False,
+        }
+        pipe = self._pipeline
+        if pipe is None or torch is None:
+            info["skipped"] = True
+            return info
+        if self._offload_strategy == "model_cpu_offload":
+            info["skipped"] = True
+            try:
+                te2 = getattr(pipe, "text_encoder_2", None)
+                if te2 is not None:
+                    info["text_encoder_2_device"] = str(next(te2.parameters()).device)
+            except Exception:
+                pass
+            return info
+        if not torch.cuda.is_available():
+            info["skipped"] = True
+            return info
+
+        target_str = self._resolve_flux_target_device()
+        idx = DeviceManager.cuda_device_index(target_str)
+        target = torch.device(f"cuda:{idx}" if idx is not None else "cuda")
+        for name in ("text_encoder", "text_encoder_2"):
+            mod = getattr(pipe, name, None)
+            if mod is None or not hasattr(mod, "to"):
+                continue
+            try:
+                before = None
+                try:
+                    before = next(mod.parameters()).device
+                except Exception:
+                    before = None
+                mod.to(device=target)
+                info["restored"].append(name)
+                info[f"{name}_device"] = str(next(mod.parameters()).device)
+                self.logger.info(
+                    "[FLUX] Restored %s → CUDA for prompt encode (was %s)",
+                    name,
+                    before,
+                )
+            except Exception as exc:
+                self.logger.warning("[FLUX] Failed to restore %s to CUDA: %s", name, exc)
         return info
 
     def park_on_cpu(self) -> dict[str, float]:
@@ -1897,7 +1981,20 @@ class FLUXModelLoader:
             "model_path": str(self.model_path),
             "hf_token_present": self._hf_token_present(),
             "gpu_vram_mb": round(self._gpu_vram_mb(), 1),
+            "model_dtype": os.environ.get("FLUX_TORCH_DTYPE") or self.precision,
         }
+        pipe = self._pipeline
+        if pipe is not None:
+            for name in ("transformer", "vae", "text_encoder", "text_encoder_2"):
+                mod = getattr(pipe, name, None)
+                if mod is None:
+                    continue
+                try:
+                    p = next(mod.parameters())
+                    info[f"{name}_device"] = str(p.device)
+                    info[f"{name}_dtype"] = str(p.dtype)
+                except Exception:
+                    info[f"{name}_device"] = "unknown"
         if torch is not None:
             info["torch_version"] = torch.__version__
             info["cuda_available"] = torch.cuda.is_available()

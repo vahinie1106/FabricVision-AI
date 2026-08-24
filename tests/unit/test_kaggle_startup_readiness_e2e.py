@@ -274,6 +274,7 @@ def test_vram_policy_unchanged_t4_safe():
     assert p.num_inference_steps == 8
     assert p.guidance_scale == 3.0
     assert p.enable_vae_tiling is True
+    assert p.prefer_model_cpu_offload is False
 
 
 def test_custom_garment_page_gates_generate_on_flux_warmup():
@@ -796,11 +797,12 @@ def test_t4_high_vram_does_not_force_cpu_offload():
     from pathlib import Path
 
     src = Path("scripts/run_kaggle.py").read_text(encoding="utf-8")
-    assert "FLUX_MODEL_CPU_OFFLOAD left unset" in src
     assert 'os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")' in src
-    # High-VRAM T4 block must not force offload; low-VRAM else branch still may.
+    # High-VRAM T4 block must pin GPU-resident; low-VRAM else branch still offloads.
     high = src.split("if vram_mb >= 14000:")[1].split("else:")[0]
+    assert 'setdefault("FLUX_MODEL_CPU_OFFLOAD", "false")' in high
     assert 'setdefault("FLUX_MODEL_CPU_OFFLOAD", "true")' not in high
+    assert "FLUX_MODEL_CPU_OFFLOAD left unset" not in high
 
 
 def test_api_config_detects_googleusercontent_and_session_remap():

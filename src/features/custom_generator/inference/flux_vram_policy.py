@@ -128,6 +128,72 @@ def log_vram(tag: str, diag: Optional[VramDiagnostics] = None) -> VramDiagnostic
     return d
 
 
+def log_nvidia_smi(tag: str = "snapshot") -> str:
+    """nvidia-smi utilization / VRAM for GPU 0 and GPU 1 (Kaggle T4×2)."""
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,utilization.gpu,utilization.memory,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=8,
+            text=True,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception as exc:
+        line = f"[GPU SMI] {tag} unavailable: {exc}"
+        logger.info(line)
+        print(line, flush=True)
+        return ""
+    for raw in out.strip().splitlines():
+        line = (
+            f"[GPU SMI] {tag} index,name,util.gpu,util.mem,mem.used,mem.total = "
+            f"{raw.strip()}"
+        )
+        logger.info(line)
+        print(line, flush=True)
+    return out
+
+
+def log_runtime_device_report(tag: str = "stack") -> None:
+    """PyTorch / CUDA / GPU inventory + nvidia-smi. Never raises."""
+    log_vram(tag)
+    log_nvidia_smi(tag)
+    try:
+        import torch
+        import diffusers
+        import transformers
+
+        bits = [
+            f"[FLUX STACK] {tag}",
+            f"torch={torch.__version__}",
+            f"cuda={torch.version.cuda}",
+            f"cuda_available={torch.cuda.is_available()}",
+            f"transformers={getattr(transformers, '__version__', '?')}",
+            f"diffusers={getattr(diffusers, '__version__', '?')}",
+        ]
+        if torch.cuda.is_available():
+            bits.append(f"device_count={torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                major, minor = torch.cuda.get_device_capability(i)
+                total_mb = torch.cuda.get_device_properties(i).total_memory / (1024**2)
+                alloc_mb = torch.cuda.memory_allocated(i) / (1024**2)
+                bits.append(
+                    f"gpu{i}={torch.cuda.get_device_name(i)} "
+                    f"sm={major}.{minor} total_mb={total_mb:.0f} alloc_mb={alloc_mb:.0f}"
+                )
+        line = " ".join(bits)
+        logger.info(line)
+        print(line, flush=True)
+    except Exception as exc:
+        line = f"[FLUX STACK] {tag} inspect failed: {exc}"
+        logger.info(line)
+        print(line, flush=True)
+
+
 def _env_int(name: str) -> Optional[int]:
     raw = os.environ.get(name, "").strip()
     if raw.isdigit():
@@ -185,16 +251,11 @@ def select_standard_generation_policy(
         )
 
     # ~14–20 GB class (typical Kaggle T4 ~15109 MiB):
-    # GPU-resident NF4 already occupies most of the card. 768² activations have
-    # repeatedly OOM'd here — do NOT auto-upgrade to 768 unless headroom is real
-    # or the operator opts in.
-    prefer_offload = True if offload_env is None else offload_env
-    # Prefer residency only when explicitly disabled offload AND enough free headroom.
-    if offload_env is False and free >= 7000:
-        prefer_offload = False
-    elif offload_env is False:
-        # Keep GPU-resident (warmup already paid for it) but stay at safe res.
-        prefer_offload = False
+    # GPU-resident NF4 is the speed path. Unset env used to default True and
+    # re-introduced 6GB CPU-offload (minutes per 512² generate). Offload only
+    # when the operator explicitly sets FLUX_MODEL_CPU_OFFLOAD=true.
+    # 768² activations can still OOM — do NOT auto-upgrade unless headroom is real.
+    prefer_offload = False if offload_env is None else bool(offload_env)
 
     # High-res only when free headroom is large OR explicit allow flag / forced 768+.
     high_res_ok = False
@@ -276,7 +337,10 @@ def select_production_generation_policy(
     _ = offload  # reserved for diagnostics / prefer_offload below
 
     offload_env = _env_truthy("FLUX_MODEL_CPU_OFFLOAD")
-    prefer_offload = True if offload_env is None else offload_env
+    if offload_env is None:
+        prefer_offload = phys > 0 and phys < 14000
+    else:
+        prefer_offload = bool(offload_env)
 
     # yaml_* are hints only when they already match the locked Production target.
     height_default = (

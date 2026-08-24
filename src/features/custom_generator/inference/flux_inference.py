@@ -437,6 +437,29 @@ class FLUXInferenceEngine:
             )
             raise
 
+    def _ensure_text_encoders_on_device(self, pipeline: Any) -> None:
+        """Move CLIP/T5 to CUDA before encode on the GPU-resident T4 path."""
+        loader = self.model_loader
+        if loader is not None and hasattr(loader, "ensure_text_encoders_on_device"):
+            info = loader.ensure_text_encoders_on_device()
+            self._log_generation_stage(
+                "T5_DEVICE",
+                skipped=info.get("skipped"),
+                restored=info.get("restored"),
+                text_encoder_2_device=info.get("text_encoder_2_device"),
+                offload=info.get("offload_strategy"),
+            )
+            return
+        if torch is None or not torch.cuda.is_available():
+            return
+        for name in ("text_encoder", "text_encoder_2"):
+            mod = getattr(pipeline, name, None)
+            if mod is not None and hasattr(mod, "to"):
+                try:
+                    mod.to("cuda")
+                except Exception as exc:
+                    self.logger.warning("%s → CUDA restore skipped: %s", name, exc)
+
     def _ensure_generation_devices(self, pipeline: Any) -> None:
         loader = self.model_loader
         if loader is not None and hasattr(loader, "ensure_generation_devices"):
@@ -656,30 +679,68 @@ class FLUXInferenceEngine:
                 )
             os.environ.setdefault("FLUX_PRODUCTION_NO_OOM_FALLBACK", "1")
         snap0 = self._vram_snapshot()
+        offload_strategy = str(runtime.get("offload_strategy") or "")
+        gpu_resident = offload_strategy in ("gpu_resident", "none")
+        sched = getattr(pipeline, "scheduler", None)
+        sched_name = type(sched).__name__ if sched is not None else "unknown"
         self.logger.info(
             "[FLUX] Effective config: %sx%s steps=%s guidance=%s max_seq=%s "
-            "preencode=%s offload=%s bnb4bit=%s dtype=%s alloc_conf=%s | "
-            "CUDA allocated=%.1f MB reserved=%.1f MB (physical VRAM=%.0f MiB)",
+            "preencode=%s offload=%s bnb4bit=%s dtype=%s scheduler=%s "
+            "reuse_count=%s load_count=%s transformer_device=%s t5_device=%s "
+            "alloc_conf=%s | CUDA allocated=%.1f MB reserved=%.1f MB "
+            "(physical VRAM=%.0f MiB)",
             width,
             height,
             num_inference_steps,
             guidance_scale,
             max_seq,
             os.environ.get("FLUX_PREENCODE_PROMPT", "true"),
-            runtime.get("offload_strategy"),
+            offload_strategy,
             runtime.get("bnb_4bit"),
-            getattr(self.model_loader, "precision", "unknown"),
+            runtime.get("model_dtype") or getattr(self.model_loader, "precision", "unknown"),
+            sched_name,
+            runtime.get("reuse_count"),
+            runtime.get("load_count"),
+            runtime.get("transformer_device"),
+            runtime.get("text_encoder_2_device"),
             os.environ.get("PYTORCH_CUDA_ALLOC_CONF"),
             snap0["allocated_mb"],
             snap0["reserved_mb"],
             physical_vram_mb,
         )
+        print(
+            f"[FLUX PERF] res={width}x{height} steps={num_inference_steps} "
+            f"guidance={guidance_scale} scheduler={sched_name} "
+            f"offload={offload_strategy} dtype={runtime.get('model_dtype')} "
+            f"bnb4bit={runtime.get('bnb_4bit')} "
+            f"transformer={runtime.get('transformer_device')} "
+            f"t5={runtime.get('text_encoder_2_device')} "
+            f"reuse_count={runtime.get('reuse_count')} "
+            f"load_count={runtime.get('load_count')} "
+            f"init_s={runtime.get('init_time_s')} "
+            f"download_s={runtime.get('download_time_s')} "
+            f"cache={runtime.get('cache_status')} "
+            f"gpu={runtime.get('gpu_name')} vram_mb={physical_vram_mb:.0f}",
+            flush=True,
+        )
+        from src.features.custom_generator.inference.flux_vram_policy import (
+            log_runtime_device_report,
+        )
 
-        # Critical on 6GB: previous run may have left transformer/VAE on GPU.
-        self._park_pipeline(pipeline)
+        log_runtime_device_report("generate_start")
+
+        # 6GB offload: park leftover GPU modules before T5 encode.
+        # GPU-resident T4: do NOT park — that moves T5 to CPU and leaves the
+        # first denoise step shuttling if offload hooks were incorrectly on.
+        if gpu_resident:
+            self.logger.info(
+                "[FLUX] Skipping park_on_cpu before generate (gpu-resident path)"
+            )
+        else:
+            self._park_pipeline(pipeline)
         snap1 = self._vram_snapshot()
         self.logger.info(
-            "[FLUX] After park_on_cpu: allocated=%.1f MB reserved=%.1f MB",
+            "[FLUX] After pre-generate park: allocated=%.1f MB reserved=%.1f MB",
             snap1["allocated_mb"],
             snap1["reserved_mb"],
         )
@@ -789,6 +850,17 @@ class FLUXInferenceEngine:
             # WHY not always pre-encode: holding T5 on GPU while transformer onloads OOMs 6GB.
             # max_sequence_length=128 alone dropped encode from ~360s → ~50s in measurement.
             _progress("Encoding prompt", 45)
+            if gpu_resident:
+                try:
+                    self._ensure_text_encoders_on_device(pipeline)
+                except Exception as te_exc:
+                    if self._is_cuda_oom(te_exc):
+                        self.logger.warning(
+                            "T5 → CUDA OOM (%s); encoding on current device",
+                            te_exc,
+                        )
+                    else:
+                        raise
             t_encode = _flux_mark("prompt encoding", time.perf_counter())
             prompt_embeds = pooled_prompt_embeds = None
             # Default true: measured encode ~50s at seq=128; cache + CPU eviction helps 6GB.
@@ -1017,11 +1089,13 @@ class FLUXInferenceEngine:
 
             self._clear_cuda()
             from src.features.custom_generator.inference.flux_vram_policy import (
+                log_nvidia_smi,
                 log_vram,
                 recommend_oom_fallback,
             )
 
             log_vram("before generation")
+            log_nvidia_smi("before_denoise")
             self._log_generation_stage("START")
             self._ensure_generation_devices(pipeline)
             if self.model_loader is not None and hasattr(self.model_loader, "stabilize_flux_vae"):
@@ -1289,6 +1363,15 @@ class FLUXInferenceEngine:
 
             self._log_generation_stage("COMPLETE")
             total_time = round(time.perf_counter() - t_start, 3)
+            print(
+                f"[FLUX PERF] TOTAL={total_time}s T5={encode_s}s "
+                f"denoise_pipeline={diffusion_s}s "
+                f"steps_sum={round(sum(per_step_durations), 3) if per_step_durations else 0.0}s "
+                f"vae={decode_s}s steps={num_inference_steps} res={width}x{height} "
+                f"offload={offload_strategy} reuse_count={runtime.get('reuse_count')} "
+                f"cached_t5={encode_cached}",
+                flush=True,
+            )
 
             # If explicit encode was used, diffusion_s includes only denoise+vae inside pipeline;
             # pipeline still may decode VAE inside __call__, so diffusion_s ≈ denoise+vae.

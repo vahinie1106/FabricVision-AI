@@ -5,7 +5,10 @@ device: auto
 precision: bfloat16
 
 # Memory: bnb NF4 + model_cpu_offload is the validated RTX 3050 6GB path.
-# Do NOT enable sequential_cpu_offload with bitsandbytes (meta-tensor risk).
+# Kaggle T4 (~15GB) must NOT inherit this: scripts/run_kaggle.py sets
+# FLUX_MODEL_CPU_OFFLOAD=false and the loader auto-offloads only <14GB.
+# YAML is not the T4 runtime source of truth. Do NOT enable sequential_cpu_offload
+# with bitsandbytes (meta-tensor risk).
 enable_model_cpu_offload: true
 enable_attention_slicing: false
 # CLIP prompts are ~70 tokens; T5 at 512 measured ~360s encode on this GPU.

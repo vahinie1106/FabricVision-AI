@@ -28,6 +28,7 @@ def test_t4_class_defaults_to_safe_512_without_headroom(monkeypatch):
     assert policy.num_inference_steps == 8
     assert policy.profile == "standard_t4_safe"
     assert policy.enable_vae_tiling is True
+    assert policy.prefer_model_cpu_offload is False
 
 
 def test_high_res_requires_real_headroom(monkeypatch):
@@ -100,6 +101,7 @@ def test_production_t4_defaults_to_768(monkeypatch):
     monkeypatch.delenv("FLUX_PRODUCTION_STEPS", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_GUIDANCE", raising=False)
     monkeypatch.delenv("FLUX_ALLOW_HIGH_RES", raising=False)
+    monkeypatch.delenv("FLUX_MODEL_CPU_OFFLOAD", raising=False)
 
     policy = select_production_generation_policy(
         physical_mb=15109.0,
@@ -114,6 +116,7 @@ def test_production_t4_defaults_to_768(monkeypatch):
     assert policy.num_inference_steps == 12
     assert policy.guidance_scale == 3.0
     assert policy.profile == "production_locked_768"
+    assert policy.prefer_model_cpu_offload is False
 
 
 def test_production_t4_env_720(monkeypatch):

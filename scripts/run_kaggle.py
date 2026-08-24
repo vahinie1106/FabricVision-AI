@@ -1823,14 +1823,16 @@ def configure_kaggle_flux_runtime() -> None:
                 major, _ = torch.cuda.get_device_capability(flux_idx)
             except Exception:
                 major = 8
+            # Explicit false so FastAPI/loader cannot auto-offload T4 as "pre-Ampere".
+            os.environ.setdefault("FLUX_MODEL_CPU_OFFLOAD", "false")
             if int(major) < 8:
                 os.environ.setdefault("FLUX_TORCH_DTYPE", "float16")
-                # 16GB T4: keep FLUX GPU-resident. Forcing model_cpu_offload just
-                # because SM < 8 makes Standard 512×8 take many minutes (CPU↔GPU
-                # shuttling). Low-VRAM (6GB) still enables offload in the else branch.
+                # 16GB T4: GPU-resident NF4. model_cpu_offload on T4 shuttles the
+                # transformer every denoise step (~minutes at 50% Generating).
+                # Low-VRAM (6GB) still enables offload in the else branch.
                 _log(
                     "Pre-Ampere T4-class: FLUX_TORCH_DTYPE=float16; "
-                    "FLUX_MODEL_CPU_OFFLOAD left unset (GPU-resident on >=14GB)"
+                    "FLUX_MODEL_CPU_OFFLOAD=false (GPU-resident NF4 on >=14GB)"
                 )
             # Never silently demote Production 768 → 512 on T4.
             prod_res = (
