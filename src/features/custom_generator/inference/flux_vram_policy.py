@@ -24,6 +24,7 @@ class VramDiagnostics:
     max_allocated_mb: float
     max_reserved_mb: float
     cuda_available: bool
+    device_free_mb: float = 0.0
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -39,6 +40,22 @@ class StandardGenPolicy:
     enable_vae_tiling: bool
     reason: str
     profile: str
+
+
+@dataclass(frozen=True)
+class HybridVramPlan:
+    """T4 GPU-resident lifecycle — never per-step model_cpu_offload."""
+
+    evict_t5_before_diffusion: bool
+    park_vae_during_denoise: bool
+    decode_latents_separately: bool
+    enable_vae_tiling: bool
+    per_step_cpu_offload: bool
+    reason: str
+    profile: str
+
+    def as_dict(self) -> Dict[str, Any]:
+        return asdict(self)
 
 
 # Production uses the same shape; kept as an alias for call-site clarity.
@@ -59,6 +76,7 @@ def collect_vram_diagnostics(device: str | None = None) -> VramDiagnostics:
             max_allocated_mb=0.0,
             max_reserved_mb=0.0,
             cuda_available=False,
+            device_free_mb=0.0,
         )
 
     if not torch.cuda.is_available():
@@ -71,6 +89,7 @@ def collect_vram_diagnostics(device: str | None = None) -> VramDiagnostics:
             max_allocated_mb=0.0,
             max_reserved_mb=0.0,
             cuda_available=False,
+            device_free_mb=0.0,
         )
 
     from src.common.models.device_manager import DeviceManager
@@ -102,6 +121,12 @@ def collect_vram_diagnostics(device: str | None = None) -> VramDiagnostics:
         allocated = reserved = max_alloc = max_res = 0.0
 
     free = max(0.0, total - reserved)
+    device_free = 0.0
+    try:
+        free_b, _total_b = torch.cuda.mem_get_info(idx)
+        device_free = float(free_b) / (1024**2)
+    except Exception:
+        device_free = free
     return VramDiagnostics(
         gpu_name=f"{name}[cuda:{idx}]",
         physical_total_mb=round(total, 1),
@@ -111,6 +136,7 @@ def collect_vram_diagnostics(device: str | None = None) -> VramDiagnostics:
         max_allocated_mb=round(max_alloc, 1),
         max_reserved_mb=round(max_res, 1),
         cuda_available=True,
+        device_free_mb=round(device_free, 1),
     )
 
 
@@ -120,7 +146,8 @@ def log_vram(tag: str, diag: Optional[VramDiagnostics] = None) -> VramDiagnostic
     line = (
         f"[VRAM] {tag} gpu={d.gpu_name} total_mb={d.physical_total_mb:.0f} "
         f"alloc_mb={d.allocated_mb:.0f} reserved_mb={d.reserved_mb:.0f} "
-        f"free_mb={d.free_mb:.0f} peak_alloc_mb={d.max_allocated_mb:.0f} "
+        f"free_mb={d.free_mb:.0f} device_free_mb={d.device_free_mb:.0f} "
+        f"peak_alloc_mb={d.max_allocated_mb:.0f} "
         f"peak_reserved_mb={d.max_reserved_mb:.0f}"
     )
     logger.info(line)
@@ -192,6 +219,148 @@ def log_runtime_device_report(tag: str = "stack") -> None:
         line = f"[FLUX STACK] {tag} inspect failed: {exc}"
         logger.info(line)
         print(line, flush=True)
+
+
+def inspect_pipeline_quantization(pipeline: Any) -> Dict[str, Any]:
+    """Report transformer quantization — NF4 is not implied by the model id."""
+    info: Dict[str, Any] = {
+        "transformer_class": None,
+        "transformer_device": None,
+        "transformer_dtype": None,
+        "linear4bit_modules": 0,
+        "linear_modules": 0,
+        "transformer_param_mb": 0.0,
+        "vae_param_mb": 0.0,
+        "t5_param_mb": 0.0,
+        "clip_param_mb": 0.0,
+        "t5_device": None,
+        "vae_device": None,
+        "bnb_nf4": False,
+    }
+    if pipeline is None:
+        return info
+
+    def _param_mb(mod: Any) -> float:
+        if mod is None:
+            return 0.0
+        total = 0
+        try:
+            for p in mod.parameters():
+                try:
+                    total += int(p.numel()) * int(p.element_size())
+                except Exception:
+                    continue
+        except Exception:
+            return 0.0
+        return round(total / (1024**2), 1)
+
+    def _dev_dtype(mod: Any) -> tuple[Any, Any]:
+        if mod is None:
+            return None, None
+        try:
+            p = next(mod.parameters())
+            return str(p.device), str(p.dtype)
+        except Exception:
+            return None, None
+
+    tr = getattr(pipeline, "transformer", None)
+    if tr is not None:
+        info["transformer_class"] = type(tr).__name__
+        info["transformer_device"], info["transformer_dtype"] = _dev_dtype(tr)
+        info["transformer_param_mb"] = _param_mb(tr)
+        n4 = 0
+        nlin = 0
+        try:
+            for m in tr.modules():
+                name = type(m).__name__
+                if "Linear4bit" in name or "Params4bit" in name:
+                    n4 += 1
+                elif name == "Linear":
+                    nlin += 1
+        except Exception:
+            pass
+        info["linear4bit_modules"] = n4
+        info["linear_modules"] = nlin
+        info["bnb_nf4"] = n4 > 0
+    vae = getattr(pipeline, "vae", None)
+    info["vae_param_mb"] = _param_mb(vae)
+    info["vae_device"], _ = _dev_dtype(vae)
+    te2 = getattr(pipeline, "text_encoder_2", None)
+    info["t5_param_mb"] = _param_mb(te2)
+    info["t5_device"], _ = _dev_dtype(te2)
+    te = getattr(pipeline, "text_encoder", None)
+    info["clip_param_mb"] = _param_mb(te)
+    line = (
+        f"[FLUX QUANT] class={info['transformer_class']} "
+        f"device={info['transformer_device']} dtype={info['transformer_dtype']} "
+        f"Linear4bit={info['linear4bit_modules']} Linear={info['linear_modules']} "
+        f"nf4={info['bnb_nf4']} transformer_mb={info['transformer_param_mb']} "
+        f"vae_mb={info['vae_param_mb']} t5_mb={info['t5_param_mb']} "
+        f"t5_device={info['t5_device']} vae_device={info['vae_device']}"
+    )
+    logger.info(line)
+    print(line, flush=True)
+    return info
+
+
+def select_hybrid_vram_plan(
+    *,
+    physical_mb: float,
+    offload_strategy: str = "",
+    height: int = 512,
+    width: int = 512,
+) -> HybridVramPlan:
+    """T4: GPU-resident transformer, T5/VAE not co-resident during denoise.
+
+    Do NOT enable per-step ``enable_model_cpu_offload`` here — that was the
+    5-minute stall. Separate VAE decode from the denoise call so fp32 VAE
+    activations do not overlap transformer workspace at ~85% (step 8/8).
+    """
+    _ = (height, width)
+    offload = (offload_strategy or "").strip().lower()
+    per_step = offload == "model_cpu_offload"
+    high_vram = float(physical_mb or 0.0) >= 14000
+    if high_vram and not per_step:
+        return HybridVramPlan(
+            evict_t5_before_diffusion=True,
+            park_vae_during_denoise=True,
+            decode_latents_separately=True,
+            enable_vae_tiling=True,
+            per_step_cpu_offload=False,
+            reason="t4_hybrid: transformer GPU-resident; T5 evict; VAE parked in denoise; latent decode",
+            profile="t4_hybrid_gpu_resident",
+        )
+    return HybridVramPlan(
+        evict_t5_before_diffusion=True,
+        park_vae_during_denoise=False,
+        decode_latents_separately=False,
+        enable_vae_tiling=True,
+        per_step_cpu_offload=offload == "model_cpu_offload",
+        reason="low_vram_or_offload: keep existing pipeline() image decode",
+        profile="low_vram_offload",
+    )
+
+
+def cleanup_cuda_after_failure() -> None:
+    """Recover allocator after OOM. Not a per-step hook."""
+    import gc
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _env_int(name: str) -> Optional[int]:

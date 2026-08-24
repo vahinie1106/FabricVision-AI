@@ -8,6 +8,7 @@ import logging
 import os
 import random
 import time
+from contextlib import nullcontext
 from typing import Any, Callable, Dict, Optional
 
 from PIL import Image, ImageDraw
@@ -189,17 +190,44 @@ class FLUXInferenceEngine:
                 "reserved_mb": 0.0,
                 "max_allocated_mb": 0.0,
                 "max_reserved_mb": 0.0,
+                "device_free_mb": 0.0,
+                "physical_total_mb": 0.0,
             }
+        idx = 0
+        try:
+            from src.common.models.device_manager import DeviceManager
+
+            flux_dev = DeviceManager.resolve_role_device("flux", "cuda:0")
+            resolved = DeviceManager.cuda_device_index(flux_dev)
+            if resolved is not None:
+                idx = resolved
+        except Exception:
+            idx = 0
         max_reserved = 0.0
         try:
-            max_reserved = round(torch.cuda.max_memory_reserved() / (1024**2), 1)
+            max_reserved = round(torch.cuda.max_memory_reserved(idx) / (1024**2), 1)
         except Exception:
-            max_reserved = round(torch.cuda.memory_reserved() / (1024**2), 1)
+            max_reserved = round(torch.cuda.memory_reserved(idx) / (1024**2), 1)
+        device_free = 0.0
+        physical_total = 0.0
+        try:
+            free_b, total_b = torch.cuda.mem_get_info(idx)
+            device_free = round(free_b / (1024**2), 1)
+            physical_total = round(total_b / (1024**2), 1)
+        except Exception:
+            try:
+                physical_total = round(
+                    torch.cuda.get_device_properties(idx).total_memory / (1024**2), 1
+                )
+            except Exception:
+                physical_total = 0.0
         return {
-            "allocated_mb": round(torch.cuda.memory_allocated() / (1024**2), 1),
-            "reserved_mb": round(torch.cuda.memory_reserved() / (1024**2), 1),
-            "max_allocated_mb": round(torch.cuda.max_memory_allocated() / (1024**2), 1),
+            "allocated_mb": round(torch.cuda.memory_allocated(idx) / (1024**2), 1),
+            "reserved_mb": round(torch.cuda.memory_reserved(idx) / (1024**2), 1),
+            "max_allocated_mb": round(torch.cuda.max_memory_allocated(idx) / (1024**2), 1),
             "max_reserved_mb": max_reserved,
+            "device_free_mb": device_free,
+            "physical_total_mb": physical_total,
         }
 
     def _log_vae_dtype_debug(self, pipeline: Any, conditioning_image: Any = None) -> None:
@@ -326,7 +354,14 @@ class FLUXInferenceEngine:
             )
 
     def _install_vae_decode_probe(self, pipeline: Any) -> None:
-        """Log latent/decode tensor stats once around VAE.decode (temporary probe)."""
+        """Log latent/decode tensor stats when FLUX_VAE_DECODE_PROBE=1 (VRAM cost)."""
+        if os.environ.get("FLUX_VAE_DECODE_PROBE", "").strip().lower() not in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return
         vae = getattr(pipeline, "vae", None)
         if vae is None or getattr(vae, "_fabricvision_decode_probe", False):
             return
@@ -389,6 +424,7 @@ class FLUXInferenceEngine:
             f"[FLUX GENERATION] {stage} "
             f"alloc_mb={snap['allocated_mb']} reserved_mb={snap['reserved_mb']} "
             f"max_alloc_mb={snap['max_allocated_mb']} "
+            f"device_free_mb={snap.get('device_free_mb', 0.0)} "
             f"gpu={gpu_name} total_mb={total_mb}"
         )
         if bits:
@@ -482,6 +518,42 @@ class FLUXInferenceEngine:
             except Exception as exc:
                 self.logger.warning("VAE → CUDA restore skipped: %s", exc)
 
+    def _park_vae_for_denoise(self, pipeline: Any) -> None:
+        loader = self.model_loader
+        if loader is not None and hasattr(loader, "park_vae_to_cpu"):
+            info = loader.park_vae_to_cpu()
+            self._log_generation_stage("VAE_PARKED_FOR_DENOISE", parked=info.get("parked"))
+            return
+        vae = getattr(pipeline, "vae", None)
+        if vae is not None and hasattr(vae, "to"):
+            try:
+                vae.to("cpu")
+            except Exception:
+                pass
+
+    def _decode_flux_latents(self, pipeline: Any, latents: Any, height: int, width: int):
+        """VAE decode after denoise so fp32 decode activations do not overlap the last step."""
+        if torch is None:
+            raise RuntimeError("PyTorch required for FLUX VAE decode")
+        vae = getattr(pipeline, "vae", None)
+        if vae is None:
+            raise RuntimeError("FLUX VAE missing at decode")
+        if hasattr(latents, "detach"):
+            latents = latents.detach()
+        if hasattr(pipeline, "_unpack_latents"):
+            scale = getattr(pipeline, "vae_scale_factor", 8)
+            latents = pipeline._unpack_latents(latents, int(height), int(width), scale)
+        cfg = getattr(vae, "config", None)
+        scaling = float(getattr(cfg, "scaling_factor", 1.0) or 1.0)
+        shift = float(getattr(cfg, "shift_factor", 0.0) or 0.0)
+        latents = (latents / scaling) + shift
+        decoded = vae.decode(latents, return_dict=False)[0]
+        processor = getattr(pipeline, "image_processor", None)
+        if processor is not None and hasattr(processor, "postprocess"):
+            images = processor.postprocess(decoded, output_type="pil")
+            return images[0]
+        raise RuntimeError("FLUX pipeline has no image_processor for VAE postprocess")
+
     @staticmethod
     def _is_cuda_oom(exc: BaseException) -> bool:
         name = type(exc).__name__.lower()
@@ -526,6 +598,7 @@ class FLUXInferenceEngine:
         if cache_key in self._prompt_embed_cache:
             embeds = self._prompt_embed_cache[cache_key]
             self.logger.info("[FLUX] Prompt embed cache HIT (skipping T5 encode)")
+            self._evict_text_encoders(pipeline)
             return embeds[0], embeds[1], embeds[2], 0.0, True
 
         t0 = time.perf_counter()
@@ -724,10 +797,23 @@ class FLUXInferenceEngine:
             flush=True,
         )
         from src.features.custom_generator.inference.flux_vram_policy import (
+            inspect_pipeline_quantization,
             log_runtime_device_report,
+            select_hybrid_vram_plan,
         )
 
         log_runtime_device_report("generate_start")
+        hybrid = select_hybrid_vram_plan(
+            physical_mb=physical_vram_mb,
+            offload_strategy=offload_strategy,
+            height=int(height),
+            width=int(width),
+        )
+        print(f"[FLUX VRAM PLAN] {hybrid.as_dict()}", flush=True)
+        try:
+            inspect_pipeline_quantization(pipeline)
+        except Exception:
+            pass
 
         # 6GB offload: park leftover GPU modules before T5 encode.
         # GPU-resident T4: do NOT park — that moves T5 to CPU and leaves the
@@ -760,8 +846,10 @@ class FLUXInferenceEngine:
                 # Prefer CPU generator — CUDA generators can force extra device syncs with offload
                 generator = torch.Generator(device="cpu").manual_seed(seed)
 
+            vae_parked = False
+
             def step_callback(pipe: Any, step_index: int, timestep: Any, callback_kwargs: Any) -> Any:
-                nonlocal last_step_t
+                nonlocal last_step_t, vae_parked
                 now = time.perf_counter()
                 dur = round(now - last_step_t, 3)
                 step_wall[step_index] = dur
@@ -779,6 +867,11 @@ class FLUXInferenceEngine:
                     steps=num_inference_steps,
                     step_s=dur,
                 )
+                if hybrid.park_vae_during_denoise and step_index == 0 and not vae_parked:
+                    # Kontext VAE-encode of the fabric image is done before step 0 ends.
+                    self._park_vae_for_denoise(pipeline)
+                    vae_parked = True
+                    self._clear_cuda()
                 pct = 50 + int(35 * (step_index + 1) / max(1, num_inference_steps))
                 _progress(f"Generating (step {step_index + 1}/{num_inference_steps})", pct)
                 return callback_kwargs
@@ -850,7 +943,8 @@ class FLUXInferenceEngine:
             # WHY not always pre-encode: holding T5 on GPU while transformer onloads OOMs 6GB.
             # max_sequence_length=128 alone dropped encode from ~360s → ~50s in measurement.
             _progress("Encoding prompt", 45)
-            if gpu_resident:
+            t5_cached = (prompt, max_seq) in self._prompt_embed_cache
+            if gpu_resident and not t5_cached:
                 try:
                     self._ensure_text_encoders_on_device(pipeline)
                 except Exception as te_exc:
@@ -885,6 +979,13 @@ class FLUXInferenceEngine:
                         encode_cached,
                         self._vram_snapshot(),
                     )
+                    from src.features.custom_generator.inference.flux_vram_policy import (
+                        log_nvidia_smi,
+                        log_vram,
+                    )
+
+                    log_vram("after_t5_encode")
+                    log_nvidia_smi("after_t5_encode")
                 except Exception as enc_exc:
                     # Do NOT fall through to inline encode while GPU is full —
                     # that double-OOMs. Park, retry once, then fail clearly.
@@ -1001,6 +1102,12 @@ class FLUXInferenceEngine:
                     "FLUX pipeline signature dropped num_inference_steps; "
                     "refusing to run with an unknown scheduler default."
                 )
+            if hybrid.decode_latents_separately and "output_type" in signature.parameters:
+                kwargs["output_type"] = "latent"
+                print(
+                    "[FLUX VRAM] output_type=latent — VAE decode runs after denoise",
+                    flush=True,
+                )
 
             # Large-resolution memory path (768²+): VAE tiling/slicing are supported on
             # FluxKontextPipeline and materially reduce decode/activation peaks on T4-class GPUs.
@@ -1012,7 +1119,7 @@ class FLUXInferenceEngine:
                 "yes",
                 "on",
             )
-            if large_res or force_tile:
+            if large_res or force_tile or hybrid.enable_vae_tiling:
                 vae = getattr(pipeline, "vae", None)
                 if vae is not None:
                     if hasattr(vae, "enable_slicing"):
@@ -1149,8 +1256,12 @@ class FLUXInferenceEngine:
                 log_vram("before transformer inference")
                 self._log_generation_stage("DENOISING_START")
                 try:
-                    with transformer_only_memory_efficient_attention(pipeline) as attn_runtime:
-                        out = pipeline(**pipe_kwargs)
+                    infer_ctx = (
+                        torch.inference_mode() if torch is not None else nullcontext()
+                    )
+                    with infer_ctx:
+                        with transformer_only_memory_efficient_attention(pipeline) as attn_runtime:
+                            out = pipeline(**pipe_kwargs)
                 except Exception as pipe_exc:
                     self._log_generation_stage(
                         "FAILED",
@@ -1176,6 +1287,11 @@ class FLUXInferenceEngine:
                 )
                 log_vram("after OOM before cleanup")
                 self._park_pipeline(pipeline)
+                from src.features.custom_generator.inference.flux_vram_policy import (
+                    cleanup_cuda_after_failure,
+                )
+
+                cleanup_cuda_after_failure()
                 log_vram("after cleanup")
                 # Production lock (Kaggle): fail clearly — never silently resize
                 # 768×12 → smaller and still report the locked config as success.
@@ -1282,42 +1398,115 @@ class FLUXInferenceEngine:
             diffusion_s = round(t_diff_end - t_diff_start, 3)
             _flux_mark("inference", t_diff_start, end=True)
 
-            log_vram("before VAE decode")
-            self._log_generation_stage("VAE_DECODE_START")
-            _progress("Decoding image", 88)
-            t_dec = _flux_mark("decoding", time.perf_counter())
-            try:
-                self.logger.info(
-                    "[FLUX DEBUG] PIPELINE_OUTPUT type=%s attrs=%s",
-                    type(output).__name__,
-                    [a for a in ("images", "nsfw_content_detected") if hasattr(output, a)],
+            log_vram("after_denoise_before_vae")
+            log_nvidia_smi("after_denoise")
+            if hybrid.decode_latents_separately:
+                raw_images = getattr(output, "images", None)
+                already_pil = (
+                    isinstance(raw_images, (list, tuple))
+                    and bool(raw_images)
+                    and hasattr(raw_images[0], "save")
                 )
-                images = getattr(output, "images", None)
-                self.logger.info(
-                    "[FLUX DEBUG] images type=%s count=%s",
-                    type(images).__name__ if images is not None else None,
-                    len(images) if images is not None else 0,
-                )
+                if not already_pil:
+                    self._clear_cuda()
+                    self._ensure_generation_devices(pipeline)
+                    vae = getattr(pipeline, "vae", None)
+                    if vae is not None:
+                        if hasattr(vae, "enable_slicing"):
+                            vae.enable_slicing()
+                        if hasattr(vae, "enable_tiling"):
+                            vae.enable_tiling()
+                    latents = raw_images
+                    if isinstance(raw_images, (list, tuple)) and raw_images:
+                        latents = raw_images[0]
+                    log_vram("before VAE decode")
+                    self._log_generation_stage("VAE_DECODE_START")
+                    _progress("Decoding image", 88)
+                    t_dec = _flux_mark("decoding", time.perf_counter())
+                    try:
+                        infer_ctx = (
+                            torch.inference_mode() if torch is not None else nullcontext()
+                        )
+                        with infer_ctx:
+                            image = self._decode_flux_latents(
+                                pipeline, latents, height, width
+                            )
+
+                        class _DecodedOutput:
+                            pass
+
+                        decoded_out = _DecodedOutput()
+                        decoded_out.images = [image]
+                        output = decoded_out
+                    except Exception as dec_exc:
+                        self._log_generation_stage(
+                            "FAILED",
+                            stage_hint="VAE_DECODE",
+                            error=f"{type(dec_exc).__name__}: {dec_exc}",
+                        )
+                        if self._is_cuda_oom(dec_exc):
+                            log_vram("OOM during VAE decode")
+                            self._park_pipeline(pipeline)
+                            from src.features.custom_generator.inference.flux_vram_policy import (
+                                cleanup_cuda_after_failure,
+                            )
+
+                            cleanup_cuda_after_failure()
+                            raise RuntimeError(
+                                f"CUDA out of memory during FLUX VAE decode: {dec_exc}"
+                            ) from dec_exc
+                        raise
+                    decode_s = round(time.perf_counter() - t_dec, 3)
+                    _flux_mark("decoding", t_dec, end=True)
+                    decoded_separately = True
+                else:
+                    decoded_separately = False
+            else:
+                decoded_separately = False
+
+            if decoded_separately:
                 image = output.images[0]
                 self._log_pil_stats("PIL_ARRAY", image)
                 self._assert_non_black_pil(image, stage="pipeline_output")
-            except Exception as dec_exc:
-                self._log_generation_stage(
-                    "FAILED",
-                    stage_hint="VAE_DECODE",
-                    error=f"{type(dec_exc).__name__}: {dec_exc}",
-                )
-                if self._is_cuda_oom(dec_exc):
-                    log_vram("OOM during VAE decode")
-                    self._park_pipeline(pipeline)
-                    raise RuntimeError(
-                        f"CUDA out of memory during FLUX VAE decode: {dec_exc}"
-                    ) from dec_exc
-                raise
-            decode_s = round(time.perf_counter() - t_dec, 3)
-            _flux_mark("decoding", t_dec, end=True)
-            self._log_generation_stage("VAE_DECODE_COMPLETE")
-            log_vram("after VAE decode")
+                self._log_generation_stage("VAE_DECODE_COMPLETE")
+                log_vram("after VAE decode")
+            else:
+                log_vram("before VAE decode")
+                self._log_generation_stage("VAE_DECODE_START")
+                _progress("Decoding image", 88)
+                t_dec = _flux_mark("decoding", time.perf_counter())
+                try:
+                    self.logger.info(
+                        "[FLUX DEBUG] PIPELINE_OUTPUT type=%s attrs=%s",
+                        type(output).__name__,
+                        [a for a in ("images", "nsfw_content_detected") if hasattr(output, a)],
+                    )
+                    images = getattr(output, "images", None)
+                    self.logger.info(
+                        "[FLUX DEBUG] images type=%s count=%s",
+                        type(images).__name__ if images is not None else None,
+                        len(images) if images is not None else 0,
+                    )
+                    image = output.images[0]
+                    self._log_pil_stats("PIL_ARRAY", image)
+                    self._assert_non_black_pil(image, stage="pipeline_output")
+                except Exception as dec_exc:
+                    self._log_generation_stage(
+                        "FAILED",
+                        stage_hint="VAE_DECODE",
+                        error=f"{type(dec_exc).__name__}: {dec_exc}",
+                    )
+                    if self._is_cuda_oom(dec_exc):
+                        log_vram("OOM during VAE decode")
+                        self._park_pipeline(pipeline)
+                        raise RuntimeError(
+                            f"CUDA out of memory during FLUX VAE decode: {dec_exc}"
+                        ) from dec_exc
+                    raise
+                decode_s = round(time.perf_counter() - t_dec, 3)
+                _flux_mark("decoding", t_dec, end=True)
+                self._log_generation_stage("VAE_DECODE_COMPLETE")
+                log_vram("after VAE decode")
             out_w, out_h = image.size if hasattr(image, "size") else (width, height)
             out_mode = getattr(image, "mode", "?")
             print("[FLUX ACTUAL OUTPUT]", flush=True)
@@ -1520,6 +1709,11 @@ class FLUXInferenceEngine:
                     self._park_pipeline(pipeline)
                 elif hasattr(self.model_loader, "park_on_cpu"):
                     self.model_loader.park_on_cpu()
+                from src.features.custom_generator.inference.flux_vram_policy import (
+                    cleanup_cuda_after_failure,
+                )
+
+                cleanup_cuda_after_failure()
             except Exception as park_exc:
                 self.logger.warning("post-error park_on_cpu failed: %s", park_exc)
             if self._is_cuda_oom(exc):

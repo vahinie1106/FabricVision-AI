@@ -99,3 +99,115 @@ def test_loader_offload_auto_does_not_use_pre_ampere():
         encoding="utf-8"
     )
     assert "Skipping park_on_cpu before generate" in inf
+    assert "output_type=latent" in inf
+    assert "_park_vae_for_denoise" in inf
+    assert "_evict_text_encoders" in inf.split("Prompt embed cache HIT")[1].split(
+        "return embeds"
+    )[0]
+
+
+def test_hybrid_t4_plan_evicts_t5_parks_vae_no_step_offload():
+    from src.features.custom_generator.inference.flux_vram_policy import (
+        select_hybrid_vram_plan,
+    )
+
+    plan = select_hybrid_vram_plan(
+        physical_mb=15109.0,
+        offload_strategy="gpu_resident",
+        height=512,
+        width=512,
+    )
+    assert plan.per_step_cpu_offload is False
+    assert plan.evict_t5_before_diffusion is True
+    assert plan.park_vae_during_denoise is True
+    assert plan.decode_latents_separately is True
+    assert plan.enable_vae_tiling is True
+    assert plan.profile == "t4_hybrid_gpu_resident"
+
+
+def test_hybrid_6gb_does_not_use_t4_latent_decode():
+    from src.features.custom_generator.inference.flux_vram_policy import (
+        select_hybrid_vram_plan,
+    )
+
+    plan = select_hybrid_vram_plan(
+        physical_mb=6144.0,
+        offload_strategy="model_cpu_offload",
+        height=512,
+        width=512,
+    )
+    assert plan.decode_latents_separately is False
+    assert plan.park_vae_during_denoise is False
+    assert plan.per_step_cpu_offload is True
+
+
+def test_kaggle_gpu_roles_flux0_catvton1():
+    from pathlib import Path
+
+    src = Path("scripts/run_kaggle.py").read_text(encoding="utf-8")
+    assert 'setdefault("FLUX_CUDA_DEVICE", "0")' in src
+    assert 'setdefault("CATVTON_CUDA_DEVICE", "1")' in src
+
+
+def test_loader_reuses_resident_pipeline():
+    from pathlib import Path
+
+    src = Path("src/features/custom_generator/model/flux_model_loader.py").read_text(
+        encoding="utf-8"
+    )
+    assert "if self._pipeline is not None:" in src
+    assert "self._reuse_count += 1" in src
+
+
+def test_oom_recovery_clears_cuda_allocator():
+    from pathlib import Path
+
+    mgr = Path("src/integrations/flux/flux_manager.py").read_text(encoding="utf-8")
+    pol = Path(
+        "src/features/custom_generator/inference/flux_vram_policy.py"
+    ).read_text(encoding="utf-8")
+    assert "cleanup_cuda_after_failure" in mgr
+    assert "reset_peak_memory_stats" in pol
+    inf = Path("src/features/custom_generator/inference/flux_inference.py").read_text(
+        encoding="utf-8"
+    )
+    assert "cleanup_cuda_after_failure" in inf
+
+
+def test_park_vae_does_not_move_transformer():
+    from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
+
+    loader = FLUXModelLoader(allow_fallback=True)
+    loader._offload_strategy = "gpu_resident"
+    loader._used_bnb_4bit = True
+
+    class _Mod:
+        def __init__(self):
+            self.moves = []
+            self._device = "cuda"
+
+        def to(self, device=None, **kwargs):
+            if device is not None:
+                self.moves.append(str(device))
+                self._device = str(device)
+            return self
+
+        def parameters(self):
+            class _P:
+                def __init__(self, device):
+                    self.device = device
+                    self.dtype = "float32"
+
+            yield _P(self._device)
+
+    class _Pipe:
+        def __init__(self):
+            self.transformer = _Mod()
+            self.vae = _Mod()
+
+    pipe = _Pipe()
+    loader._pipeline = pipe
+    info = loader.park_vae_to_cpu()
+    assert info["parked"] is True
+    assert "cpu" in pipe.vae.moves
+    assert pipe.transformer.moves == []

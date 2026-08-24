@@ -108,8 +108,19 @@ class FluxManager:
                 self.device_manager.clear_vram()
 
     def recover_after_oom(self) -> None:
-        """Park resident FLUX modules on CPU so the next job can start cleanly."""
+        """Park resident FLUX modules and reset the CUDA allocator for Retry."""
+        import gc
+
         if self.loader is not None and hasattr(self.loader, "park_on_cpu"):
             self.loader.park_on_cpu()
         else:
+            self.device_manager.clear_vram()
+        try:
+            from src.features.custom_generator.inference.flux_vram_policy import (
+                cleanup_cuda_after_failure,
+            )
+
+            cleanup_cuda_after_failure()
+        except Exception:
+            gc.collect()
             self.device_manager.clear_vram()

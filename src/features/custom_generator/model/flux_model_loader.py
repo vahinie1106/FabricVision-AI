@@ -1235,6 +1235,12 @@ class FLUXModelLoader:
         if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+        try:
+            from src.features.custom_generator.inference.flux_vram_policy import log_vram
+
+            log_vram("before_flux_from_pretrained")
+        except Exception:
+            pass
 
         try:
             self._progress("Resolving FLUX model source (disk cache vs download)", 10)
@@ -1586,6 +1592,16 @@ class FLUXModelLoader:
                 f"vram_alloc_mb={alloc_after}",
                 flush=True,
             )
+            try:
+                from src.features.custom_generator.inference.flux_vram_policy import (
+                    inspect_pipeline_quantization,
+                    log_vram,
+                )
+
+                log_vram("after_flux_load")
+                inspect_pipeline_quantization(pipeline)
+            except Exception as quant_exc:
+                self.logger.debug("post-load VRAM/quant inspect skipped: %s", quant_exc)
             self._progress("FLUX READY (in-memory)", 18)
             self.logger.info(
                 "[FLUX] Model initialization completed (%.2fs, bnb4bit=%s offload=%s "
@@ -1883,6 +1899,30 @@ class FLUXModelLoader:
                 )
             except Exception as exc:
                 self.logger.warning("[FLUX] Failed to restore %s to CUDA: %s", name, exc)
+        return info
+
+    def park_vae_to_cpu(self) -> dict[str, Any]:
+        """Move only the VAE to CPU. Never touch the NF4 transformer."""
+        info: dict[str, Any] = {
+            "parked": False,
+            "skipped": False,
+            "vae_device": None,
+        }
+        if self._offload_strategy == "model_cpu_offload":
+            info["skipped"] = True
+            return info
+        pipe = self._pipeline
+        vae = getattr(pipe, "vae", None) if pipe is not None else None
+        if vae is None or not hasattr(vae, "to"):
+            info["skipped"] = True
+            return info
+        try:
+            vae.to("cpu")
+            info["parked"] = True
+            info["vae_device"] = str(next(vae.parameters()).device)
+            self.logger.info("[FLUX] Parked VAE → CPU for denoise (transformer stays GPU-resident)")
+        except Exception as exc:
+            self.logger.warning("[FLUX] VAE park skipped: %s", exc)
         return info
 
     def park_on_cpu(self) -> dict[str, float]:
