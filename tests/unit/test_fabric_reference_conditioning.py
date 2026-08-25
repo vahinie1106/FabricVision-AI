@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 
 import pytest
@@ -131,17 +132,18 @@ def test_pipeline_passes_uploaded_fabric_into_flux_generate(tmp_path: Path):
     assert MAGENTA in interior
     assert YELLOW in interior
     assert ref.getpixel((2, 2)) == (255, 255, 255)
+    assert getattr(build_garment_conditioning_image, "last_neckline_key", "") == "round_neck"
 
     assert "fabric-filled" in prompt or "mockup" in prompt
-    assert "print" in prompt and "motifs" in prompt
+    assert "preserve source fabric look" in prompt or "same print scale" in prompt
     assert "dress" in prompt
     assert "round crew neckline" in prompt
-    assert "do not invent" in prompt
     assert "no person" in prompt and "no model" in prompt
     assert "standalone" in prompt
     assert "wearable women" not in prompt
     assert "wearable" not in prompt
     assert "women's dress" not in prompt
+    assert "not a v-neck" not in prompt
     # Exact image passed to FLUX is the garment-only mockup, not the raw swatch.
     for x in range(0, 256, 16):
         assert ref.getpixel((x, 1)) == (255, 255, 255)
@@ -173,23 +175,18 @@ def test_match_fabric_prompt_is_not_color_only():
     )
     lower = pos.lower()
     assert "fabric-filled" in lower or "mockup" in lower
-    assert "print" in lower
-    assert "motifs" in lower
-    assert "texture" in lower or "weave" in lower
+    assert "preserve source fabric look" in lower
+    assert "same print scale" in lower
     assert "round crew neckline" in lower
     assert "dress" in lower
-    assert "do not invent" in lower
     assert "no person" in lower and "standalone" in lower
     assert "match fabric" not in lower  # never emit the UI label as a color
     assert "invented print" in neg.lower()
     assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS
     assert builder.last_prompt_stats.get("color_mode") == "match_fabric"
-    # Match Fabric is textile identity, not a color-name approximation.
-    assert "print" in lower and "motifs" in lower
     assert "yellow" in lower and "magenta" in lower
-    assert "do not invent a new design" in lower
     assert "do not recolor" in lower
-    assert not pos.rstrip().endswith("Do not")
+    assert "not a v-neck" not in lower
 
 
 def test_dress_conditioning_is_garment_silhouette_not_person():
@@ -275,4 +272,112 @@ def test_pipeline_passes_garment_conditioning_not_raw_swatch(tmp_path: Path):
     assert ref.getpixel((2, 2)) == (255, 255, 255)
     assert fabric.getpixel((2, 2)) != (255, 255, 255)
     assert MAGENTA in {ref.getpixel((x, 64)) for x in range(40, 90, 4)}
+    assert getattr(build_garment_conditioning_image, "last_neckline_key", "") == "round_neck"
+
+
+def _first_garment_y(img: Image.Image, x: int):
+    white = (255, 255, 255)
+    w, h = img.size
+    x = max(0, min(w - 1, x))
+    for y in range(h):
+        if img.getpixel((x, y)) != white:
+            return y
+    return None
+
+
+def _last_garment_y(img: Image.Image, x: int):
+    white = (255, 255, 255)
+    w, h = img.size
+    x = max(0, min(w - 1, x))
+    last = None
+    for y in range(h):
+        if img.getpixel((x, y)) != white:
+            last = y
+    return last
+
+
+def _opening_angle_deg(img: Image.Image, cx: int, offset: int) -> float:
+    y_c = _first_garment_y(img, cx)
+    y_l = _first_garment_y(img, cx - offset)
+    y_r = _first_garment_y(img, cx + offset)
+    assert y_c is not None and y_l is not None and y_r is not None
+    v1 = ((cx - offset) - cx, y_l - y_c)
+    v2 = ((cx + offset) - cx, y_r - y_c)
+    n1 = math.hypot(*v1)
+    n2 = math.hypot(*v2)
+    dot = max(-1.0, min(1.0, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)))
+    return math.degrees(math.acos(dot))
+
+
+def test_round_neck_conditioning_is_curved_not_pointed():
+    fabric = _striped_fabric(256)
+    out = build_garment_conditioning_image(
+        fabric,
+        garment_type="dress",
+        width=256,
+        height=256,
+        sleeve="short_sleeve",
+        neckline="Round Neck",
+        target_color="match_fabric",
+    )
+    cx = 128
+    y_c = _first_garment_y(out, cx)
+    y_l = _first_garment_y(out, cx - 36)
+    y_r = _first_garment_y(out, cx + 36)
+    assert y_c is not None and y_l is not None and y_r is not None
+    assert y_c >= y_l and y_c >= y_r
+    ang = _opening_angle_deg(out, cx, 36)
+    assert ang > 125
+    y_near = _first_garment_y(out, cx - 10)
+    assert y_near is not None
+    assert abs(y_c - y_near) <= 8
+    interior = {out.getpixel((x, 140)) for x in range(80, 180, 4)}
+    assert MAGENTA in interior and YELLOW in interior
+
+
+def test_v_neck_conditioning_is_pointed():
+    fabric = _striped_fabric(256)
+    out = build_garment_conditioning_image(
+        fabric,
+        garment_type="dress",
+        width=256,
+        height=256,
+        sleeve="short_sleeve",
+        neckline="V Neck",
+        target_color="match_fabric",
+    )
+    cx = 128
+    y_c = _first_garment_y(out, cx)
+    y_l = _first_garment_y(out, cx - 36)
+    y_r = _first_garment_y(out, cx + 36)
+    assert y_c is not None and y_l is not None and y_r is not None
+    assert y_c > y_l and y_c > y_r
+    ang = _opening_angle_deg(out, cx, 36)
+    assert ang < 125
+    y_near = _first_garment_y(out, cx - 10)
+    assert y_near is not None
+    assert (y_c - y_near) >= 6
+    interior = {out.getpixel((x, 160)) for x in range(80, 180, 4)}
+    assert MAGENTA in interior and YELLOW in interior
+
+
+def test_round_vs_v_neck_keeps_body_and_fabric_pixels():
+    fabric = _striped_fabric(256)
+    kwargs = dict(
+        fabric_image=fabric,
+        garment_type="dress",
+        width=256,
+        height=256,
+        sleeve="short_sleeve",
+        target_color="match_fabric",
+    )
+    rnd = build_garment_conditioning_image(neckline="round_neck", **kwargs)
+    vee = build_garment_conditioning_image(neckline="v_neck", **kwargs)
+    # Hem / body extent unchanged; only the neck opening differs.
+    assert _last_garment_y(rnd, 128) == _last_garment_y(vee, 128)
+    assert _first_garment_y(rnd, 128) != _first_garment_y(vee, 128)
+    assert rnd.getpixel((2, 2)) == (255, 255, 255)
+    assert MAGENTA in {rnd.getpixel((x, 140)) for x in range(80, 180, 4)}
+    assert YELLOW in {vee.getpixel((x, 160)) for x in range(80, 180, 4)}
+
 

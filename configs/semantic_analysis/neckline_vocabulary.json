@@ -14,18 +14,18 @@
     "keyhole_neck"
   ],
   "visual_phrases": {
-    "round_neck": "round crew neckline, circular curved neckline opening, NOT a V-neck, no V-shaped neckline, no pointed neckline",
-    "v_neck": "distinct V-shaped neckline opening",
-    "u_neck": "U-shaped curved neckline opening",
-    "square_neck": "square-shaped neckline with straight horizontal top edge and straight vertical sides",
-    "boat_neck": "wide horizontal boat neckline extending toward the shoulders",
-    "high_neck": "high neckline rising around the base of the neck",
-    "off_shoulder": "neckline positioned below both shoulders, exposing both shoulders",
-    "sweetheart_neck": "heart-shaped sweetheart neckline with a central dip",
-    "halter_neck": "halter neckline wrapping around the neck with shoulders exposed",
-    "keyhole_neck": "keyhole neckline with a deliberate small opening below the neckline",
-    "collar_neck": "structured collar attached around the neckline",
-    "mandarin_collar": "short upright mandarin collar standing around the base of the neck"
+    "round_neck": "round crew neckline",
+    "v_neck": "V neckline",
+    "u_neck": "U neckline",
+    "square_neck": "square neckline",
+    "boat_neck": "boat neckline",
+    "high_neck": "high neckline",
+    "off_shoulder": "off-shoulder neckline",
+    "sweetheart_neck": "sweetheart neckline",
+    "halter_neck": "halter neckline",
+    "keyhole_neck": "keyhole neckline",
+    "collar_neck": "collar neckline",
+    "mandarin_collar": "mandarin collar"
   },
   "negative_exclusions": {
     "round_neck": "v-neck, V-shaped neckline, pointed neckline",

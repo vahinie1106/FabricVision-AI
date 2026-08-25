@@ -73,9 +73,8 @@ def test_kontext_prompt_match_fabric_preserves_source_colors():
     lower = pos.lower()
     assert "do not recolor" in lower
     assert "fabric-filled" in lower or "mockup" in lower
-    assert "print" in lower
-    assert "motifs" in lower
-    assert "do not invent" in lower
+    assert "preserve source fabric look" in lower
+    assert "same print scale" in lower
     assert "no person" in lower and "no model" in lower
     assert "standalone" in lower
     assert "wearable women" not in lower
@@ -85,8 +84,8 @@ def test_kontext_prompt_match_fabric_preserves_source_colors():
     assert "apply blue color" not in lower
     assert builder.last_prompt_stats.get("color_mode") == "match_fabric"
     instruction = (builder.last_prompt_stats.get("color_instruction") or "").lower()
-    assert "print" in instruction or "fabric" in instruction
-    assert "do not recolor" in instruction or "do not invent" in instruction
+    assert "preserve source fabric look" in instruction
+    assert "do not recolor" in instruction or "same print scale" in instruction
 
 
 def test_kontext_prompt_explicit_blue_applies_target_color():
@@ -429,22 +428,22 @@ def test_kontext_round_neck_uses_explicit_visual_language():
     )
     lower = pos.lower()
     assert "round crew neckline" in lower
-    assert "circular curved neckline opening" in lower
-    assert "not a v-neck" in lower
-    assert "no v-shaped neckline" in lower
-    assert "no pointed neckline" in lower
+    assert "not a v-neck" not in lower
+    assert "no v-shaped neckline" not in lower
+    assert "no pointed neckline" not in lower
+    assert "circular curved neckline opening" not in lower
     assert "fabric-filled" in lower
     assert "standalone" in lower
     assert "no person" in lower
     assert "no model" in lower
-    assert "print" in lower and "motifs" in lower
+    assert "preserve source fabric look" in lower
+    assert "same print scale" in lower
+    assert "natural folds following the print" in lower
+    assert "sharp silhouette" in lower
     assert "wearable women" not in lower
     assert "wearable" not in lower
     assert "women's dress" not in lower
-    assert "do not invent" in lower
     assert "do not recolor" in lower
-    assert not pos.rstrip().endswith("Do not")
-    # Must not rely on the ambiguous taxonomy-only label.
     generic_only = "round neckline" in lower and "round crew neckline" not in lower
     assert generic_only is False
     dress_idx = lower.find("dress")
@@ -455,7 +454,8 @@ def test_kontext_round_neck_uses_explicit_visual_language():
         assert neck_idx < summer_idx
     assert "v-neck" in neg.lower()
     assert builder.last_prompt_stats.get("neckline_token") == "round_neck"
-    assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS
+    assert builder.last_prompt_stats["token_count"] <= CLIP_SAFE_CONTENT_TOKENS
+    assert builder.last_prompt_stats["truncated"] is False
 
 
 def test_kontext_v_neck_uses_explicit_v_shaped_description():
@@ -471,9 +471,9 @@ def test_kontext_v_neck_uses_explicit_v_shaped_description():
         },
     )
     lower = pos.lower()
-    assert "v-shaped neckline" in lower
-    assert "distinct" in lower
+    assert "v neckline" in lower
     assert "round crew neckline" not in lower
+    assert "not a v-neck" not in lower
     assert builder.last_prompt_stats.get("neckline_token") == "v_neck"
     assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS
 
@@ -532,9 +532,8 @@ def test_kontext_prompt_is_garment_product_not_person():
     assert "on a model" not in lower
     assert "person wearing" not in lower
     assert "human model" in neg.lower() or "person" in neg.lower()
-    assert "do not invent" in lower
+    assert "preserve source fabric look" in lower
     assert "do not recolor" in lower
-    assert not pos.rstrip().endswith("Do not")
     assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS
 
 
@@ -560,17 +559,20 @@ def test_fabric_preservation_layer_reaches_final_kontext_prompt():
     }
     context = builder._build_context(fabric_metadata, user_customization)
     layers = builder._build_compact_kontext_layers(context)
-    assert len(layers) >= 2
+    assert len(layers) >= 3
     fabric_layer = layers[1]
-    assert "print" in fabric_layer.lower()
-    assert "motifs" in fabric_layer.lower()
-    assert "texture" in fabric_layer.lower() or "weave" in fabric_layer.lower()
-    assert "do not invent" in fabric_layer.lower()
+    quality_layer = layers[2]
+    assert "preserve source fabric look" in fabric_layer.lower()
+    assert "same print scale" in fabric_layer.lower()
     assert "do not recolor" in fabric_layer.lower()
+    assert "natural folds following the print" in quality_layer.lower()
+    assert "sharp silhouette" in quality_layer.lower()
 
     pos, _ = builder.build_kontext_prompt(fabric_metadata, user_customization)
     assert fabric_layer in pos
+    assert quality_layer in pos
     assert "no person" in pos.lower() and "no model" in pos.lower()
+    assert "not a v-neck" not in pos.lower()
     assert "wearable" not in pos.lower()
     assert builder.last_prompt_stats["token_count"] <= CLIP_SAFE_CONTENT_TOKENS
     assert builder.last_prompt_stats["truncated"] is False

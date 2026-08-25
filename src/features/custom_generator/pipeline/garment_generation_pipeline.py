@@ -615,12 +615,14 @@ class GarmentGenerationPipeline:
             and not is_match_fabric_color(str(user_customization.get("color") or ""))
             else None
         )
+        neckline = str(user_customization.get("neckline") or "")
         conditioning_image = build_garment_conditioning_image(
             fabric_image=fabric_image,
             garment_type=garment_type,
             width=self.config.width,
             height=self.config.height,
             sleeve=sleeve,
+            neckline=neckline,
             target_color=conditioning_target,
         )
         conditioning_recolored = conditioning_target is not None

@@ -10,34 +10,21 @@ from typing import Any, Dict, Optional, Tuple
 CLIP_MAX_TOKENS = 77
 CLIP_SAFE_CONTENT_TOKENS = 75
 
-# Explicit visual language for FLUX. Taxonomy labels like "round neckline" are
-# too weak — Kontext often substitutes a V-neck. Keep phrases construction-first
-# and compact so they survive the 77-token CLIP budget in the primary layer.
+# Short CLIP phrases. Neckline *shape* is carried by the conditioning
+# silhouette; long anti-V-neck essays crowded out fabric/detail layers.
 DEFAULT_NECKLINE_VISUAL_PHRASES = {
-    "round_neck": (
-        "round crew neckline, circular curved neckline opening, "
-        "NOT a V-neck, no V-shaped neckline, no pointed neckline"
-    ),
-    "v_neck": "distinct V-shaped neckline opening",
-    "u_neck": "U-shaped curved neckline opening",
-    "square_neck": (
-        "square-shaped neckline with straight horizontal top edge "
-        "and straight vertical sides"
-    ),
-    "boat_neck": "wide horizontal boat neckline extending toward the shoulders",
-    "high_neck": "high neckline rising around the base of the neck",
-    "off_shoulder": (
-        "neckline positioned below both shoulders, exposing both shoulders"
-    ),
-    "sweetheart_neck": "heart-shaped sweetheart neckline with a central dip",
-    "halter_neck": "halter neckline wrapping around the neck with shoulders exposed",
-    "keyhole_neck": (
-        "keyhole neckline with a deliberate small opening below the neckline"
-    ),
-    "collar_neck": "structured collar attached around the neckline",
-    "mandarin_collar": (
-        "short upright mandarin collar standing around the base of the neck"
-    ),
+    "round_neck": "round crew neckline",
+    "v_neck": "V neckline",
+    "u_neck": "U neckline",
+    "square_neck": "square neckline",
+    "boat_neck": "boat neckline",
+    "high_neck": "high neckline",
+    "off_shoulder": "off-shoulder neckline",
+    "sweetheart_neck": "sweetheart neckline",
+    "halter_neck": "halter neckline",
+    "keyhole_neck": "keyhole neckline",
+    "collar_neck": "collar neckline",
+    "mandarin_collar": "mandarin collar",
 }
 
 # Targeted contradictions only — do not dump every other neckline into negatives.
@@ -462,17 +449,14 @@ class GarmentPromptBuilder:
         - match_fabric: preserve uploaded textile colors (do not recolor).
         - explicit: change BASE fabric color only; keep original print/motif colors.
         """
+        appearance = (context.get("fabric_appearance") or "").strip()
         color_mode = (context.get("color_mode") or "match_fabric").strip()
         target = (context.get("dominant_colors") or "multicolor").strip()
         motifs = (context.get("motif_colors") or "original print").strip()
         gt = context["garment_type"]
         gender = context["gender"]
-        # Layer 1 must stay short. d43a25c stuffed "wearable {gender} {gt}" plus
-        # textile identity into the primary; CLIP dropped "No model" and FLUX
-        # treated the mockup as a person wearing the fabric photo.
-        # Negatives are inactive at FLUX_TRUE_CFG_SCALE=1.0, so "no person"
-        # must live in the positive primary. Do not use "{gender}'s {gt}" —
-        # possessive garment language also reads as a person.
+        # Keep garment-only wording in layer 1 (no wearable / person photography).
+        # Neckline phrases stay short so 5e7e2c fabric + sharpness layers fit CLIP.
         primary = (
             f"Edit fabric-filled {gt} mockup into a standalone {gt}. "
             f"No person, no model. "
@@ -482,16 +466,23 @@ class GarmentPromptBuilder:
         if color_mode == "explicit":
             fabric = (
                 f"Change only the base fabric color to {target}; keep original "
-                f"{context['pattern']} print colors ({motifs})."
+                f"{context['pattern']} print colors ({motifs}) and print scale. "
+                f"Do not recolor the printed motifs."
+            )
+        elif appearance:
+            fabric = (
+                f"Preserve source fabric look ({appearance}; "
+                f"{context['dominant_colors']}, {context['pattern']}, "
+                f"{context['material']}). Same print scale; do not recolor."
             )
         else:
-            color_note = f" ({target})" if target else ""
             fabric = (
-                f"Keep this mockup's exact print, motifs, weave, texture, and "
-                f"colors{color_note}. Do not invent a new design. Do not recolor."
+                f"Preserve source fabric print/colors ({context['dominant_colors']}; "
+                f"{context['material']}, {context['pattern']}, {context['texture']}). "
+                f"Same print scale; do not recolor."
             )
         quality = (
-            "Natural folds, clean seams, white studio. Not a swatch, not CGI."
+            "Natural folds following the print, clean seams and hem, sharp silhouette."
         )
         # Avoid "casual casual" when style == occasion
         if context["style"] == context["occasion"]:
@@ -531,8 +522,7 @@ class GarmentPromptBuilder:
         prompt = " ".join(used).strip()
         token_count = self.count_clip_tokens(prompt)
         short_fabric = fabric_fallback or (
-            "Keep this mockup's exact print, motifs, weave, texture, and colors. "
-            "Do not invent a new design. Do not recolor."
+            "Preserve source fabric look. Same print scale; do not recolor."
         )
         dropped_fabric = compacted and len(used) < 2 and len(layers) >= 2
         primary_fits = self.count_clip_tokens(layers[0]) <= max_tokens
@@ -664,8 +654,8 @@ class GarmentPromptBuilder:
         else:
             target = context.get("dominant_colors") or "multicolor"
             fabric_fallback = (
-                f"Keep this mockup's exact print, motifs, weave, texture, and "
-                f"colors ({target}). Do not invent a new design. Do not recolor."
+                f"Preserve source fabric look ({target}). Same print scale; "
+                f"do not recolor."
             )
         final_positive, stats = self.fit_to_clip_budget(
             layers, fabric_fallback=fabric_fallback

@@ -12,6 +12,7 @@ region is recolored to the target. Print/motif pixels keep their original hues
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
@@ -511,6 +512,95 @@ def _kurta_polygon(w: int, h: int) -> Sequence[Tuple[int, int]]:
     ]
 
 
+def _normalize_neckline_key(neckline: Optional[str]) -> str:
+    """Map UI / taxonomy neckline labels to snake_case tokens."""
+    token = (neckline or "").strip().lower().replace("-", " ").replace(" ", "_")
+    aliases = {
+        "round": "round_neck",
+        "crew": "round_neck",
+        "crew_neck": "round_neck",
+        "crewneck": "round_neck",
+        "v": "v_neck",
+        "vneck": "v_neck",
+        "v_neck": "v_neck",
+        "u": "u_neck",
+        "u_neck": "u_neck",
+    }
+    return aliases.get(token, token)
+
+
+def _circular_neck_arc(
+    left: Tuple[int, int],
+    right: Tuple[int, int],
+    sagitta: int,
+    samples: int = 11,
+) -> list[Tuple[int, int]]:
+    """Shallow circular U from left shoulder to right shoulder (y increases down)."""
+    x0, y0 = int(left[0]), int(left[1])
+    x1, y1 = int(right[0]), int(right[1])
+    if x1 < x0:
+        x0, x1 = x1, x0
+        y0, y1 = y1, y0
+        left, right = (x0, y0), (x1, y1)
+    span = max(2, x1 - x0)
+    sag = max(3, int(sagitta))
+    sag = min(sag, max(3, int(span * 0.35)))
+    half = span / 2.0
+    radius = (half * half + sag * sag) / (2.0 * sag)
+    cx = (x0 + x1) / 2.0
+    mid_y = (y0 + y1) / 2.0
+    cy = mid_y - (radius - sag)
+    n = max(7, int(samples))
+    pts: list[Tuple[int, int]] = []
+    for i in range(n):
+        t = i / (n - 1)
+        x = x0 + span * t
+        dx = x - cx
+        residual = radius * radius - dx * dx
+        if residual <= 0:
+            y = mid_y + sag * (1.0 - abs(2.0 * t - 1.0))
+        else:
+            y = cy + math.sqrt(residual)
+        pts.append((int(round(x)), int(round(y))))
+    pts[0] = (int(left[0]), int(left[1]))
+    pts[-1] = (int(right[0]), int(right[1]))
+    return pts
+
+
+def _v_neck_points(
+    left: Tuple[int, int],
+    right: Tuple[int, int],
+    depth: int,
+) -> list[Tuple[int, int]]:
+    """Pointed V: two straight diagonals meeting at center."""
+    x0, y0 = int(left[0]), int(left[1])
+    x1, y1 = int(right[0]), int(right[1])
+    cx = int(round((x0 + x1) / 2.0))
+    cy = int(round((y0 + y1) / 2.0)) + max(6, int(depth))
+    return [(x0, y0), (cx, cy), (x1, y1)]
+
+
+def _apply_neckline_geometry(
+    polygon: Sequence[Tuple[int, int]],
+    neckline: str,
+    height: int,
+) -> Sequence[Tuple[int, int]]:
+    """Replace only the neck opening (first 5 points); keep body/sleeves."""
+    if len(polygon) < 6:
+        return polygon
+    key = _normalize_neckline_key(neckline)
+    left = (int(polygon[0][0]), int(polygon[0][1]))
+    right = (int(polygon[4][0]), int(polygon[4][1]))
+    body = list(polygon[5:])
+    if key == "round_neck":
+        neck = _circular_neck_arc(left, right, sagitta=max(3, int(height * 0.06)))
+        return neck + body
+    if key == "v_neck":
+        neck = _v_neck_points(left, right, depth=max(6, int(height * 0.11)))
+        return neck + body
+    return polygon
+
+
 def _is_long_sleeve(sleeve: str) -> bool:
     s = (sleeve or "").lower().replace(" ", "_").replace("-", "_")
     return any(
@@ -520,20 +610,27 @@ def _is_long_sleeve(sleeve: str) -> bool:
 
 
 def _polygon_for_garment(
-    garment_type: str, w: int, h: int, sleeve: str = ""
+    garment_type: str,
+    w: int,
+    h: int,
+    sleeve: str = "",
+    neckline: str = "",
 ) -> Sequence[Tuple[int, int]]:
     key = (garment_type or "shirt").lower().replace(" ", "_")
     long_sleeve = _is_long_sleeve(sleeve)
     if key in {"dress", "gown", "frock"}:
-        return _dress_polygon(w, h)
-    if key in {"jacket", "blazer", "coat", "hoodie"}:
-        return _jacket_polygon(w, h)
-    if key in {"kurta", "kurti", "kameez", "tunic", "top"}:
+        polygon = _dress_polygon(w, h)
+    elif key in {"jacket", "blazer", "coat", "hoodie"}:
+        polygon = _jacket_polygon(w, h)
+    elif key in {"kurta", "kurti", "kameez", "tunic", "top"}:
         # Kurti/top: sleeve-aware shirt silhouette (kurta poly ignores sleeve)
         if key in {"kurta"}:
-            return _kurta_polygon(w, h)
-        return _shirt_polygon(w, h, long_sleeve=long_sleeve)
-    return _shirt_polygon(w, h, long_sleeve=long_sleeve)
+            polygon = _kurta_polygon(w, h)
+        else:
+            polygon = _shirt_polygon(w, h, long_sleeve=long_sleeve)
+    else:
+        polygon = _shirt_polygon(w, h, long_sleeve=long_sleeve)
+    return _apply_neckline_geometry(polygon, neckline, h)
 
 
 def build_garment_conditioning_image(
@@ -542,6 +639,7 @@ def build_garment_conditioning_image(
     width: int = 512,
     height: int = 512,
     sleeve: str = "",
+    neckline: str = "",
     background: Tuple[int, int, int] = (255, 255, 255),
     target_color: Optional[str] = None,
 ) -> Image.Image:
@@ -553,6 +651,9 @@ def build_garment_conditioning_image(
 
     When ``target_color`` is an explicit UI color (not Match Fabric), only the
     dominant/base fabric region is recolored; print/motif colors are preserved.
+
+    ``neckline`` selects only the neck opening geometry (round = circular U,
+    V = pointed). Fabric pixels and the body/sleeve outline are unchanged.
     """
     if fabric_image is None:
         raise ValueError("fabric_image is required")
@@ -567,13 +668,17 @@ def build_garment_conditioning_image(
         recolored = True
     # Expose latest audit for pipeline QA (None when Match Fabric).
     build_garment_conditioning_image.last_recolor_audit = last_audit  # type: ignore[attr-defined]
+    neck_key = _normalize_neckline_key(neckline)
+    build_garment_conditioning_image.last_neckline_key = neck_key  # type: ignore[attr-defined]
 
     fabric_fill = _cover_fabric(source, w, h)
     # Do not UnsharpMask the conditioning image. Sharpening before Kontext
     # invents halo texture that the model bakes into a blurry/melted print.
     mask = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask)
-    polygon = _polygon_for_garment(garment_type, w, h, sleeve=sleeve)
+    polygon = _polygon_for_garment(
+        garment_type, w, h, sleeve=sleeve, neckline=neckline
+    )
     draw.polygon(list(polygon), fill=255)
     # NO GaussianBlur — preserves crisp garment/background boundary for Kontext.
 
@@ -581,11 +686,12 @@ def build_garment_conditioning_image(
     canvas.paste(fabric_fill, (0, 0), mask=mask)
 
     logger.info(
-        "Built garment conditioning image: garment=%s sleeve=%s size=%sx%s "
-        "blur=none unsharp=none conditioning_recolored=%s target_color=%s "
-        "mode=%s",
+        "Built garment conditioning image: garment=%s sleeve=%s neckline=%s "
+        "size=%sx%s blur=none unsharp=none conditioning_recolored=%s "
+        "target_color=%s mode=%s",
         garment_type,
         sleeve or "default",
+        neck_key or "default",
         w,
         h,
         recolored,
@@ -597,3 +703,4 @@ def build_garment_conditioning_image(
 
 # Optional audit from the last explicit-color conditioning build.
 build_garment_conditioning_image.last_recolor_audit = None  # type: ignore[attr-defined]
+build_garment_conditioning_image.last_neckline_key = ""  # type: ignore[attr-defined]
