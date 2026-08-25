@@ -1,5 +1,7 @@
 """Tests for generation error classification and NF4-safe park behavior."""
 
+import pytest
+
 from backend_api.services.generation_errors import classify_generation_error
 from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
 
@@ -90,6 +92,7 @@ def test_park_on_cpu_skips_nf4_transformer_to_cpu():
 
 def test_park_gpu_resident_then_ensure_restores_vae(monkeypatch):
     """T4-class bug: gpu_resident park left VAE on CPU → CUDA_ERROR at ~50%."""
+    pytest.importorskip("torch")
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -139,14 +142,18 @@ def test_park_gpu_resident_then_ensure_restores_vae(monkeypatch):
     loader.park_on_cpu()
 
     assert "cpu" in pipe.vae.moves
-    assert "cpu" not in pipe.transformer.moves  # NF4 must stay put
-
+    # After a job, gpu_resident park may one-shot the NF4 transformer to CPU
+    # (bnb-safe). It must be restored before the next denoise, not via
+    # enable_model_cpu_offload.
     info = loader.ensure_generation_devices()
     assert "vae" in info["restored"]
     assert any("cuda" in m for m in pipe.vae.moves)
+    tr_info = loader.ensure_transformer_on_device()
+    assert tr_info.get("skipped") or tr_info.get("restored")
 
 
 def test_resolve_torch_dtype_pre_ampere_uses_fp16(monkeypatch):
+    pytest.importorskip("torch")
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -168,6 +175,7 @@ def test_classify_black_image_error():
 
 
 def test_stabilize_flux_vae_upcasts_float16(monkeypatch):
+    pytest.importorskip("torch")
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -201,6 +209,7 @@ def test_stabilize_flux_vae_upcasts_float16(monkeypatch):
 
 def test_stabilize_flux_vae_encode_casts_fp16_to_fp32(monkeypatch):
     """VAE FP32 + Diffusers fp16 conditioning tensor must cast at encode boundary."""
+    pytest.importorskip("torch")
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -242,6 +251,7 @@ def test_stabilize_flux_vae_encode_casts_fp16_to_fp32(monkeypatch):
 
 def test_stabilize_flux_vae_encode_keeps_matching_dtypes(monkeypatch):
     """Same-dtype encode path remains unchanged (fp32→fp32)."""
+    pytest.importorskip("torch")
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
@@ -278,6 +288,7 @@ def test_stabilize_flux_vae_encode_keeps_matching_dtypes(monkeypatch):
 
 def test_stabilize_flux_vae_encode_fp16_vae_keeps_fp16_input(monkeypatch):
     """If VAE remains fp16, fp16 conditioning stays fp16 at encode."""
+    pytest.importorskip("torch")
     import torch
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)

@@ -55,7 +55,7 @@ fast_preview:
 
 # Standard — low-VRAM / local-dev default (RTX 3050 6GB).
 # On Kaggle Tesla T4 (~15GB), GarmentGenerationPipeline + flux_vram_policy
-# select Standard 512×8 (or 768×12 only with FLUX_ALLOW_HIGH_RES / headroom).
+# select Standard 712×8 (pack-aligned internally to a 16px multiple).
 # Primary heavy inference target is Kaggle T4 / T4×2 via scripts/run_kaggle.py.
 standard:
   height: 512
@@ -65,14 +65,15 @@ standard:
   measured_runtime_s_cold: 603.5
   note: "low-VRAM default; high-VRAM auto-upgrade applies on T4"
 
-# Explicit T4 Standard (opt-in via FLUX_ALLOW_HIGH_RES / measured free headroom).
-# Default completion-first Standard on ~15GB is 512×8 — see flux_vram_policy.py.
+# Explicit T4 Standard (712×712 / 8 steps / guidance 3.0).
+# Apply via flux_vram_policy on ≥14GB; diagnostic 4-step: FLUX_STANDARD_STEPS=4.
+# 768×12 remains Production / FLUX_ALLOW_HIGH_RES only.
 standard_t4:
-  height: 768
-  width: 768
-  num_inference_steps: 12
+  height: 712
+  width: 712
+  num_inference_steps: 8
   guidance_scale: 3.0
-  measured_runtime_note: "opt-in only; GPU-resident 768 OOM'd without free headroom"
+  measured_runtime_note: "Kaggle T4 Standard 712×8 GPU-resident; park transformer before fp32 VAE"
 
 # Production — Kaggle T4×2 locked target: 768×768 / 12 steps / guidance 3.0.
 # Override via FLUX_PRODUCTION_RESOLUTION / FLUX_PRODUCTION_STEPS /

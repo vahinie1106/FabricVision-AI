@@ -49,7 +49,9 @@ class HybridVramPlan:
     evict_t5_before_diffusion: bool
     park_vae_during_denoise: bool
     decode_latents_separately: bool
+    park_transformer_before_vae: bool
     enable_vae_tiling: bool
+    enable_vae_slicing: bool
     per_step_cpu_offload: bool
     reason: str
     profile: str
@@ -325,16 +327,23 @@ def select_hybrid_vram_plan(
             evict_t5_before_diffusion=True,
             park_vae_during_denoise=True,
             decode_latents_separately=True,
+            park_transformer_before_vae=True,
             enable_vae_tiling=True,
+            enable_vae_slicing=True,
             per_step_cpu_offload=False,
-            reason="t4_hybrid: transformer GPU-resident; T5 evict; VAE parked in denoise; latent decode",
+            reason=(
+                "t4_hybrid: transformer GPU-resident during denoise; "
+                "park transformer before fp32 VAE decode; T5 evict; VAE CPU in denoise"
+            ),
             profile="t4_hybrid_gpu_resident",
         )
     return HybridVramPlan(
         evict_t5_before_diffusion=True,
         park_vae_during_denoise=False,
         decode_latents_separately=False,
+        park_transformer_before_vae=False,
         enable_vae_tiling=True,
+        enable_vae_slicing=True,
         per_step_cpu_offload=offload == "model_cpu_offload",
         reason="low_vram_or_offload: keep existing pipeline() image decode",
         profile="low_vram_offload",
@@ -420,23 +429,16 @@ def select_standard_generation_policy(
         )
 
     # ~14–20 GB class (typical Kaggle T4 ~15109 MiB):
-    # GPU-resident NF4 is the speed path. Unset env used to default True and
-    # re-introduced 6GB CPU-offload (minutes per 512² generate). Offload only
-    # when the operator explicitly sets FLUX_MODEL_CPU_OFFLOAD=true.
-    # 768² activations can still OOM — do NOT auto-upgrade unless headroom is real.
+    # Standard target: 712×712 / 8 steps / guidance 3.0, GPU-resident NF4.
+    # Do NOT auto-upgrade Standard to 768×12 (that is Production).
+    # Offload only when the operator explicitly sets FLUX_MODEL_CPU_OFFLOAD=true.
     prefer_offload = False if offload_env is None else bool(offload_env)
 
-    # High-res only when free headroom is large OR explicit allow flag / forced 768+.
+    # Opt-in 768 Standard only via FLUX_ALLOW_HIGH_RES or forced 768+.
     high_res_ok = False
     if forced_res and forced_res >= 768:
         high_res_ok = True
-    elif allow_high_res is True and free >= 6500:
-        high_res_ok = True
-    elif allow_high_res is True and not gpu_resident:
-        # Offload path can sometimes survive 768; still gated by explicit allow.
-        high_res_ok = True
-    elif forced_res is None and allow_high_res is not False and free >= 8000:
-        # Measured headroom: only then auto 768.
+    elif allow_high_res is True:
         high_res_ok = True
 
     if high_res_ok:
@@ -448,13 +450,12 @@ def select_standard_generation_policy(
             f"offload={prefer_offload} allow={allow_high_res}"
         )
     else:
-        res = forced_res or 512
-        # 8 steps: better than blurry 3-step 3050 preset; safer peak than 12@768.
+        res = forced_res or 712
         steps = forced_steps or 8
         profile = "standard_t4_safe"
         reason = (
-            f"completion_first free={free:.0f}MB phys={phys:.0f}MB "
-            f"gpu_resident_hint={gpu_resident} (768 gated)"
+            f"t4_standard_712x8 free={free:.0f}MB phys={phys:.0f}MB "
+            f"gpu_resident_hint={gpu_resident}"
         )
 
     return StandardGenPolicy(
@@ -561,6 +562,9 @@ def recommend_oom_fallback(
 ) -> Optional[Dict[str, int]]:
     """Return a smaller config to retry after diffusion OOM, or None if already minimal."""
     area = int(height) * int(width)
+    if area >= 712 * 712 and int(height) == 712 and int(width) == 712:
+        # Standard 712 target: never silently demote to 512 or cut steps.
+        return None
     if area >= 768 * 768:
         return {
             "height": 720,

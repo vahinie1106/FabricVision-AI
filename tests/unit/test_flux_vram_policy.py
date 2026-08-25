@@ -11,7 +11,7 @@ from src.features.custom_generator.inference.flux_vram_policy import (
 )
 
 
-def test_t4_class_defaults_to_safe_512_without_headroom(monkeypatch):
+def test_t4_class_defaults_to_712_without_headroom(monkeypatch):
     monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_PRODUCTION_SIZE", raising=False)
     monkeypatch.delenv("FLUX_STANDARD_STEPS", raising=False)
@@ -23,18 +23,34 @@ def test_t4_class_defaults_to_safe_512_without_headroom(monkeypatch):
         free_mb=3200.0,
         offload_strategy="gpu_resident",
     )
-    assert policy.height == 512
-    assert policy.width == 512
+    assert policy.height == 712
+    assert policy.width == 712
     assert policy.num_inference_steps == 8
+    assert policy.guidance_scale == 3.0
     assert policy.profile == "standard_t4_safe"
     assert policy.enable_vae_tiling is True
     assert policy.prefer_model_cpu_offload is False
 
 
-def test_high_res_requires_real_headroom(monkeypatch):
+def test_t4_does_not_auto_upgrade_standard_to_768(monkeypatch):
     monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
     monkeypatch.delenv("FLUX_STANDARD_STEPS", raising=False)
     monkeypatch.delenv("FLUX_ALLOW_HIGH_RES", raising=False)
+
+    policy = select_standard_generation_policy(
+        physical_mb=15109.0,
+        free_mb=8500.0,
+        offload_strategy="gpu_resident",
+    )
+    assert policy.height == 712
+    assert policy.num_inference_steps == 8
+    assert policy.profile == "standard_t4_safe"
+
+
+def test_high_res_requires_allow_flag(monkeypatch):
+    monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
+    monkeypatch.delenv("FLUX_STANDARD_STEPS", raising=False)
+    monkeypatch.setenv("FLUX_ALLOW_HIGH_RES", "true")
 
     policy = select_standard_generation_policy(
         physical_mb=15109.0,
@@ -170,6 +186,24 @@ def test_oom_fallback_ladder():
         "num_inference_steps": 4,
     }
     assert recommend_oom_fallback(height=384, width=384, num_inference_steps=3) is None
+    assert recommend_oom_fallback(height=712, width=712, num_inference_steps=8) is None
+
+
+def test_t4_diagnostic_4_step_env(monkeypatch):
+    monkeypatch.delenv("FLUX_GENERATION_RESOLUTION", raising=False)
+    monkeypatch.setenv("FLUX_STANDARD_STEPS", "4")
+    monkeypatch.delenv("FLUX_ALLOW_HIGH_RES", raising=False)
+    monkeypatch.delenv("FLUX_MODEL_CPU_OFFLOAD", raising=False)
+    policy = select_standard_generation_policy(
+        physical_mb=15109.0,
+        free_mb=2500.0,
+        offload_strategy="gpu_resident",
+    )
+    assert policy.height == 712
+    assert policy.width == 712
+    assert policy.num_inference_steps == 4
+    assert policy.guidance_scale == 3.0
+    assert policy.prefer_model_cpu_offload is False
 
 
 def test_pipeline_uses_safe_policy_on_t4_class(monkeypatch):
@@ -213,8 +247,8 @@ def test_pipeline_uses_safe_policy_on_t4_class(monkeypatch):
     )
 
     pipe._apply_high_vram_standard_defaults("standard")
-    assert pipe.config.height == 512
-    assert pipe.config.width == 512
+    assert pipe.config.height == 712
+    assert pipe.config.width == 712
     assert pipe.config.num_inference_steps == 8
     assert pipe.config.guidance_scale == 3.0
 

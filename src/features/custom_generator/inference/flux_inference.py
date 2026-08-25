@@ -31,13 +31,20 @@ ProgressCallback = Optional[Callable[[str, int], None]]
 DEFAULT_MAX_SEQUENCE_LENGTH = 128
 
 # Safe completion-first defaults. Kaggle T4×2 Production target is 768×768.
+# Kaggle T4 Standard target is 712×712 / 8 steps / guidance 3.0.
 # Local low-VRAM (RTX 3050) stays at 512 unless explicitly overridden.
-ALLOWED_FLUX_GENERATION_RESOLUTIONS = (384, 512, 640, 704, 720, 768, 1024)
+ALLOWED_FLUX_GENERATION_RESOLUTIONS = (384, 512, 640, 704, 712, 720, 768, 1024)
 DEFAULT_FLUX_GENERATION_RESOLUTION = 512
+DEFAULT_KAGGLE_STANDARD_RESOLUTION = 712
+DEFAULT_KAGGLE_STANDARD_STEPS = 8
+DEFAULT_KAGGLE_STANDARD_GUIDANCE = 3.0
 DEFAULT_KAGGLE_PRODUCTION_RESOLUTION = 768
 DEFAULT_KAGGLE_PRODUCTION_STEPS = 12
 DEFAULT_KAGGLE_PRODUCTION_GUIDANCE = 3.0
 MIN_KAGGLE_PRODUCTION_RESOLUTION = 700
+# Flux packed latents: pixel H/W must be a multiple of (vae_scale_factor * 2).
+# Default VAE downsample is 8, so alignment is 16. 712 % 16 == 8 → not pack-valid.
+FLUX_PACK_ALIGN_MULTIPLE = 16
 
 
 def resolve_flux_generation_resolution(default: Optional[int] = None) -> int:
@@ -111,6 +118,48 @@ def resolve_flux_production_guidance(default: Optional[float] = None) -> float:
         except ValueError:
             pass
     return float(fallback)
+
+
+def flux_pack_alignment(pipeline: Any = None) -> int:
+    """Pixel multiple required by Flux packed latents (vae_scale_factor * 2)."""
+    sf = 8
+    if pipeline is not None:
+        try:
+            sf = int(getattr(pipeline, "vae_scale_factor", 8) or 8)
+        except Exception:
+            sf = 8
+    return max(FLUX_PACK_ALIGN_MULTIPLE, int(sf) * 2)
+
+
+def align_flux_pixel_size(requested: int, *, pipeline: Any = None) -> int:
+    """Return a pack-aligned size. 712 is accepted as a request; actual may be 704.
+
+    Diffusers FluxKontext floors H/W to ``vae_scale_factor * 2``. Passing 712
+    unmodified would create an odd latent (712/8=89) and break ``_pack_latents``.
+    """
+    multiple = flux_pack_alignment(pipeline)
+    req = max(multiple, int(requested))
+    if req % multiple == 0:
+        return req
+    return req - (req % multiple)
+
+
+def _module_device(mod: Any) -> str:
+    if mod is None:
+        return "none"
+    try:
+        return str(next(mod.parameters()).device)
+    except Exception:
+        return "unknown"
+
+
+def _module_dtype(mod: Any) -> str:
+    if mod is None:
+        return "none"
+    try:
+        return str(next(mod.parameters()).dtype)
+    except Exception:
+        return "unknown"
 
 
 def _is_production_generation_mode(mode: Optional[str]) -> bool:
@@ -531,6 +580,42 @@ class FLUXInferenceEngine:
             except Exception:
                 pass
 
+    def _park_transformer_for_vae(self, pipeline: Any) -> None:
+        loader = self.model_loader
+        if loader is not None and hasattr(loader, "park_transformer_to_cpu"):
+            info = loader.park_transformer_to_cpu()
+            self._log_generation_stage(
+                "TRANSFORMER_PARKED_BEFORE_VAE",
+                parked=info.get("parked"),
+                transformer_device=info.get("transformer_device"),
+            )
+            return
+        tr = getattr(pipeline, "transformer", None)
+        if tr is not None and hasattr(tr, "to"):
+            try:
+                tr.to("cpu")
+            except Exception:
+                pass
+
+    def _ensure_transformer_for_denoise(self, pipeline: Any) -> None:
+        loader = self.model_loader
+        if loader is not None and hasattr(loader, "ensure_transformer_on_device"):
+            info = loader.ensure_transformer_on_device()
+            self._log_generation_stage(
+                "TRANSFORMER_READY",
+                restored=info.get("restored"),
+                transformer_device=info.get("transformer_device"),
+            )
+            return
+        if torch is None or not torch.cuda.is_available():
+            return
+        tr = getattr(pipeline, "transformer", None)
+        if tr is not None and hasattr(tr, "to"):
+            try:
+                tr.to("cuda")
+            except Exception as exc:
+                self.logger.warning("transformer → CUDA restore skipped: %s", exc)
+
     def _decode_flux_latents(self, pipeline: Any, latents: Any, height: int, width: int):
         """VAE decode after denoise so fp32 decode activations do not overlap the last step."""
         if torch is None:
@@ -547,12 +632,113 @@ class FLUXInferenceEngine:
         scaling = float(getattr(cfg, "scaling_factor", 1.0) or 1.0)
         shift = float(getattr(cfg, "shift_factor", 0.0) or 0.0)
         latents = (latents / scaling) + shift
+        try:
+            p = next(vae.parameters())
+            if hasattr(latents, "to"):
+                latents = latents.to(device=p.device, dtype=p.dtype)
+        except Exception:
+            pass
         decoded = vae.decode(latents, return_dict=False)[0]
         processor = getattr(pipeline, "image_processor", None)
         if processor is not None and hasattr(processor, "postprocess"):
             images = processor.postprocess(decoded, output_type="pil")
             return images[0]
         raise RuntimeError("FLUX pipeline has no image_processor for VAE postprocess")
+
+    def _enable_vae_tile_slice(self, pipeline: Any) -> None:
+        vae = getattr(pipeline, "vae", None)
+        if vae is None:
+            return
+        if hasattr(vae, "enable_slicing"):
+            vae.enable_slicing()
+        if hasattr(vae, "enable_tiling"):
+            vae.enable_tiling()
+
+    def _decode_latents_with_oom_retry(
+        self,
+        pipeline: Any,
+        latents: Any,
+        height: int,
+        width: int,
+    ):
+        """Decode once; on CUDA OOM retry the same latent with tiling/slicing. No 512 fallback."""
+        from src.features.custom_generator.inference.flux_vram_policy import (
+            cleanup_cuda_after_failure,
+            log_vram,
+        )
+
+        self._enable_vae_tile_slice(pipeline)
+        try:
+            return self._decode_flux_latents(pipeline, latents, height, width)
+        except Exception as dec_exc:
+            if not self._is_cuda_oom(dec_exc):
+                raise
+            log_vram("OOM during VAE decode (retrying same latent)")
+            self._park_vae_for_denoise(pipeline)
+            cleanup_cuda_after_failure()
+            self._ensure_generation_devices(pipeline)
+            self._enable_vae_tile_slice(pipeline)
+            log_vram("VAE decode retry after cleanup")
+            try:
+                infer_ctx = (
+                    torch.inference_mode() if torch is not None else nullcontext()
+                )
+                with infer_ctx:
+                    return self._decode_flux_latents(pipeline, latents, height, width)
+            except Exception as retry_exc:
+                log_vram("OOM during VAE decode retry")
+                self._park_vae_for_denoise(pipeline)
+                cleanup_cuda_after_failure()
+                if self._is_cuda_oom(retry_exc):
+                    raise RuntimeError(
+                        "CUDA out of memory during FLUX VAE decode after tiled retry "
+                        f"at {width}x{height} (no silent 512 fallback): {retry_exc}"
+                    ) from retry_exc
+                raise
+
+    def _log_flux_runtime_config(
+        self,
+        *,
+        requested_h: int,
+        requested_w: int,
+        actual_h: int,
+        actual_w: int,
+        steps: int,
+        guidance: float,
+        pipeline: Any,
+        runtime: Dict[str, Any],
+        offload_strategy: str,
+        hybrid: Any,
+    ) -> None:
+        vae = getattr(pipeline, "vae", None)
+        tr = getattr(pipeline, "transformer", None)
+        te2 = getattr(pipeline, "text_encoder_2", None)
+        tiling = bool(hybrid and getattr(hybrid, "enable_vae_tiling", False))
+        slicing = bool(hybrid and getattr(hybrid, "enable_vae_slicing", False))
+        quant = "NF4" if runtime.get("bnb_4bit") else "full"
+        lines = [
+            "[FLUX CONFIG]",
+            f"requested_resolution={requested_w}x{requested_h}",
+            f"actual_generation_resolution={actual_w}x{actual_h}",
+            f"delivered_resolution={requested_w}x{requested_h}",
+            f"resolution={requested_w}x{requested_h}",
+            f"steps={steps}",
+            f"guidance={guidance}",
+            f"dtype={runtime.get('model_dtype')}",
+            f"quantization={quant}",
+            f"transformer_device={_module_device(tr)}",
+            f"vae_device={_module_device(vae)}",
+            f"t5_device={_module_device(te2)}",
+            f"cpu_offload={offload_strategy == 'model_cpu_offload'}",
+            f"offload_strategy={offload_strategy}",
+            f"vae_dtype={_module_dtype(vae)}",
+            f"vae_tiling={tiling}",
+            f"vae_slicing={slicing}",
+            f"per_step_cpu_offload={bool(hybrid and getattr(hybrid, 'per_step_cpu_offload', False))}",
+        ]
+        for line in lines:
+            print(line, flush=True)
+            self.logger.info(line)
 
     @staticmethod
     def _is_cuda_oom(exc: BaseException) -> bool:
@@ -739,6 +925,26 @@ class FLUXInferenceEngine:
 
         self.logger.info("Kontext inference started (conditioning image present)")
         production_mode = _is_production_generation_mode(generation_mode)
+        requested_height = int(height)
+        requested_width = int(width)
+        actual_height = align_flux_pixel_size(requested_height, pipeline=pipeline)
+        actual_width = align_flux_pixel_size(requested_width, pipeline=pipeline)
+        if (actual_height, actual_width) != (requested_height, requested_width):
+            print(
+                f"[FLUX] requested_resolution={requested_width}x{requested_height} "
+                f"actual_generation_resolution={actual_width}x{actual_height} "
+                f"(Flux packed-latent alignment {flux_pack_alignment(pipeline)}px)",
+                flush=True,
+            )
+            self.logger.info(
+                "[FLUX] requested_resolution=%sx%s actual_generation_resolution=%sx%s",
+                requested_width,
+                requested_height,
+                actual_width,
+                actual_height,
+            )
+        height = int(actual_height)
+        width = int(actual_width)
         if production_mode:
             resolved_steps = int(num_inference_steps)
             resolved_resolution = (int(width), int(height))
@@ -799,6 +1005,7 @@ class FLUXInferenceEngine:
         from src.features.custom_generator.inference.flux_vram_policy import (
             inspect_pipeline_quantization,
             log_runtime_device_report,
+            log_vram,
             select_hybrid_vram_plan,
         )
 
@@ -816,14 +1023,27 @@ class FLUXInferenceEngine:
             pass
 
         # 6GB offload: park leftover GPU modules before T5 encode.
-        # GPU-resident T4: do NOT park — that moves T5 to CPU and leaves the
-        # first denoise step shuttling if offload hooks were incorrectly on.
+        # GPU-resident T4: do NOT park — restore transformer if the previous
+        # job left it on CPU after VAE decode.
         if gpu_resident:
             self.logger.info(
                 "[FLUX] Skipping park_on_cpu before generate (gpu-resident path)"
             )
+            self._ensure_transformer_for_denoise(pipeline)
         else:
             self._park_pipeline(pipeline)
+        self._log_flux_runtime_config(
+            requested_h=requested_height,
+            requested_w=requested_width,
+            actual_h=height,
+            actual_w=width,
+            steps=int(num_inference_steps),
+            guidance=float(guidance_scale),
+            pipeline=pipeline,
+            runtime=runtime,
+            offload_strategy=offload_strategy,
+            hybrid=hybrid,
+        )
         snap1 = self._vram_snapshot()
         self.logger.info(
             "[FLUX] After pre-generate park: allocated=%.1f MB reserved=%.1f MB",
@@ -867,6 +1087,7 @@ class FLUXInferenceEngine:
                     steps=num_inference_steps,
                     step_s=dur,
                 )
+                log_vram(f"DENOISING_STEP step={step_index + 1}/{num_inference_steps}")
                 if hybrid.park_vae_during_denoise and step_index == 0 and not vae_parked:
                     # Kontext VAE-encode of the fabric image is done before step 0 ends.
                     self._park_vae_for_denoise(pipeline)
@@ -1119,7 +1340,7 @@ class FLUXInferenceEngine:
                 "yes",
                 "on",
             )
-            if large_res or force_tile or hybrid.enable_vae_tiling:
+            if large_res or force_tile or hybrid.enable_vae_tiling or hybrid.enable_vae_slicing:
                 vae = getattr(pipeline, "vae", None)
                 if vae is not None:
                     if hasattr(vae, "enable_slicing"):
@@ -1298,13 +1519,21 @@ class FLUXInferenceEngine:
                 no_oom_fallback = os.environ.get(
                     "FLUX_PRODUCTION_NO_OOM_FALLBACK", ""
                 ).strip().lower() in ("1", "true", "yes", "on")
+                standard_no_fallback = os.environ.get(
+                    "FLUX_STANDARD_NO_OOM_FALLBACK", ""
+                ).strip().lower() in ("1", "true", "yes", "on")
                 if production_mode:
+                    no_oom_fallback = True
+                if standard_no_fallback or (
+                    int(requested_height) == 712 and int(requested_width) == 712
+                ):
                     no_oom_fallback = True
                 if no_oom_fallback:
                     raise RuntimeError(
-                        f"CUDA out of memory at requested Production settings "
-                        f"{width}x{height} steps={num_inference_steps} "
-                        f"(FLUX_PRODUCTION_NO_OOM_FALLBACK=1 — no silent resize). "
+                        f"CUDA out of memory at requested settings "
+                        f"{requested_width}x{requested_height} "
+                        f"(actual {width}x{height}) steps={num_inference_steps} "
+                        f"(no silent resize / no silent 512 fallback). "
                         f"Original error: {denoise_exc}"
                     ) from denoise_exc
                 fallback = recommend_oom_fallback(
@@ -1408,17 +1637,29 @@ class FLUXInferenceEngine:
                     and hasattr(raw_images[0], "save")
                 )
                 if not already_pil:
-                    self._clear_cuda()
-                    self._ensure_generation_devices(pipeline)
-                    vae = getattr(pipeline, "vae", None)
-                    if vae is not None:
-                        if hasattr(vae, "enable_slicing"):
-                            vae.enable_slicing()
-                        if hasattr(vae, "enable_tiling"):
-                            vae.enable_tiling()
                     latents = raw_images
                     if isinstance(raw_images, (list, tuple)) and raw_images:
                         latents = raw_images[0]
+                    if hasattr(latents, "detach"):
+                        latents = latents.detach()
+                    # Drop the pipeline output object so denoise activations can free.
+                    output = None
+                    if hybrid.park_transformer_before_vae:
+                        self._park_transformer_for_vae(pipeline)
+                        log_vram("transformer parked before VAE")
+                        print(
+                            f"[FLUX] transformer_device_after_park="
+                            f"{_module_device(getattr(pipeline, 'transformer', None))}",
+                            flush=True,
+                        )
+                    self._clear_cuda()
+                    if torch is not None and torch.cuda.is_available():
+                        try:
+                            torch.cuda.reset_peak_memory_stats()
+                        except Exception:
+                            pass
+                    self._ensure_generation_devices(pipeline)
+                    self._enable_vae_tile_slice(pipeline)
                     log_vram("before VAE decode")
                     self._log_generation_stage("VAE_DECODE_START")
                     _progress("Decoding image", 88)
@@ -1428,7 +1669,7 @@ class FLUXInferenceEngine:
                             torch.inference_mode() if torch is not None else nullcontext()
                         )
                         with infer_ctx:
-                            image = self._decode_flux_latents(
+                            image = self._decode_latents_with_oom_retry(
                                 pipeline, latents, height, width
                             )
 
@@ -1459,6 +1700,12 @@ class FLUXInferenceEngine:
                     decode_s = round(time.perf_counter() - t_dec, 3)
                     _flux_mark("decoding", t_dec, end=True)
                     decoded_separately = True
+                    try:
+                        latents = None
+                    except Exception:
+                        pass
+                    self._park_vae_for_denoise(pipeline)
+                    self._clear_cuda()
                 else:
                     decoded_separately = False
             else:
@@ -1507,7 +1754,20 @@ class FLUXInferenceEngine:
                 _flux_mark("decoding", t_dec, end=True)
                 self._log_generation_stage("VAE_DECODE_COMPLETE")
                 log_vram("after VAE decode")
-            out_w, out_h = image.size if hasattr(image, "size") else (width, height)
+            if hasattr(image, "resize") and hasattr(image, "size"):
+                if (int(image.size[0]), int(image.size[1])) != (
+                    requested_width,
+                    requested_height,
+                ):
+                    print(
+                        f"[FLUX] resizing decoded {image.size[0]}x{image.size[1]} "
+                        f"→ requested {requested_width}x{requested_height}",
+                        flush=True,
+                    )
+                    image = image.resize(
+                        (requested_width, requested_height), Image.Resampling.LANCZOS
+                    )
+            out_w, out_h = image.size if hasattr(image, "size") else (requested_width, requested_height)
             out_mode = getattr(image, "mode", "?")
             print("[FLUX ACTUAL OUTPUT]", flush=True)
             print(f"width={out_w}", flush=True)
@@ -1516,6 +1776,10 @@ class FLUXInferenceEngine:
             print(f"[FLUX] output size = {out_w}x{out_h}", flush=True)
             print(f"[FLUX] output mode = {out_mode}", flush=True)
             print("[FLUX] real FLUX output = true", flush=True)
+            print("[FLUX CONFIG]", flush=True)
+            print(f"requested_resolution={requested_width}x{requested_height}", flush=True)
+            print(f"actual_generation_resolution={width}x{height}", flush=True)
+            print(f"delivered_resolution={out_w}x{out_h}", flush=True)
             print("[FLUX CONFIG]", flush=True)
             print(f"actual_output_resolution={out_w}x{out_h}", flush=True)
             print("[FLUX CONFIG]", flush=True)
@@ -1683,8 +1947,13 @@ class FLUXInferenceEngine:
                 "per_step_durations_s": per_step_durations,
                 "num_inference_steps": num_inference_steps,
                 "guidance_scale": guidance_scale,
-                "height": height,
-                "width": width,
+                "height": requested_height,
+                "width": requested_width,
+                "requested_resolution": f"{requested_width}x{requested_height}",
+                "actual_generation_resolution": f"{width}x{height}",
+                "delivered_resolution": f"{out_w}x{out_h}",
+                "actual_height": height,
+                "actual_width": width,
                 "max_sequence_length": max_seq,
                 "output_size": list(image.size) if hasattr(image, "size") else [width, height],
                 "offload_strategy": runtime.get(

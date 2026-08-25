@@ -276,8 +276,7 @@ class GarmentGenerationPipeline:
         if mode_key == "preview" and preview_steps.isdigit():
             self.config.num_inference_steps = max(1, int(preview_steps))
 
-        # T4 / 16GB+ quality path: Standard UI mode must not stay at the RTX 3050
-        # 512×3 preset (known soft/blurry). Prefer 768 / 12 steps unless overridden.
+        # T4 / 16GB+: Standard is 712×8 (see flux_vram_policy). Production is 768×12.
         self._apply_high_vram_standard_defaults(mode_key)
         # Production: locked 768×768 / 12 / 3.0. Never inherit Standard 512×3.
         self._apply_production_vram_defaults(mode_key)
@@ -929,6 +928,11 @@ class GarmentGenerationPipeline:
             "requested_height": self.config.height,
             "requested_width": self.config.width,
             "requested_steps": self.config.num_inference_steps,
+            "requested_resolution": stats.get("requested_resolution")
+            or f"{self.config.width}x{self.config.height}",
+            "actual_generation_resolution": stats.get("actual_generation_resolution"),
+            "delivered_resolution": stats.get("delivered_resolution")
+            or f"{actual_w}x{actual_h}",
             "image_path": str(image_path),
             "raw_image_path": str(raw_path),
             "pipeline_timings": timings,

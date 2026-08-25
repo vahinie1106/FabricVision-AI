@@ -270,7 +270,7 @@ def test_vram_policy_unchanged_t4_safe():
         offload_strategy="gpu_resident",
     )
     assert p.profile == "standard_t4_safe"
-    assert p.height == 512 and p.width == 512
+    assert p.height == 712 and p.width == 712
     assert p.num_inference_steps == 8
     assert p.guidance_scale == 3.0
     assert p.enable_vae_tiling is True

@@ -72,11 +72,12 @@ def test_standard_preset_on_t4_is_not_production(monkeypatch):
     pipe = _pipe_for_mode(monkeypatch, "Standard")
     assert pipe.config.mode_key == "standard"
     assert pipe.config.generation_mode == "Standard"
-    # T4 completion-first Standard is 512×8, never the 3050 YAML 512×3,
+    # T4 Standard is 712×8 / guidance 3.0, never the 3050 YAML 512×3,
     # and never silent Production 768×12.
-    assert pipe.config.height == 512
-    assert pipe.config.width == 512
+    assert pipe.config.height == 712
+    assert pipe.config.width == 712
     assert pipe.config.num_inference_steps == 8
+    assert float(pipe.config.guidance_scale) == 3.0
     assert (pipe.config.height, pipe.config.num_inference_steps) != (512, 3)
     assert (pipe.config.height, pipe.config.num_inference_steps) != (768, 12)
 

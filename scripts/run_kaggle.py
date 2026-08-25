@@ -1744,7 +1744,8 @@ def configure_kaggle_flux_runtime() -> None:
 
     Production lock (T4 / T4×2): 768×768 / 12 steps / guidance 3.0 via
     FLUX_PRODUCTION_* env. Do NOT silently demote Production to 512.
-    Standard stays completion-first (typically 512×8 + VAE tiling).
+    Standard target (T4): 712×712 / 8 steps / guidance 3.0, GPU-resident
+    transformer, park transformer before fp32 VAE decode.
 
     On dual T4: pin FLUX → cuda:0, CatVTON → cuda:1 and enable dual residency.
     """
@@ -1812,7 +1813,9 @@ def configure_kaggle_flux_runtime() -> None:
             # Kaggle T4 / T4×2 — locked Production target.
             # Do NOT default Production to 512. Standard stays on its own policy.
             os.environ.setdefault("FLUX_VAE_TILING", "true")
+            os.environ.setdefault("FLUX_GENERATION_RESOLUTION", "712")
             os.environ.setdefault("FLUX_STANDARD_STEPS", "8")
+            os.environ.setdefault("FLUX_STANDARD_NO_OOM_FALLBACK", "1")
             os.environ.setdefault("FLUX_PRODUCTION_RESOLUTION", "768")
             os.environ.setdefault("FLUX_PRODUCTION_SIZE", "768")
             os.environ.setdefault("FLUX_PRODUCTION_STEPS", "12")
@@ -1857,6 +1860,8 @@ def configure_kaggle_flux_runtime() -> None:
                 f"FLUX_PRODUCTION_NO_OOM_FALLBACK="
                 f"{os.environ.get('FLUX_PRODUCTION_NO_OOM_FALLBACK')} "
                 f"FLUX_STANDARD_STEPS={os.environ.get('FLUX_STANDARD_STEPS')} "
+                f"FLUX_GENERATION_RESOLUTION="
+                f"{os.environ.get('FLUX_GENERATION_RESOLUTION')} "
                 f"FLUX_MODEL_CPU_OFFLOAD={os.environ.get('FLUX_MODEL_CPU_OFFLOAD', 'auto')} "
                 "FLUX_VAE_TILING=true"
             )

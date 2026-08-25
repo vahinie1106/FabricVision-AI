@@ -79,9 +79,9 @@ def test_high_vram_standard_defaults(monkeypatch):
     )
 
     pipe._apply_high_vram_standard_defaults("standard")
-    # Completion-first: do NOT auto-upgrade to 768 when free headroom is low.
-    assert pipe.config.height == 512
-    assert pipe.config.width == 512
+    # T4 Standard target: 712×8, not 768 when free headroom is low.
+    assert pipe.config.height == 712
+    assert pipe.config.width == 712
     assert pipe.config.num_inference_steps == 8
     assert pipe.config.guidance_scale == 3.0
 

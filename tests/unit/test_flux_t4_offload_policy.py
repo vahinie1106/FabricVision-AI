@@ -44,8 +44,8 @@ def test_t4_standard_policy_defaults_no_offload(monkeypatch):
         free_mb=2500.0,
         offload_strategy="gpu_resident",
     )
-    assert policy.height == 512
-    assert policy.width == 512
+    assert policy.height == 712
+    assert policy.width == 712
     assert policy.num_inference_steps == 8
     assert policy.prefer_model_cpu_offload is False
     assert policy.profile == "standard_t4_safe"
@@ -101,6 +101,8 @@ def test_loader_offload_auto_does_not_use_pre_ampere():
     assert "Skipping park_on_cpu before generate" in inf
     assert "output_type=latent" in inf
     assert "_park_vae_for_denoise" in inf
+    assert "_park_transformer_for_vae" in inf
+    assert "park_transformer_before_vae" in inf
     assert "_evict_text_encoders" in inf.split("Prompt embed cache HIT")[1].split(
         "return embeds"
     )[0]
@@ -122,6 +124,8 @@ def test_hybrid_t4_plan_evicts_t5_parks_vae_no_step_offload():
     assert plan.park_vae_during_denoise is True
     assert plan.decode_latents_separately is True
     assert plan.enable_vae_tiling is True
+    assert plan.park_transformer_before_vae is True
+    assert plan.enable_vae_slicing is True
     assert plan.profile == "t4_hybrid_gpu_resident"
 
 
@@ -138,6 +142,7 @@ def test_hybrid_6gb_does_not_use_t4_latent_decode():
     )
     assert plan.decode_latents_separately is False
     assert plan.park_vae_during_denoise is False
+    assert plan.park_transformer_before_vae is False
     assert plan.per_step_cpu_offload is True
 
 
@@ -211,3 +216,89 @@ def test_park_vae_does_not_move_transformer():
     assert info["parked"] is True
     assert "cpu" in pipe.vae.moves
     assert pipe.transformer.moves == []
+
+
+def test_park_transformer_does_not_move_vae():
+    pytest.importorskip("torch")
+    from src.features.custom_generator.model.flux_model_loader import FLUXModelLoader
+
+    loader = FLUXModelLoader(allow_fallback=True)
+    loader._offload_strategy = "gpu_resident"
+    loader._used_bnb_4bit = True
+
+    class _Mod:
+        def __init__(self):
+            self.moves = []
+            self._device = "cuda:0"
+
+        def to(self, device=None, **kwargs):
+            if device is not None:
+                self.moves.append(str(device))
+                self._device = str(device)
+            return self
+
+        def modules(self):
+            return iter(())
+
+        def parameters(self):
+            class _P:
+                def __init__(self, device):
+                    self.device = device
+                    self.dtype = "float16"
+
+            yield _P(self._device)
+
+    class _Pipe:
+        def __init__(self):
+            self.transformer = _Mod()
+            self.vae = _Mod()
+
+    pipe = _Pipe()
+    loader._pipeline = pipe
+    info = loader.park_transformer_to_cpu()
+    assert info["parked"] is True
+    assert "cpu" in pipe.transformer.moves
+    assert pipe.vae.moves == []
+    restored = loader.ensure_transformer_on_device()
+    if restored.get("skipped"):
+        return
+    assert restored["restored"] is True
+    assert str(pipe.transformer._device).startswith("cuda")
+
+
+def test_hybrid_plan_parks_transformer_before_vae_not_during_denoise():
+    from pathlib import Path
+
+    inf = Path("src/features/custom_generator/inference/flux_inference.py").read_text(
+        encoding="utf-8"
+    )
+    denoise_idx = inf.find('log_vram("after_denoise_before_vae")')
+    park_idx = inf.find("self._park_transformer_for_vae(pipeline)", denoise_idx)
+    vae_idx = inf.find("_decode_latents_with_oom_retry", denoise_idx)
+    assert denoise_idx != -1 and park_idx != -1 and vae_idx != -1
+    assert denoise_idx < park_idx < vae_idx
+    assert "enable_model_cpu_offload()" not in inf.split("def generate")[1].split("def _generate_synthetic")[0]
+    assert 'log_vram("transformer parked before VAE")' in inf
+    assert "delivered_resolution" in inf
+
+
+def test_t4_vae_stays_fp32_with_tiling_and_latent_output():
+    from pathlib import Path
+
+    loader = Path("src/features/custom_generator/model/flux_model_loader.py").read_text(
+        encoding="utf-8"
+    )
+    inf = Path("src/features/custom_generator/inference/flux_inference.py").read_text(
+        encoding="utf-8"
+    )
+    assert "vae.to(dtype=torch.float32)" in loader
+    assert "enable_tiling" in inf
+    assert "enable_slicing" in inf
+    assert 'kwargs["output_type"] = "latent"' in inf
+    assert "FLUX_STANDARD_NO_OOM_FALLBACK" in inf
+    kaggle = Path("scripts/run_kaggle.py").read_text(encoding="utf-8")
+    assert 'setdefault("FLUX_GENERATION_RESOLUTION", "712")' in kaggle
+    assert 'setdefault("FLUX_STANDARD_STEPS", "8")' in kaggle
+    assert 'setdefault("FLUX_CUDA_DEVICE", "0")' in kaggle
+    assert 'setdefault("CATVTON_CUDA_DEVICE", "1")' in kaggle
+

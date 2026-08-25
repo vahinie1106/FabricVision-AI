@@ -43,6 +43,51 @@ def should_prefer_model_cpu_offload(
     return float(physical_mb or 0.0) < _HIGH_VRAM_OFFLOAD_FLOOR_MB
 
 
+def _bnb_safe_module_to(module: Any, device: Any) -> None:
+    """Move a module (including bitsandbytes NF4) without enable_model_cpu_offload.
+
+    Day-18: a naive ``transformer.to("cpu")`` can leave QuantState tensors on CUDA
+    so later CUDA stream lookups fail. Sync quant_state onto the same device.
+    This is a one-shot residency change (decode / next-job restore), not per-step
+    offload.
+    """
+    if module is None or not hasattr(module, "to") or torch is None:
+        return
+    target = torch.device(device) if not isinstance(device, torch.device) else device
+    module.to(target)
+    modules_fn = getattr(module, "modules", None)
+    if not callable(modules_fn):
+        return
+    for child in modules_fn():
+        weight = getattr(child, "weight", None)
+        if weight is None:
+            continue
+        qs = getattr(weight, "quant_state", None)
+        if qs is None:
+            continue
+        mover = getattr(qs, "to", None)
+        if callable(mover):
+            try:
+                mover(target)
+                continue
+            except Exception:
+                pass
+        for attr in (
+            "absmax",
+            "code",
+            "offset",
+            "nested_absmax",
+            "nested_quant_map",
+            "quant_map",
+        ):
+            tensor = getattr(qs, attr, None)
+            if torch.is_tensor(tensor):
+                try:
+                    setattr(qs, attr, tensor.to(target))
+                except Exception:
+                    pass
+
+
 class FLUXModelLoader:
     """
     Load FLUX.1-Kontext for fabric→garment image-conditioned generation.
@@ -87,6 +132,7 @@ class FLUXModelLoader:
         self._pipeline = None
         self._used_bnb_4bit = False
         self._offload_strategy = "none"
+        self._transformer_parked = False
         self._model_kind = "flux-kontext"
         self._attention_backend = "default"
         self._attention_diag: dict = {}
@@ -1901,6 +1947,94 @@ class FLUXModelLoader:
                 self.logger.warning("[FLUX] Failed to restore %s to CUDA: %s", name, exc)
         return info
 
+    def park_transformer_to_cpu(self) -> dict[str, Any]:
+        """Move the NF4 transformer off cuda:0 once — after denoise, before VAE decode.
+
+        Do NOT call ``enable_model_cpu_offload`` (that shuttles weights every step).
+        """
+        info: dict[str, Any] = {
+            "parked": False,
+            "skipped": False,
+            "transformer_device": None,
+            "reason": "",
+        }
+        if self._offload_strategy == "model_cpu_offload":
+            info["skipped"] = True
+            info["reason"] = "model_cpu_offload"
+            return info
+        pipe = self._pipeline
+        transformer = getattr(pipe, "transformer", None) if pipe is not None else None
+        if transformer is None or not hasattr(transformer, "to"):
+            info["skipped"] = True
+            info["reason"] = "no_transformer"
+            return info
+        try:
+            before = None
+            try:
+                before = str(next(transformer.parameters()).device)
+            except Exception:
+                before = "unknown"
+            _bnb_safe_module_to(transformer, "cpu")
+            self._transformer_parked = True
+            info["parked"] = True
+            try:
+                info["transformer_device"] = str(next(transformer.parameters()).device)
+            except Exception:
+                info["transformer_device"] = "cpu"
+            self.logger.info(
+                "[FLUX] Parked NF4 transformer → CPU before VAE decode (was %s)",
+                before,
+            )
+            print(
+                f"[FLUX] transformer parked before VAE was={before} "
+                f"now={info['transformer_device']}",
+                flush=True,
+            )
+        except Exception as exc:
+            self.logger.warning("[FLUX] Transformer park skipped: %s", exc)
+            info["reason"] = str(exc)
+        return info
+
+    def ensure_transformer_on_device(self) -> dict[str, Any]:
+        """Restore the NF4 transformer to the FLUX CUDA device before denoise."""
+        info: dict[str, Any] = {
+            "restored": False,
+            "skipped": False,
+            "transformer_device": None,
+        }
+        if self._offload_strategy == "model_cpu_offload":
+            info["skipped"] = True
+            return info
+        pipe = self._pipeline
+        transformer = getattr(pipe, "transformer", None) if pipe is not None else None
+        if transformer is None or not hasattr(transformer, "to") or torch is None:
+            info["skipped"] = True
+            return info
+        if not torch.cuda.is_available():
+            info["skipped"] = True
+            return info
+        target_str = self._resolve_flux_target_device()
+        idx = DeviceManager.cuda_device_index(target_str)
+        target = torch.device(f"cuda:{idx}" if idx is not None else "cuda")
+        try:
+            before = None
+            try:
+                before = str(next(transformer.parameters()).device)
+            except Exception:
+                before = "unknown"
+            _bnb_safe_module_to(transformer, target)
+            self._transformer_parked = False
+            info["restored"] = True
+            info["transformer_device"] = str(next(transformer.parameters()).device)
+            self.logger.info(
+                "[FLUX] Restored NF4 transformer → %s for denoise (was %s)",
+                info["transformer_device"],
+                before,
+            )
+        except Exception as exc:
+            self.logger.warning("[FLUX] Transformer restore skipped: %s", exc)
+        return info
+
     def park_vae_to_cpu(self) -> dict[str, Any]:
         """Move only the VAE to CPU. Never touch the NF4 transformer."""
         info: dict[str, Any] = {
@@ -1929,14 +2063,15 @@ class FLUXModelLoader:
         """
         Free GPU residency after / before FLUX jobs without breaking NF4 state.
 
-        CRITICAL findings (Day-18 validation):
-        - Never call ``transformer.to("cpu")`` on bitsandbytes NF4 modules
-          (corrupts quant_state / device.index → ``getCurrentStream`` errors).
+        CRITICAL findings (Day-18 / T4 decode):
+        - Per-step ``enable_model_cpu_offload()`` is forbidden (minutes-per-step stall).
+        - NF4 transformer may be moved once with ``_bnb_safe_module_to`` after denoise
+          so fp32 VAE decode does not overlap transformer weights.
         - Do not call ``enable_model_cpu_offload()`` again here: ``maybe_free_model_hooks``
           already re-applies it. Double-enabling stacks hooks and breaks step 2+.
         - Prefer accelerate's ``maybe_free_model_hooks()`` as the sole offload reset.
-        - For gpu_resident: parking VAE is OK for allocator cleanup, but callers MUST
-          call ``ensure_generation_devices()`` before the next ``pipeline()`` call.
+        - For gpu_resident: callers MUST restore the transformer before the next
+          ``pipeline()`` denoise via ``ensure_transformer_on_device()``.
         """
         before = 0.0
         reserved_before = 0.0
@@ -1951,17 +2086,19 @@ class FLUXModelLoader:
             except Exception as exc:
                 self.logger.debug("maybe_free_model_hooks skipped: %s", exc)
 
-        # Optional: park non-quantized encoders/VAE only when NOT using model_cpu_offload,
-        # so we do not fight accelerate hooks on the NF4 path.
+        # Park encoders/VAE. NF4 transformer uses the bnb-safe one-shot move
+        # (not enable_model_cpu_offload — that would shuttle every denoise step).
         if pipe is not None and self._offload_strategy != "model_cpu_offload":
             for name in ("text_encoder", "text_encoder_2", "vae", "transformer"):
-                if self._used_bnb_4bit and name == "transformer":
-                    continue
                 mod = getattr(pipe, name, None)
                 if mod is None or not hasattr(mod, "to"):
                     continue
                 try:
-                    mod.to("cpu")
+                    if name == "transformer":
+                        _bnb_safe_module_to(mod, "cpu")
+                        self._transformer_parked = True
+                    else:
+                        mod.to("cpu")
                 except Exception as exc:
                     self.logger.debug("park %s → cpu skipped: %s", name, exc)
 
