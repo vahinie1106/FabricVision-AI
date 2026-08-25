@@ -381,3 +381,32 @@ def test_round_vs_v_neck_keeps_body_and_fabric_pixels():
     assert YELLOW in {vee.getpixel((x, 160)) for x in range(80, 180, 4)}
 
 
+def test_round_neck_is_shallow_crew_not_deep_u():
+    """Crew opening must stay curved and shallower than the previous deep U."""
+    fabric = _striped_fabric(256)
+    kwargs = dict(
+        fabric_image=fabric,
+        garment_type="dress",
+        width=256,
+        height=256,
+        sleeve="short_sleeve",
+        target_color="match_fabric",
+    )
+    rnd = build_garment_conditioning_image(neckline="Round Neck", **kwargs)
+    vee = build_garment_conditioning_image(neckline="V Neck", **kwargs)
+    cx = 128
+    y_c = _first_garment_y(rnd, cx)
+    y_l = _first_garment_y(rnd, cx - 24)
+    y_r = _first_garment_y(rnd, cx + 24)
+    y_v = _first_garment_y(vee, cx)
+    assert y_c is not None and y_l is not None and y_r is not None and y_v is not None
+    assert y_c >= y_l and y_c >= y_r
+    depth = y_c - min(y_l, y_r)
+    assert 3 <= depth <= int(256 * 0.055)
+    # Pointed V remains deeper than the crew curve.
+    assert y_c < y_v
+    ang = _opening_angle_deg(rnd, cx, 24)
+    assert ang > 130
+
+
+

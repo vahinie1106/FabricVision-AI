@@ -456,6 +456,8 @@ def test_kontext_round_neck_uses_explicit_visual_language():
     assert builder.last_prompt_stats.get("neckline_token") == "round_neck"
     assert builder.last_prompt_stats["token_count"] <= CLIP_SAFE_CONTENT_TOKENS
     assert builder.last_prompt_stats["truncated"] is False
+    assert "natural folds following the print" in lower
+    assert "sharp silhouette" in lower
 
 
 def test_kontext_v_neck_uses_explicit_v_shaped_description():

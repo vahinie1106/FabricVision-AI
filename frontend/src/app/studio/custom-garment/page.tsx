@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import {
+  garmentsForGender,
+  resolveGarmentTypeForGender,
+} from "@/lib/garmentTypeFilter";
 import { AnimatePresence, motion } from "framer-motion";
 import { ImageDropzone } from "@/components/ui/ImageDropzone";
 import { Button } from "@/components/ui/Button";
@@ -64,6 +68,13 @@ export default function CustomGarmentGenerator() {
   const [metadata, setMetadata] = useState<Record<string, unknown> | null>(null);
   const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [durationMs, setDurationMs] = useState<number | undefined>();
+
+  const garmentOptions = useMemo(() => garmentsForGender(gender), [gender]);
+
+  const handleGenderChange = useCallback((next: string) => {
+    setGender(next);
+    setGarmentType((current) => resolveGarmentTypeForGender(next, current));
+  }, []);
 
   const promptSummary = useMemo(
     () =>
@@ -334,7 +345,12 @@ export default function CustomGarmentGenerator() {
               2. Identity
             </h3>
             <div className="space-y-4">
-              <SelectField label="Gender" value={gender} onChange={setGender} options={["Men", "Women", "Unisex"]} />
+              <SelectField
+                label="Gender"
+                value={gender}
+                onChange={handleGenderChange}
+                options={["Men", "Women", "Unisex"]}
+              />
               <SelectField label="Season" value={season} onChange={setSeason} options={["Summer", "Winter", "Spring", "Autumn", "All Season"]} />
               <SelectField label="Occasion" value={occasion} onChange={setOccasion} options={["Casual", "Formal", "Party", "Sports", "Traditional", "Business"]} />
             </div>
@@ -349,7 +365,7 @@ export default function CustomGarmentGenerator() {
                 label="Garment Type"
                 value={garmentType}
                 onChange={setGarmentType}
-                options={["Dress", "Shirt", "Trousers", "Jacket", "Kurti", "Lehenga", "Saree", "Top", "Skirt", "Jumpsuit", "Hoodie", "Blazer"]}
+                options={garmentOptions}
               />
               <SelectField label="Fit" value={fit} onChange={setFit} options={["Slim Fit", "Regular", "Oversized", "Relaxed", "Tailored"]} />
               <SelectField

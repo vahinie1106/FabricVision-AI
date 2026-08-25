@@ -470,10 +470,21 @@ class GarmentPromptBuilder:
                 f"Do not recolor the printed motifs."
             )
         elif appearance:
+            # Appearance already names the palette; repeating dominant_colors
+            # spent ~6 CLIP tokens and dropped the quality layer (81 > 75).
+            app_l = appearance.lower()
+            details: list[str] = []
+            colors = (context.get("dominant_colors") or "").strip()
+            color_parts = [p.strip() for p in colors.split(",") if p.strip()]
+            if colors and not all(p.lower() in app_l for p in color_parts):
+                details.append(colors)
+            for piece in (context["pattern"], context["material"]):
+                if piece and piece.lower() not in app_l:
+                    details.append(piece)
+            detail_str = f"; {', '.join(details)}" if details else ""
             fabric = (
-                f"Preserve source fabric look ({appearance}; "
-                f"{context['dominant_colors']}, {context['pattern']}, "
-                f"{context['material']}). Same print scale; do not recolor."
+                f"Preserve source fabric look ({appearance}{detail_str}). "
+                f"Same print scale; do not recolor."
             )
         else:
             fabric = (

@@ -1,0 +1,55 @@
+{
+  "source": "configs/semantic_analysis/garment_taxonomy.json",
+  "gender_categories": {
+    "men": {
+      "items": [
+        "shirt",
+        "t_shirt",
+        "polo_shirt",
+        "hoodie",
+        "jacket",
+        "blazer",
+        "kurta",
+        "sherwani",
+        "jeans",
+        "trousers",
+        "shorts",
+        "sweatshirt",
+        "sweater",
+        "suit"
+      ]
+    },
+    "women": {
+      "traditional": [
+        "saree",
+        "lehenga",
+        "kurti",
+        "anarkali",
+        "salwar_suit",
+        "blouse"
+      ],
+      "western": [
+        "dress",
+        "gown",
+        "top",
+        "skirt",
+        "jumpsuit",
+        "jacket",
+        "blazer",
+        "crop_top",
+        "cardigan"
+      ]
+    },
+    "unisex": {
+      "items": [
+        "t_shirt",
+        "hoodie",
+        "sweatshirt",
+        "jacket",
+        "joggers",
+        "tracksuit",
+        "scarf"
+      ]
+    }
+  }
+}

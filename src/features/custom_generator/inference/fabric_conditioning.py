@@ -544,7 +544,7 @@ def _circular_neck_arc(
         left, right = (x0, y0), (x1, y1)
     span = max(2, x1 - x0)
     sag = max(3, int(sagitta))
-    sag = min(sag, max(3, int(span * 0.35)))
+    sag = min(sag, max(3, int(span * 0.22)))
     half = span / 2.0
     radius = (half * half + sag * sag) / (2.0 * sag)
     cx = (x0 + x1) / 2.0
@@ -593,7 +593,13 @@ def _apply_neckline_geometry(
     right = (int(polygon[4][0]), int(polygon[4][1]))
     body = list(polygon[5:])
     if key == "round_neck":
-        neck = _circular_neck_arc(left, right, sagitta=max(3, int(height * 0.06)))
+        # Crew: shallow circular U. height*0.06 read as a deep scoop / U-neck.
+        span = max(2, int(right[0]) - int(left[0]))
+        inset = max(0, int(round(span * 0.05)))
+        left_i = (int(left[0]) + inset, int(left[1]))
+        right_i = (int(right[0]) - inset, int(right[1]))
+        sag = max(3, int(height * 0.040))
+        neck = _circular_neck_arc(left_i, right_i, sagitta=sag, samples=13)
         return neck + body
     if key == "v_neck":
         neck = _v_neck_points(left, right, depth=max(6, int(height * 0.11)))
