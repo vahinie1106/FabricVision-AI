@@ -462,57 +462,36 @@ class GarmentPromptBuilder:
         - match_fabric: preserve uploaded textile colors (do not recolor).
         - explicit: change BASE fabric color only; keep original print/motif colors.
         """
-        appearance = (context.get("fabric_appearance") or "").strip()
         color_mode = (context.get("color_mode") or "match_fabric").strip()
         target = (context.get("dominant_colors") or "multicolor").strip()
         motifs = (context.get("motif_colors") or "original print").strip()
-        # Structure + fabric identity stay in the primary CLIP layer so neither
-        # is dropped when later layers miss the 77-token budget.
-        # Order: garment type → uploaded textile identity → fit/neckline/sleeves.
-        if color_mode == "explicit":
-            identity = (
-                "that uses this image's textile print, motifs, and texture, "
-                f"base fabric color {target}"
-            )
-            if motifs and motifs not in ("original print", ""):
-                identity += f", keep print colors ({motifs})"
-            primary_tail = ""
-        else:
-            identity = (
-                "that uses this image's textile print, motifs, texture, and "
-                f"colors ({target})"
-            )
-            primary_tail = " Do not invent a new design. Do not recolor."
+        gt = context["garment_type"]
+        gender = context["gender"]
+        # Layer 1 must stay short. d43a25c stuffed "wearable {gender} {gt}" plus
+        # textile identity into the primary; CLIP dropped "No model" and FLUX
+        # treated the mockup as a person wearing the fabric photo.
+        # Negatives are inactive at FLUX_TRUE_CFG_SCALE=1.0, so "no person"
+        # must live in the positive primary. Do not use "{gender}'s {gt}" —
+        # possessive garment language also reads as a person.
         primary = (
-            f"Edit this uploaded-fabric {context['garment_type']} mockup into a "
-            f"realistic wearable {context['gender']} {context['garment_type']} "
-            f"{identity}, {context['fit']}, {context['neckline']}, "
-            f"{context['sleeve_length']}, natural drape.{primary_tail}"
+            f"Edit fabric-filled {gt} mockup into a standalone {gt}. "
+            f"No person, no model. "
+            f"{gender}, {context['fit']}, {context['neckline']}, "
+            f"{context['sleeve_length']}."
         )
         if color_mode == "explicit":
-            # Base-only recolor — keep compact so CLIP budget retains this layer.
             fabric = (
                 f"Change only the base fabric color to {target}; keep original "
-                f"{context['pattern']} print colors ({motifs}) and print scale. "
-                f"Do not recolor the printed motifs."
-            )
-        elif appearance:
-            fabric = (
-                f"Keep the uploaded textile as the garment fabric "
-                f"({appearance}; {context['dominant_colors']}, {context['pattern']}, "
-                f"{context['material']}). Same print scale; do not invent a new "
-                f"design or recolor."
+                f"{context['pattern']} print colors ({motifs})."
             )
         else:
+            color_note = f" ({target})" if target else ""
             fabric = (
-                f"Keep the uploaded textile as the garment fabric "
-                f"({context['dominant_colors']}; {context['material']}, "
-                f"{context['pattern']}, {context['texture']}). Same print scale; "
-                f"do not invent a new design or recolor."
+                f"Keep this mockup's exact print, motifs, weave, texture, and "
+                f"colors{color_note}. Do not invent a new design. Do not recolor."
             )
         quality = (
-            "Natural folds following the print, clean seams and hem, sharp silhouette "
-            "on white. No model, not a swatch, not plastic CGI."
+            "Natural folds, clean seams, white studio. Not a swatch, not CGI."
         )
         # Avoid "casual casual" when style == occasion
         if context["style"] == context["occasion"]:
@@ -551,14 +530,27 @@ class GarmentPromptBuilder:
 
         prompt = " ".join(used).strip()
         token_count = self.count_clip_tokens(prompt)
+        short_fabric = fabric_fallback or (
+            "Keep this mockup's exact print, motifs, weave, texture, and colors. "
+            "Do not invent a new design. Do not recolor."
+        )
+        dropped_fabric = compacted and len(used) < 2 and len(layers) >= 2
+        primary_fits = self.count_clip_tokens(layers[0]) <= max_tokens
 
-        # If primary+fabric overflow, keep a grounded fabric clause (not a vague slogan).
-        if token_count > max_tokens and len(layers) >= 2:
+        # If the fabric layer was dropped because the primary filled the budget,
+        # attach a short identity clause. The previous guard only ran when the
+        # primary itself overflowed, so Match Fabric text was silently lost.
+        if dropped_fabric and primary_fits:
+            candidate = f"{layers[0]} {short_fabric}".strip()
+            if self.count_clip_tokens(candidate) <= max_tokens:
+                prompt = candidate
+                if len(layers) > 2:
+                    with_quality = f"{prompt} {layers[2]}".strip()
+                    if self.count_clip_tokens(with_quality) <= max_tokens:
+                        prompt = with_quality
+            token_count = self.count_clip_tokens(prompt)
+        elif token_count > max_tokens and len(layers) >= 2:
             compacted = True
-            short_fabric = fabric_fallback or (
-                "Keep this uploaded textile's print, motifs, texture, and colors; "
-                "do not invent a new design or recolor."
-            )
             prompt = f"{layers[0]} {short_fabric}".strip()
             if len(layers) > 2:
                 with_quality = f"{prompt} {layers[2]}".strip()
@@ -670,9 +662,10 @@ class GarmentPromptBuilder:
                 f"print motif colors."
             )
         else:
+            target = context.get("dominant_colors") or "multicolor"
             fabric_fallback = (
-                "Keep this uploaded textile's print, motifs, texture, and colors; "
-                "do not invent a new design or recolor."
+                f"Keep this mockup's exact print, motifs, weave, texture, and "
+                f"colors ({target}). Do not invent a new design. Do not recolor."
             )
         final_positive, stats = self.fit_to_clip_budget(
             layers, fabric_fallback=fabric_fallback

@@ -59,7 +59,8 @@ def test_kontext_prompt_mentions_realistic_construction():
         },
     )
     lower = pos.lower()
-    assert "realistic" in lower or "natural fabric drape" in lower or "folds" in lower
+    assert "standalone" in lower or "natural drape" in lower or "folds" in lower
     assert "do not recolor" in lower
+    assert "no person" in lower
     assert "plastic" in neg.lower() or "cgi" in neg.lower()
     assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS

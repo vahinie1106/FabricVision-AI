@@ -17,6 +17,7 @@ from src.features.custom_generator.pipeline.garment_generation_pipeline import (
 )
 from src.features.custom_generator.prompting.garment_prompt_builder import (
     CLIP_MAX_TOKENS,
+    CLIP_SAFE_CONTENT_TOKENS,
     GarmentPromptBuilder,
 )
 
@@ -71,16 +72,20 @@ def test_kontext_prompt_match_fabric_preserves_source_colors():
     )
     lower = pos.lower()
     assert "do not recolor" in lower
-    assert "uploaded" in lower
-    assert "textile" in lower
+    assert "fabric-filled" in lower or "mockup" in lower
     assert "print" in lower
     assert "motifs" in lower
     assert "do not invent" in lower
+    assert "no person" in lower and "no model" in lower
+    assert "standalone" in lower
+    assert "wearable women" not in lower
+    assert "wearable" not in lower
+    assert "women's dress" not in lower
     assert "white" in lower and "red" in lower
     assert "apply blue color" not in lower
     assert builder.last_prompt_stats.get("color_mode") == "match_fabric"
     instruction = (builder.last_prompt_stats.get("color_instruction") or "").lower()
-    assert "uploaded textile" in instruction or "do not invent" in instruction
+    assert "print" in instruction or "fabric" in instruction
     assert "do not recolor" in instruction or "do not invent" in instruction
 
 
@@ -428,12 +433,20 @@ def test_kontext_round_neck_uses_explicit_visual_language():
     assert "not a v-neck" in lower
     assert "no v-shaped neckline" in lower
     assert "no pointed neckline" in lower
-    assert "uploaded-fabric" in lower or "uploaded fabric" in lower or "this image's textile" in lower
+    assert "fabric-filled" in lower
+    assert "standalone" in lower
+    assert "no person" in lower
+    assert "no model" in lower
     assert "print" in lower and "motifs" in lower
+    assert "wearable women" not in lower
+    assert "wearable" not in lower
+    assert "women's dress" not in lower
+    assert "do not invent" in lower
+    assert "do not recolor" in lower
+    assert not pos.rstrip().endswith("Do not")
     # Must not rely on the ambiguous taxonomy-only label.
     generic_only = "round neckline" in lower and "round crew neckline" not in lower
     assert generic_only is False
-    # Neckline stays with garment construction, not buried after season/occasion.
     dress_idx = lower.find("dress")
     neck_idx = lower.find("round crew neckline")
     summer_idx = lower.find("summer")
@@ -486,3 +499,79 @@ def test_kontext_each_neckline_visual_phrase_reaches_prompt():
         assert phrase.lower() in pos.lower(), f"{token} visual phrase missing from prompt"
         assert builder.last_prompt_stats.get("neckline_token") == token
         assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS
+
+
+def test_kontext_prompt_is_garment_product_not_person():
+    builder = _builder()
+    pos, neg = builder.build_kontext_prompt(
+        {
+            "material": "cotton",
+            "pattern": "printed",
+            "dominant_colors": ["white", "red", "orange"],
+            "color_source": "fabric_pixels",
+            "fabric_appearance": "white, red, orange patterned textile",
+        },
+        {
+            "gender": "women",
+            "garment_type": "dress",
+            "sleeve": "short_sleeve",
+            "neckline": "Round Neck",
+            "fit": "slim",
+            "style": "casual",
+        },
+    )
+    lower = pos.lower()
+    assert "standalone" in lower
+    assert "dress" in lower
+    assert "no person" in lower
+    assert "no model" in lower
+    assert "fabric-filled" in lower
+    assert "wearable" not in lower
+    assert "women's dress" not in lower
+    assert "fashion photography" not in lower
+    assert "on a model" not in lower
+    assert "person wearing" not in lower
+    assert "human model" in neg.lower() or "person" in neg.lower()
+    assert "do not invent" in lower
+    assert "do not recolor" in lower
+    assert not pos.rstrip().endswith("Do not")
+    assert builder.last_prompt_stats["token_count"] <= CLIP_MAX_TOKENS
+
+
+def test_fabric_preservation_layer_reaches_final_kontext_prompt():
+    """Layer 2 must survive fit_to_clip_budget — not just be constructed then dropped."""
+    builder = _builder()
+    fabric_metadata = {
+        "material": "cotton",
+        "pattern": "printed",
+        "dominant_colors": ["white", "red", "orange"],
+        "color_source": "fabric_pixels",
+        "fabric_appearance": "white, red, orange patterned textile",
+    }
+    user_customization = {
+        "gender": "women",
+        "garment_type": "dress",
+        "sleeve": "short_sleeve",
+        "neckline": "Round Neck",
+        "fit": "slim",
+        "style": "casual",
+        "occasion": "casual",
+        "season": "summer",
+    }
+    context = builder._build_context(fabric_metadata, user_customization)
+    layers = builder._build_compact_kontext_layers(context)
+    assert len(layers) >= 2
+    fabric_layer = layers[1]
+    assert "print" in fabric_layer.lower()
+    assert "motifs" in fabric_layer.lower()
+    assert "texture" in fabric_layer.lower() or "weave" in fabric_layer.lower()
+    assert "do not invent" in fabric_layer.lower()
+    assert "do not recolor" in fabric_layer.lower()
+
+    pos, _ = builder.build_kontext_prompt(fabric_metadata, user_customization)
+    assert fabric_layer in pos
+    assert "no person" in pos.lower() and "no model" in pos.lower()
+    assert "wearable" not in pos.lower()
+    assert builder.last_prompt_stats["token_count"] <= CLIP_SAFE_CONTENT_TOKENS
+    assert builder.last_prompt_stats["truncated"] is False
+
