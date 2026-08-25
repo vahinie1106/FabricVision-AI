@@ -10,6 +10,42 @@ from typing import Any, Dict, Optional, Tuple
 CLIP_MAX_TOKENS = 77
 CLIP_SAFE_CONTENT_TOKENS = 75
 
+# Explicit visual language for FLUX. Taxonomy labels like "round neckline" are
+# too weak — Kontext often substitutes a V-neck. Keep phrases construction-first
+# and compact so they survive the 77-token CLIP budget in the primary layer.
+DEFAULT_NECKLINE_VISUAL_PHRASES = {
+    "round_neck": (
+        "round crew neckline, circular curved neckline opening, "
+        "NOT a V-neck, no V-shaped neckline, no pointed neckline"
+    ),
+    "v_neck": "distinct V-shaped neckline opening",
+    "u_neck": "U-shaped curved neckline opening",
+    "square_neck": (
+        "square-shaped neckline with straight horizontal top edge "
+        "and straight vertical sides"
+    ),
+    "boat_neck": "wide horizontal boat neckline extending toward the shoulders",
+    "high_neck": "high neckline rising around the base of the neck",
+    "off_shoulder": (
+        "neckline positioned below both shoulders, exposing both shoulders"
+    ),
+    "sweetheart_neck": "heart-shaped sweetheart neckline with a central dip",
+    "halter_neck": "halter neckline wrapping around the neck with shoulders exposed",
+    "keyhole_neck": (
+        "keyhole neckline with a deliberate small opening below the neckline"
+    ),
+    "collar_neck": "structured collar attached around the neckline",
+    "mandarin_collar": (
+        "short upright mandarin collar standing around the base of the neck"
+    ),
+}
+
+# Targeted contradictions only — do not dump every other neckline into negatives.
+DEFAULT_NECKLINE_NEGATIVE_EXCLUSIONS = {
+    "round_neck": "v-neck, V-shaped neckline, pointed neckline",
+    "v_neck": "crew neck, circular neckline",
+}
+
 
 class GarmentPromptBuilder:
     """Build compact, CLIP-safe generative prompts for FLUX.1-Kontext garment synthesis."""
@@ -190,7 +226,7 @@ class GarmentPromptBuilder:
         return token
 
     def validate_and_normalize_neckline(self, neck_val: Optional[str]) -> str:
-        token = self._normalize_token(neck_val, "round_neck")
+        token = self._normalize_token(neck_val, "round_neck").replace("-", "_")
         aliases = {
             "collar": "collar_neck",
             "collared": "collar_neck",
@@ -199,8 +235,20 @@ class GarmentPromptBuilder:
             "mandarin_collar": "mandarin_collar",
             "sweetheart": "sweetheart_neck",
             "round": "round_neck",
+            "crew": "round_neck",
+            "crew_neck": "round_neck",
+            "crewneck": "round_neck",
             "v_neck": "v_neck",
             "vneck": "v_neck",
+            "u": "u_neck",
+            "u_neck": "u_neck",
+            "square": "square_neck",
+            "boat": "boat_neck",
+            "halter": "halter_neck",
+            "keyhole": "keyhole_neck",
+            "high": "high_neck",
+            "off_the_shoulder": "off_shoulder",
+            "offshoulder": "off_shoulder",
         }
         token = aliases.get(token, token)
         allowed = set(self.necklines_vocab.get("allowed_necklines", []))
@@ -208,6 +256,42 @@ class GarmentPromptBuilder:
             self.logger.info("Neckline '%s' outside vocabulary; using sanitized token '%s'", neck_val, token)
             return token
         return token
+
+    def _generic_neckline_phrase(self, token: str) -> str:
+        neck_phrase = token.replace("_", " ")
+        if neck_phrase.endswith(" neck"):
+            return neck_phrase[:-5] + " neckline"
+        if not neck_phrase.endswith("neckline") and not neck_phrase.endswith("collar"):
+            return f"{neck_phrase} neckline"
+        return neck_phrase
+
+    def neckline_visual_phrase(self, neck_val: Optional[str]) -> str:
+        """Return explicit visual language for the selected neckline token."""
+        token = self.validate_and_normalize_neckline(neck_val)
+        phrases = self.necklines_vocab.get("visual_phrases") or {}
+        if isinstance(phrases, dict) and token in phrases and str(phrases[token]).strip():
+            return str(phrases[token]).strip()
+        fallback = DEFAULT_NECKLINE_VISUAL_PHRASES.get(token)
+        if fallback:
+            return fallback
+        return self._generic_neckline_phrase(token)
+
+    def _neckline_negative_exclusions(self, token: str) -> str:
+        extras = self.necklines_vocab.get("negative_exclusions") or {}
+        if isinstance(extras, dict) and token in extras and str(extras[token]).strip():
+            return str(extras[token]).strip()
+        return DEFAULT_NECKLINE_NEGATIVE_EXCLUSIONS.get(token, "")
+
+    def _append_neckline_negatives(self, negative_prompt: str, token: str) -> str:
+        extra = self._neckline_negative_exclusions(token)
+        if not extra:
+            return negative_prompt
+        lower = (negative_prompt or "").lower()
+        if extra.lower() in lower:
+            return negative_prompt
+        if negative_prompt.strip():
+            return f"{negative_prompt.rstrip().rstrip(',')}, {extra}"
+        return extra
 
     def validate_and_normalize_size(self, size_val: Optional[str]) -> str:
         if not size_val:
@@ -300,14 +384,12 @@ class GarmentPromptBuilder:
         gender = self._normalize_token(user_customization.get("gender"), "women")
         garment_type = self._normalize_token(user_customization.get("garment_type"), "kurti")
         sleeve_length = self.validate_and_normalize_sleeve(user_customization.get("sleeve"))
-        neckline = self.validate_and_normalize_neckline(user_customization.get("neckline"))
+        neckline_token = self.validate_and_normalize_neckline(
+            user_customization.get("neckline")
+        )
         size = self.validate_and_normalize_size(user_customization.get("size"))
 
-        neck_phrase = neckline.replace("_", " ")
-        if neck_phrase.endswith(" neck"):
-            neck_phrase = neck_phrase[:-5] + " neckline"
-        elif not neck_phrase.endswith("neckline") and not neck_phrase.endswith("collar"):
-            neck_phrase = f"{neck_phrase} neckline"
+        neck_phrase = self.neckline_visual_phrase(neckline_token)
 
         sleeve_phrase = sleeve_length.replace("_", "-")
         if sleeve_phrase.endswith("-sleeve"):
@@ -360,6 +442,7 @@ class GarmentPromptBuilder:
             "occasion": occasion.replace("_", " "),
             "season": season.replace("_", " "),
             "neckline": neck_phrase,
+            "neckline_token": neckline_token,
             "sleeve_length": sleeve_phrase,
             "size": size,
             "dominant_colors": colors_str,
@@ -379,16 +462,33 @@ class GarmentPromptBuilder:
         - match_fabric: preserve uploaded textile colors (do not recolor).
         - explicit: change BASE fabric color only; keep original print/motif colors.
         """
-        primary = (
-            f"Edit fabric-filled {context['garment_type']} mockup into realistic "
-            f"wearable {context['gender']} {context['garment_type']}: "
-            f"{context['neckline']}, {context['sleeve_length']}, {context['fit']}, "
-            f"natural drape."
-        )
         appearance = (context.get("fabric_appearance") or "").strip()
         color_mode = (context.get("color_mode") or "match_fabric").strip()
         target = (context.get("dominant_colors") or "multicolor").strip()
         motifs = (context.get("motif_colors") or "original print").strip()
+        # Structure + fabric identity stay in the primary CLIP layer so neither
+        # is dropped when later layers miss the 77-token budget.
+        # Order: garment type → uploaded textile identity → fit/neckline/sleeves.
+        if color_mode == "explicit":
+            identity = (
+                "that uses this image's textile print, motifs, and texture, "
+                f"base fabric color {target}"
+            )
+            if motifs and motifs not in ("original print", ""):
+                identity += f", keep print colors ({motifs})"
+            primary_tail = ""
+        else:
+            identity = (
+                "that uses this image's textile print, motifs, texture, and "
+                f"colors ({target})"
+            )
+            primary_tail = " Do not invent a new design. Do not recolor."
+        primary = (
+            f"Edit this uploaded-fabric {context['garment_type']} mockup into a "
+            f"realistic wearable {context['gender']} {context['garment_type']} "
+            f"{identity}, {context['fit']}, {context['neckline']}, "
+            f"{context['sleeve_length']}, natural drape.{primary_tail}"
+        )
         if color_mode == "explicit":
             # Base-only recolor — keep compact so CLIP budget retains this layer.
             fabric = (
@@ -398,15 +498,17 @@ class GarmentPromptBuilder:
             )
         elif appearance:
             fabric = (
-                f"Preserve source fabric look ({appearance}; "
-                f"{context['dominant_colors']}, {context['pattern']}, "
-                f"{context['material']}). Same print scale; do not recolor."
+                f"Keep the uploaded textile as the garment fabric "
+                f"({appearance}; {context['dominant_colors']}, {context['pattern']}, "
+                f"{context['material']}). Same print scale; do not invent a new "
+                f"design or recolor."
             )
         else:
             fabric = (
-                f"Preserve source fabric print/colors ({context['dominant_colors']}; "
-                f"{context['material']}, {context['pattern']}, {context['texture']}). "
-                f"Same print scale; do not recolor."
+                f"Keep the uploaded textile as the garment fabric "
+                f"({context['dominant_colors']}; {context['material']}, "
+                f"{context['pattern']}, {context['texture']}). Same print scale; "
+                f"do not invent a new design or recolor."
             )
         quality = (
             "Natural folds following the print, clean seams and hem, sharp silhouette "
@@ -454,7 +556,8 @@ class GarmentPromptBuilder:
         if token_count > max_tokens and len(layers) >= 2:
             compacted = True
             short_fabric = fabric_fallback or (
-                "Preserve source fabric print, colors, and pattern scale; do not recolor."
+                "Keep this uploaded textile's print, motifs, texture, and colors; "
+                "do not invent a new design or recolor."
             )
             prompt = f"{layers[0]} {short_fabric}".strip()
             if len(layers) > 2:
@@ -514,16 +617,23 @@ class GarmentPromptBuilder:
             self.logger.error("Missing template key during prompt formatting: %s", exc)
             positive_prompt = (
                 f"Finished wearable {context['gender']} {context['garment_type']}, "
-                f"{context['neckline']}, {context['sleeve_length']}, "
+                f"{context['fit']}, {context['neckline']}, {context['sleeve_length']}, "
                 f"{context['material']}, white studio background."
             ) + extra_str
 
         positive_prompt, stats = self.fit_to_clip_budget([positive_prompt])
-        self.last_prompt_stats = stats
+        negative_prompt = self._append_neckline_negatives(
+            negative_template, context.get("neckline_token", "")
+        )
+        self.last_prompt_stats = {
+            **stats,
+            "neckline_token": context.get("neckline_token"),
+            "neckline_visual": context.get("neckline"),
+        }
         self.logger.info("Parsed garment context: %s", context)
         self.logger.info("Positive prompt: %s", positive_prompt)
-        self.logger.info("Negative prompt: %s", negative_template)
-        return positive_prompt, negative_template
+        self.logger.info("Negative prompt: %s", negative_prompt)
+        return positive_prompt, negative_prompt
 
     def build_kontext_prompt(
         self,
@@ -537,7 +647,18 @@ class GarmentPromptBuilder:
         Avoids redundant aesthetic adjectives that waste the 77-token CLIP budget.
         """
         context = self._build_context(fabric_metadata, user_customization)
-        negative_prompt = self.templates.get("negative_template", "")
+        negative_prompt = self._append_neckline_negatives(
+            self.templates.get("negative_template", ""),
+            context.get("neckline_token", ""),
+        )
+        if context.get("color_mode") != "explicit":
+            extra = "invented print, different fabric"
+            if extra.lower() not in negative_prompt.lower():
+                negative_prompt = (
+                    f"{negative_prompt.rstrip().rstrip(',')}, {extra}"
+                    if negative_prompt.strip()
+                    else extra
+                )
 
         # Prefer layered compact builder (guarantees attribute priority under CLIP budget).
         # Template remains available for Gradio/legacy callers that want full wording.
@@ -550,7 +671,8 @@ class GarmentPromptBuilder:
             )
         else:
             fabric_fallback = (
-                "Preserve source fabric print, colors, and pattern scale; do not recolor."
+                "Keep this uploaded textile's print, motifs, texture, and colors; "
+                "do not invent a new design or recolor."
             )
         final_positive, stats = self.fit_to_clip_budget(
             layers, fabric_fallback=fabric_fallback
@@ -560,6 +682,8 @@ class GarmentPromptBuilder:
             "color_mode": context.get("color_mode"),
             "dominant_colors": context.get("dominant_colors"),
             "color_instruction": layers[1] if len(layers) > 1 else "",
+            "neckline_token": context.get("neckline_token"),
+            "neckline_visual": context.get("neckline"),
         }
         self.logger.info(
             "[FLUX COLOR DEBUG] FINAL COLOR INSTRUCTION:\n%s",
